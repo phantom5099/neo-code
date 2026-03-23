@@ -8,6 +8,7 @@ import (
 	"go-llm-demo/internal/server/domain"
 	"go-llm-demo/internal/server/infra/provider"
 	"go-llm-demo/internal/server/infra/repository"
+	"go-llm-demo/internal/server/infra/tools"
 	"go-llm-demo/internal/server/service"
 )
 
@@ -66,7 +67,7 @@ func NewLocalChatClient() (ChatClient, error) {
 		storePath,
 		cfg.Memory.PersistTypes,
 	)
-	workingSvc := service.NewWorkingMemoryService(workingRepo, cfg.History.ShortTermTurns)
+	workingSvc := service.NewWorkingMemoryService(workingRepo, cfg.History.ShortTermTurns, tools.GetWorkspaceRoot())
 
 	roleRepo := repository.NewFileRoleStore("./data/roles.json")
 	roleSvc := service.NewRoleService(roleRepo, strings.TrimSpace(cfg.Persona.FilePath))

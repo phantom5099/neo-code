@@ -3,8 +3,9 @@ package core
 import (
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
 	"go-llm-demo/internal/tui/components"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 func (m Model) View() string {
@@ -121,6 +122,7 @@ func RenderHelp(width int) string {
 		desc string
 	}{
 		{"/help", "显示帮助"},
+		{"/pwd | /workspace", "显示当前工作区目录"},
 		{"/apikey <env_name>", "切换 API Key 变量名"},
 		{"/provider <name>", "切换模型提供商"},
 		{"/switch <model>", "切换模型"},

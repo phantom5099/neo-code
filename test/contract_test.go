@@ -3,7 +3,7 @@ package test
 import (
 	"testing"
 
-	"go-llm-demo/api/proto"           // 引入我们的“新契约”
+	"go-llm-demo/api/proto"              // 引入我们的“新契约”
 	"go-llm-demo/internal/server/domain" // 引入“旧后端模型”
 )
 

@@ -18,6 +18,13 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+const (
+	toolStatusPrefix         = "[TOOL_STATUS]"
+	toolContextPrefix        = "[TOOL_CONTEXT]"
+	maxToolContextOutputSize = 4000
+	maxToolContextMessages   = 3
+)
+
 // Update 处理 Bubble Tea 事件并驱动聊天状态更新。
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
@@ -80,62 +87,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.toolExecuting = true
 					mu.Unlock()
 
-					// 显示工具执行中提示
+					paramsMap := map[string]interface{}{}
 					if toolParams, ok := jsonData["params"].(map[string]interface{}); ok {
-						if filePath, ok := toolParams["filePath"].(string); ok && toolName == "read" {
-							m.AddMessage("system", fmt.Sprintf("read:正在读取%s文件...", filePath))
-						} else if filePath, ok := toolParams["filePath"].(string); ok && (toolName == "edit" || toolName == "write") {
-							m.AddMessage("system", fmt.Sprintf("%s:正在处理%s文件...", toolName, filePath))
-						} else {
-							m.AddMessage("system", fmt.Sprintf("%s:正在执行工具...", toolName))
-						}
+						paramsMap = tools.NormalizeParams(toolParams)
 					}
+
+					// 显示工具执行中提示（仅用于 UI，不参与模型上下文）
+					m.AddMessage("system", formatToolStatusMessage(toolName, paramsMap))
 
 					// 在goroutine中执行工具调用
 					return m, func() tea.Msg {
-						var tool tools.Tool
-						switch toolName {
-						case "read":
-							tool = &tools.ReadTool{}
-						case "write":
-							tool = &tools.WriteTool{}
-						case "edit":
-							tool = &tools.EditTool{}
-						case "bash":
-							tool = &tools.BashTool{}
-						case "list":
-							tool = &tools.ListTool{}
-						case "grep":
-							tool = &tools.GrepTool{}
-						default:
+						call := domain.ToolCall{Tool: toolName, Params: paramsMap}
+						result := tools.GlobalRegistry.Execute(call)
+						if result == nil {
 							mu := m.mutex()
 							mu.Lock()
 							m.toolExecuting = false
 							mu.Unlock()
-							return ToolErrorMsg{Err: fmt.Errorf("不支持的工具: %s", toolName)}
+							return ToolErrorMsg{Err: fmt.Errorf("工具执行失败: 空返回")}
 						}
-
-						var paramsMap map[string]interface{}
-						if paramsRaw, ok := jsonData["params"]; ok {
-							if paramsCasted, ok := paramsRaw.(map[string]interface{}); ok {
-								paramsMap = convertSnakeCaseToCamelCase(paramsCasted)
-							} else {
-								mu := m.mutex()
-								mu.Lock()
-								m.toolExecuting = false
-								mu.Unlock()
-								return ToolErrorMsg{Err: fmt.Errorf("工具参数格式错误")}
-							}
-						} else {
-							paramsMap = make(map[string]interface{})
-						}
-
-						result := tool.Run(paramsMap)
-
-						if result.Success {
-							return ToolResultMsg{Result: result}
-						}
-						return ToolErrorMsg{Err: fmt.Errorf("%s", result.Error)}
+						return ToolResultMsg{Result: result}
 					}
 				}
 			}
@@ -192,8 +163,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		mu.Lock()
 		m.toolExecuting = false
 		mu.Unlock()
-		// 将工具执行结果添加为系统消息，然后重新获取AI响应
-		m.AddMessage("system", fmt.Sprintf("工具执行结果: %s", msg.Result.Output))
+		// 将结构化工具上下文添加为系统消息，然后重新获取AI响应
+		m.AddMessage("system", formatToolContextMessage(msg.Result))
 		m.AddMessage("assistant", "")
 		m.generating = true
 		m.refreshViewport()
@@ -207,8 +178,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		mu.Lock()
 		m.toolExecuting = false
 		mu.Unlock()
-		// 将工具执行错误添加为系统消息
-		m.AddMessage("system", fmt.Sprintf("工具执行错误: %v", msg.Err))
+		// 将工具执行错误添加为结构化系统上下文
+		m.AddMessage("system", formatToolErrorContext(msg.Err))
 		m.AddMessage("assistant", "")
 		m.generating = true
 		m.refreshViewport()
@@ -328,7 +299,7 @@ func (m *Model) handleCommand(input string) (tea.Model, tea.Cmd) {
 	cmd := fields[0]
 	args := fields[1:]
 	if !m.apiKeyReady && !isAPIKeyRecoveryCommand(cmd) {
-		m.AddMessage("assistant", "当前 API Key 未通过校验，仅支持 /apikey <env_name>、/provider <name>、/help、/models、/switch <model> 或 /exit。")
+		m.AddMessage("assistant", "当前 API Key 未通过校验，仅支持 /apikey <env_name>、/provider <name>、/help、/models、/switch <model>、/pwd（/workspace）或 /exit。")
 		return *m, nil
 	}
 
@@ -459,6 +430,20 @@ func (m *Model) handleCommand(input string) (tea.Model, tea.Cmd) {
 		}
 		list := strings.Join(models, "\n  - ")
 		m.AddMessage("assistant", fmt.Sprintf("可用模型:\n  - %s", list))
+	case "/pwd", "/workspace":
+		if len(args) > 0 {
+			m.AddMessage("assistant", "用法: /pwd 或 /workspace")
+			return *m, nil
+		}
+		root := strings.TrimSpace(m.workspaceRoot)
+		if root == "" {
+			root = tools.GetWorkspaceRoot()
+		}
+		if strings.TrimSpace(root) == "" {
+			m.AddMessage("assistant", "当前工作区: 未知")
+			return *m, nil
+		}
+		m.AddMessage("assistant", fmt.Sprintf("当前工作区: %s", root))
 	case "/memory":
 		stats, err := m.client.GetMemoryStats(context.Background())
 		if err != nil {
@@ -519,7 +504,7 @@ func (m *Model) handleCommand(input string) (tea.Model, tea.Cmd) {
 
 func isAPIKeyRecoveryCommand(cmd string) bool {
 	switch cmd {
-	case "/apikey", "/provider", "/help", "/models", "/switch", "/exit", "/quit", "/q":
+	case "/apikey", "/provider", "/help", "/models", "/switch", "/pwd", "/workspace", "/exit", "/quit", "/q":
 		return true
 	default:
 		return false
@@ -563,9 +548,18 @@ func (m *Model) buildMessages() []infra.Message {
 	mu.Lock()
 	defer mu.Unlock()
 	result := make([]infra.Message, 0, len(m.messages))
+	keepToolContextIndex := recentToolContextIndexes(m.messages, maxToolContextMessages)
 
 	// 按照消息的原始时间顺序进行迭代
-	for _, msg := range m.messages {
+	for idx, msg := range m.messages {
+		if msg.Role == "system" && isTransientToolStatusMessage(msg.Content) {
+			continue
+		}
+		if msg.Role == "system" && isToolContextMessage(msg.Content) {
+			if _, ok := keepToolContextIndex[idx]; !ok {
+				continue
+			}
+		}
 		// 跳过空的 assistant 消息
 		if msg.Role == "assistant" && strings.TrimSpace(msg.Content) == "" {
 			continue
@@ -622,25 +616,98 @@ func (m *Model) sendCodeToAI(code string) tea.Cmd {
 	return m.streamResponse(messages)
 }
 
-// convertSnakeCaseToCamelCase 将snake_case键转换为camelCase
-func convertSnakeCaseToCamelCase(params map[string]interface{}) map[string]interface{} {
-	result := make(map[string]interface{})
-	for key, value := range params {
-		// 将snake_case转换为camelCase
-		parts := strings.Split(key, "_")
-		if len(parts) > 1 {
-			camelKey := parts[0]
-			for i := 1; i < len(parts); i++ {
-				if len(parts[i]) > 0 {
-					camelKey += strings.ToUpper(parts[i][:1]) + parts[i][1:]
-				}
-			}
-			result[camelKey] = value
-		} else {
-			result[key] = value
+func isTransientToolStatusMessage(content string) bool {
+	return strings.HasPrefix(strings.TrimSpace(content), toolStatusPrefix)
+}
+
+func isToolContextMessage(content string) bool {
+	return strings.HasPrefix(strings.TrimSpace(content), toolContextPrefix)
+}
+
+func recentToolContextIndexes(messages []Message, keep int) map[int]struct{} {
+	result := map[int]struct{}{}
+	if keep <= 0 || len(messages) == 0 {
+		return result
+	}
+	for i := len(messages) - 1; i >= 0 && len(result) < keep; i-- {
+		msg := messages[i]
+		if msg.Role == "system" && isToolContextMessage(msg.Content) {
+			result[i] = struct{}{}
 		}
 	}
 	return result
+}
+
+func formatToolStatusMessage(toolName string, params map[string]interface{}) string {
+	detail := ""
+	if filePath, ok := params["filePath"].(string); ok && strings.TrimSpace(filePath) != "" {
+		detail = " file=" + strings.TrimSpace(filePath)
+	} else if path, ok := params["path"].(string); ok && strings.TrimSpace(path) != "" {
+		detail = " path=" + strings.TrimSpace(path)
+	} else if workdir, ok := params["workdir"].(string); ok && strings.TrimSpace(workdir) != "" {
+		detail = " workdir=" + strings.TrimSpace(workdir)
+	}
+	return fmt.Sprintf("%s tool=%s%s", toolStatusPrefix, strings.TrimSpace(toolName), detail)
+}
+
+func formatToolContextMessage(result *tools.ToolResult) string {
+	if result == nil {
+		return toolContextPrefix + "\n" + "tool=unknown\n" + "success=false\n" + "error:\n工具返回为空"
+	}
+
+	builder := strings.Builder{}
+	builder.WriteString(toolContextPrefix)
+	builder.WriteString("\n")
+	builder.WriteString(fmt.Sprintf("tool=%s\n", strings.TrimSpace(result.ToolName)))
+	builder.WriteString(fmt.Sprintf("success=%t\n", result.Success))
+
+	if len(result.Metadata) > 0 {
+		if encoded, err := json.Marshal(result.Metadata); err == nil {
+			builder.WriteString("metadata=")
+			builder.WriteString(string(encoded))
+			builder.WriteString("\n")
+		}
+	}
+
+	if result.Success {
+		output := strings.TrimSpace(result.Output)
+		if output != "" {
+			builder.WriteString("output:\n")
+			builder.WriteString(truncateForContext(output, maxToolContextOutputSize))
+		}
+	} else {
+		errText := strings.TrimSpace(result.Error)
+		if errText == "" {
+			errText = strings.TrimSpace(result.Output)
+		}
+		if errText != "" {
+			builder.WriteString("error:\n")
+			builder.WriteString(truncateForContext(errText, maxToolContextOutputSize))
+		}
+	}
+
+	return builder.String()
+}
+
+func formatToolErrorContext(err error) string {
+	errText := "未知错误"
+	if err != nil {
+		errText = err.Error()
+	}
+	return toolContextPrefix + "\n" + "tool=unknown\n" + "success=false\n" + "error:\n" + truncateForContext(errText, maxToolContextOutputSize)
+}
+
+func truncateForContext(text string, maxLen int) string {
+	trimmed := strings.TrimSpace(text)
+	if maxLen <= 0 || len(trimmed) <= maxLen {
+		return trimmed
+	}
+	suffix := fmt.Sprintf("\n... (truncated, total=%d chars)", len(trimmed))
+	keep := maxLen - len(suffix)
+	if keep < 0 {
+		keep = 0
+	}
+	return trimmed[:keep] + suffix
 }
 
 func runCodeCmd(code string) tea.Cmd {

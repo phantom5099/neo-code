@@ -5,13 +5,14 @@ import (
 	"sync"
 	"time"
 
+	"go-llm-demo/configs"
+	"go-llm-demo/internal/tui/infra"
+
 	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
-	"github.com/charmbracelet/bubbletea"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"go-llm-demo/configs"
-	"go-llm-demo/internal/tui/infra"
 )
 
 type Mode int
@@ -43,6 +44,8 @@ type Model struct {
 	client  infra.ChatClient
 	persona string
 
+	workspaceRoot string
+
 	toolExecuting bool
 	apiKeyReady   bool
 	configPath    string
@@ -64,7 +67,7 @@ type Message struct {
 
 // NewModel 创建 TUI 状态模型。
 // historyTurns 用于限制发送给后端的短期对话轮数，避免原始消息无限增长。
-func NewModel(client infra.ChatClient, persona string, historyTurns int, configPath string) Model {
+func NewModel(client infra.ChatClient, persona string, historyTurns int, configPath, workspaceRoot string) Model {
 	stats, _ := client.GetMemoryStats(context.Background())
 	if stats == nil {
 		stats = &infra.MemoryStats{}
@@ -106,6 +109,7 @@ func NewModel(client infra.ChatClient, persona string, historyTurns int, configP
 		cmdHistIndex:   -1,
 		client:         client,
 		persona:        persona,
+		workspaceRoot:  workspaceRoot,
 		apiKeyReady:    configs.RuntimeAPIKey() != "",
 		configPath:     configPath,
 		textarea:       input,

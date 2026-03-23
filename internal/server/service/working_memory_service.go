@@ -16,11 +16,12 @@ type workingMemoryServiceImpl struct {
 	maxRecentTurns   int
 	maxOpenQuestions int
 	maxRecentFiles   int
+	workspaceRoot    string
 }
 
 // NewWorkingMemoryService 创建第一阶段的工作记忆服务。
 // 目标是把“最近几轮 + 当前任务 + 文件线索”整理成稳定的短期上下文。
-func NewWorkingMemoryService(repo domain.WorkingMemoryRepository, maxRecentTurns int) domain.WorkingMemoryService {
+func NewWorkingMemoryService(repo domain.WorkingMemoryRepository, maxRecentTurns int, workspaceRoot string) domain.WorkingMemoryService {
 	if maxRecentTurns <= 0 {
 		maxRecentTurns = 6
 	}
@@ -29,6 +30,7 @@ func NewWorkingMemoryService(repo domain.WorkingMemoryRepository, maxRecentTurns
 		maxRecentTurns:   maxRecentTurns,
 		maxOpenQuestions: 3,
 		maxRecentFiles:   6,
+		workspaceRoot:    strings.TrimSpace(workspaceRoot),
 	}
 }
 
@@ -41,7 +43,7 @@ func (s *workingMemoryServiceImpl) BuildContext(ctx context.Context, messages []
 	if err != nil {
 		return "", err
 	}
-	return formatWorkingMemoryContext(state), nil
+	return formatWorkingMemoryContext(state, s.workspaceRoot), nil
 }
 
 // Refresh 根据当前消息重建工作记忆快照。
@@ -176,11 +178,14 @@ func looksLikeOpenQuestion(text string) bool {
 	return containsAnyFold(trimmed, "怎么", "如何", "为什么", "是否", "在哪", "what", "how", "why", "where", "which")
 }
 
-func formatWorkingMemoryContext(state *domain.WorkingMemoryState) string {
+func formatWorkingMemoryContext(state *domain.WorkingMemoryState, workspaceRoot string) string {
 	if state == nil {
 		return ""
 	}
-	parts := make([]string, 0, 5)
+	parts := make([]string, 0, 6)
+	if strings.TrimSpace(workspaceRoot) != "" {
+		parts = append(parts, "Workspace root: "+workspaceRoot)
+	}
 	if state.CurrentTask != "" {
 		parts = append(parts, "Current task: "+domain.SummarizeText(state.CurrentTask, 180))
 	}
