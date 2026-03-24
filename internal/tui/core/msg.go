@@ -67,6 +67,10 @@ type RefreshMemoryMsg struct{}
 
 func (RefreshMemoryMsg) isMsg() {}
 
+type RefreshTodoMsg struct{}
+
+func (RefreshTodoMsg) isMsg() {}
+
 type streamNextChunk struct {
 	stream <-chan string
 }

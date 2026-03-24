@@ -76,7 +76,7 @@ func TestAppConfigurationValidateBaseRejectsUnsupportedProvider(t *testing.T) {
 	cfg.AI.Provider = "unknown"
 
 	err := cfg.ValidateBase()
-	if err == nil || !strings.Contains(err.Error(), "unsupported ai.provider") {
+	if err == nil || !strings.Contains(err.Error(), "不支持的 ai.provider") {
 		t.Fatalf("expected unsupported provider error, got: %v", err)
 	}
 }

@@ -19,10 +19,8 @@ import (
 )
 
 const (
-	toolStatusPrefix         = "[TOOL_STATUS]"
-	toolContextPrefix        = "[TOOL_CONTEXT]"
-	maxToolContextOutputSize = 4000
-	maxToolContextMessages   = 3
+	toolStatusPrefix  = "[TOOL_STATUS]"
+	toolContextPrefix = "[TOOL_CONTEXT]"
 )
 
 // Update 处理 Bubble Tea 事件并驱动聊天状态更新。
@@ -73,8 +71,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		mu.Unlock()
 
-		// 当前工具协议约定：模型如果想调用工具，需要把最后一条 assistant 消息完整输出为
-		// {"tool":"...","params":{...}} 结构。这里在流结束后统一解析，避免半截 JSON 被误触发。
+		// 检查最后一条AI消息是否为JSON格式的工具调用
 		if shouldCheckToolCall {
 			var jsonData map[string]interface{}
 			if err := json.Unmarshal([]byte(lastContent), &jsonData); err == nil {
@@ -156,6 +153,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		return m, nil
 
+	case RefreshTodoMsg:
+		todos, err := m.client.GetTodoList(context.Background())
+		if err == nil {
+			m.todos = todos
+		}
+		m.refreshViewport()
+		return m, nil
+
 	case ExitMsg:
 		return m, tea.Quit
 
@@ -165,14 +170,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.toolExecuting = false
 		mu.Unlock()
 		// 将结构化工具上下文添加为系统消息，然后重新获取AI响应
-		m.AddMessage("system", formatToolContextMessage(msg.Result))
+		m.AddMessage("system", m.formatToolContextMessage(msg.Result))
 		m.AddMessage("assistant", "")
 		m.generating = true
 		m.refreshViewport()
 
 		// 构建包含工具结果的消息并重新请求AI
 		messages := m.buildMessages()
-		return m, m.streamResponse(messages)
+		return m, tea.Batch(
+			m.streamResponse(messages),
+			func() tea.Msg { return RefreshTodoMsg{} },
+		)
 
 	case ToolErrorMsg:
 		mu := m.mutex()
@@ -180,14 +188,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.toolExecuting = false
 		mu.Unlock()
 		// 将工具执行错误添加为结构化系统上下文
-		m.AddMessage("system", formatToolErrorContext(msg.Err))
+		m.AddMessage("system", m.formatToolErrorContext(msg.Err))
 		m.AddMessage("assistant", "")
 		m.generating = true
 		m.refreshViewport()
 
 		// 构建包含错误信息的消息并重新请求AI
 		messages := m.buildMessages()
-		return m, m.streamResponse(messages)
+		return m, tea.Batch(
+			m.streamResponse(messages),
+			func() tea.Msg { return RefreshTodoMsg{} },
+		)
 	}
 
 	return m, cmd
@@ -531,9 +542,7 @@ func (m *Model) buildMessages() []infra.Message {
 	mu.Lock()
 	defer mu.Unlock()
 	result := make([]infra.Message, 0, len(m.messages))
-	// 工具结果会被注入成 system 上下文，但只保留最近几条，
-	// 否则连续工具链很容易把真正的对话历史挤出上下文窗口。
-	keepToolContextIndex := recentToolContextIndexes(m.messages, maxToolContextMessages)
+	keepToolContextIndex := recentToolContextIndexes(m.messages, m.maxToolContextMessages)
 
 	// 按照消息的原始时间顺序进行迭代
 	for idx, msg := range m.messages {
@@ -541,9 +550,17 @@ func (m *Model) buildMessages() []infra.Message {
 			continue
 		}
 		if msg.Role == "system" && isToolContextMessage(msg.Content) {
+			content := msg.Content
 			if _, ok := keepToolContextIndex[idx]; !ok {
-				continue
+				// 对于较旧的工具执行结果，只保留状态头信息，隐藏其具体输出以节省 Token。
+				// 这样 Agent 仍然知道它已经执行过该工具及其结果。
+				content = stripToolOutput(content)
 			}
+			result = append(result, infra.Message{
+				Role:    msg.Role,
+				Content: content,
+			})
+			continue
 		}
 		// 跳过空的 assistant 消息
 		if msg.Role == "assistant" && strings.TrimSpace(msg.Content) == "" {
@@ -557,6 +574,23 @@ func (m *Model) buildMessages() []infra.Message {
 	}
 
 	return result
+}
+
+// stripToolOutput 移除工具上下文消息中的详细输出，仅保留工具名和执行状态。
+func stripToolOutput(content string) string {
+	lines := strings.Split(content, "\n")
+	var result []string
+	for _, line := range lines {
+		// 保留标识头、工具名、成功状态和元数据，丢弃具体的输出/错误正文。
+		if strings.HasPrefix(line, toolContextPrefix) ||
+			strings.HasPrefix(line, "tool=") ||
+			strings.HasPrefix(line, "success=") ||
+			strings.HasPrefix(line, "metadata=") {
+			result = append(result, line)
+		}
+	}
+	result = append(result, "output: (该历史输出已由系统自动压缩以节省 Token 窗口)")
+	return strings.Join(result, "\n")
 }
 
 func (m *Model) streamResponse(messages []infra.Message) tea.Cmd {
@@ -635,13 +669,11 @@ func formatToolStatusMessage(toolName string, params map[string]interface{}) str
 	return fmt.Sprintf("%s tool=%s%s", toolStatusPrefix, strings.TrimSpace(toolName), detail)
 }
 
-func formatToolContextMessage(result *tools.ToolResult) string {
+func (m *Model) formatToolContextMessage(result *tools.ToolResult) string {
 	if result == nil {
 		return toolContextPrefix + "\n" + "tool=unknown\n" + "success=false\n" + "error:\n工具返回为空"
 	}
 
-	// 这里故意使用稳定的纯文本 key/value 结构，而不是直接把 ToolResult 原样塞回模型：
-	// 一方面更容易截断超长输出，另一方面也能减少不同工具返回格式带来的歧义。
 	builder := strings.Builder{}
 	builder.WriteString(toolContextPrefix)
 	builder.WriteString("\n")
@@ -660,7 +692,7 @@ func formatToolContextMessage(result *tools.ToolResult) string {
 		output := strings.TrimSpace(result.Output)
 		if output != "" {
 			builder.WriteString("output:\n")
-			builder.WriteString(truncateForContext(output, maxToolContextOutputSize))
+			builder.WriteString(truncateForContext(output, m.maxToolContextOutputSize))
 		}
 	} else {
 		errText := strings.TrimSpace(result.Error)
@@ -669,19 +701,19 @@ func formatToolContextMessage(result *tools.ToolResult) string {
 		}
 		if errText != "" {
 			builder.WriteString("error:\n")
-			builder.WriteString(truncateForContext(errText, maxToolContextOutputSize))
+			builder.WriteString(truncateForContext(errText, m.maxToolContextOutputSize))
 		}
 	}
 
 	return builder.String()
 }
 
-func formatToolErrorContext(err error) string {
+func (m *Model) formatToolErrorContext(err error) string {
 	errText := "未知错误"
 	if err != nil {
 		errText = err.Error()
 	}
-	return toolContextPrefix + "\n" + "tool=unknown\n" + "success=false\n" + "error:\n" + truncateForContext(errText, maxToolContextOutputSize)
+	return toolContextPrefix + "\n" + "tool=unknown\n" + "success=false\n" + "error:\n" + truncateForContext(errText, m.maxToolContextOutputSize)
 }
 
 func truncateForContext(text string, maxLen int) string {
@@ -689,12 +721,24 @@ func truncateForContext(text string, maxLen int) string {
 	if maxLen <= 0 || len(trimmed) <= maxLen {
 		return trimmed
 	}
-	suffix := fmt.Sprintf("\n... (truncated, total=%d chars)", len(trimmed))
-	keep := maxLen - len(suffix)
-	if keep < 0 {
-		keep = 0
+
+	// 采用“头尾保留”策略，中间用省略号代替。
+	// 这在读取代码或查看长日志时非常有用（可以看到开头和结尾的报错）。
+	totalLen := len(trimmed)
+	suffix := fmt.Sprintf("\n... (已截断 %d 字符，总计 %d)\n", totalLen-maxLen, totalLen)
+
+	// 保留头部的 60% 和尾部的 40% 空间
+	headLen := int(float64(maxLen-len(suffix)) * 0.6)
+	tailLen := (maxLen - len(suffix)) - headLen
+
+	if headLen < 0 {
+		headLen = 0
 	}
-	return trimmed[:keep] + suffix
+	if tailLen < 0 {
+		tailLen = 0
+	}
+
+	return trimmed[:headLen] + suffix + trimmed[totalLen-tailLen:]
 }
 
 func runCodeCmd(code string) tea.Cmd {

@@ -14,14 +14,17 @@ import (
 
 type Message = domain.Message
 
+// ChatClient 定义 TUI 侧依赖的最小聊天与记忆接口。
 type ChatClient interface {
 	Chat(ctx context.Context, messages []Message, model string) (<-chan string, error)
 	GetMemoryStats(ctx context.Context) (*MemoryStats, error)
 	ClearMemory(ctx context.Context) error
 	ClearSessionMemory(ctx context.Context) error
+	GetTodoList(ctx context.Context) ([]domain.Todo, error)
 	DefaultModel() string
 }
 
+// MemoryStats 是 TUI 展示 memory 面板所需的聚合统计信息。
 type MemoryStats struct {
 	PersistentItems int
 	SessionItems    int
@@ -36,6 +39,7 @@ type localChatClient struct {
 	roleSvc    domain.RoleService
 	memorySvc  domain.MemoryService
 	workingSvc domain.WorkingMemoryService
+	todoSvc    domain.TodoService
 	config     *configs.AppConfiguration
 }
 
@@ -71,7 +75,18 @@ func NewLocalChatClient() (ChatClient, error) {
 	roleRepo := repository.NewFileRoleStore("./data/roles.json")
 	roleSvc := service.NewRoleService(roleRepo, strings.TrimSpace(cfg.Persona.FilePath))
 
-	return &localChatClient{roleSvc: roleSvc, memorySvc: memorySvc, workingSvc: workingSvc, config: cfg}, nil
+	todoRepo := repository.NewInMemoryTodoRepository()
+	todoSvc := service.NewTodoService(todoRepo)
+	tools.GlobalRegistry.Register(tools.NewTodoTool(todoSvc))
+
+	// 当前仍以内进程方式组装服务，后续替换为真实 transport 时可继续复用该接口。
+	return &localChatClient{
+		roleSvc:    roleSvc,
+		memorySvc:  memorySvc,
+		workingSvc: workingSvc,
+		todoSvc:    todoSvc,
+		config:     cfg,
+	}, nil
 }
 
 // Chat 通过本地聊天服务发送消息。
@@ -80,7 +95,7 @@ func (c *localChatClient) Chat(ctx context.Context, messages []Message, model st
 	if err != nil {
 		return nil, err
 	}
-	chatSvc := service.NewChatService(c.memorySvc, c.workingSvc, c.roleSvc, chatProvider)
+	chatSvc := service.NewChatService(c.memorySvc, c.workingSvc, c.todoSvc, c.roleSvc, chatProvider)
 	return chatSvc.Send(ctx, &domain.ChatRequest{Messages: messages, Model: model})
 }
 
@@ -115,6 +130,14 @@ func (c *localChatClient) ClearSessionMemory(ctx context.Context) error {
 		return c.workingSvc.Clear(ctx)
 	}
 	return nil
+}
+
+// GetTodoList 返回当前任务清单。
+func (c *localChatClient) GetTodoList(ctx context.Context) ([]domain.Todo, error) {
+	if c.todoSvc == nil {
+		return nil, nil
+	}
+	return c.todoSvc.ListTodos(ctx)
 }
 
 // DefaultModel 返回 TUI 使用的默认模型。

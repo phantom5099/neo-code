@@ -38,7 +38,7 @@ func (s *FileRoleStore) GetByID(ctx context.Context, id string) (*domain.Role, e
 		}
 	}
 
-	return nil, errors.New("role not found")
+	return nil, errors.New("角色不存在")
 }
 
 // GetByName 返回指定名称对应的角色。
@@ -57,7 +57,7 @@ func (s *FileRoleStore) GetByName(ctx context.Context, name string) (*domain.Rol
 		}
 	}
 
-	return nil, errors.New("role not found")
+	return nil, errors.New("角色不存在")
 }
 
 // List 返回所有已存储的角色。
@@ -122,7 +122,7 @@ func (s *FileRoleStore) Delete(ctx context.Context, id string) error {
 	}
 
 	if len(newRoles) == len(roles) {
-		return errors.New("role not found")
+		return errors.New("角色不存在")
 	}
 
 	return s.writeAllLocked(newRoles)

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"go-llm-demo/configs"
+	"go-llm-demo/internal/server/domain"
 	"go-llm-demo/internal/tui/infra"
 
 	"github.com/charmbracelet/bubbles/cursor"
@@ -15,6 +16,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// Mode 表示 TUI 当前所处的主交互模式。
 type Mode int
 
 const (
@@ -24,19 +26,23 @@ const (
 	ModeMemory
 )
 
+// Model 保存 Bubble Tea 运行所需的全部界面状态。
 type Model struct {
 	width   int
 	height  int
 	mode    Mode
 	focused string
 
-	messages     []Message
-	historyTurns int
+	messages                 []Message
+	historyTurns             int
+	maxToolContextMessages   int
+	maxToolContextOutputSize int
 
 	generating  bool
 	activeModel string
 
 	memoryStats infra.MemoryStats
+	todos       []domain.Todo
 
 	commandHistory []string
 	cmdHistIndex   int
@@ -58,6 +64,7 @@ type Model struct {
 	mu *sync.Mutex
 }
 
+// Message 是 TUI 内部使用的聊天消息表示。
 type Message struct {
 	Role      string
 	Content   string
@@ -72,10 +79,22 @@ func NewModel(client infra.ChatClient, persona string, historyTurns int, configP
 	if stats == nil {
 		stats = &infra.MemoryStats{}
 	}
+
+	maxToolContextMessages := 3
+	maxToolContextOutputSize := 4000
+	if configs.GlobalAppConfig != nil {
+		if historyTurns <= 0 {
+			historyTurns = configs.GlobalAppConfig.History.ShortTermTurns
+		}
+		maxToolContextMessages = configs.GlobalAppConfig.History.MaxToolContextMessages
+		maxToolContextOutputSize = configs.GlobalAppConfig.History.MaxToolContextOutputSize
+	}
+
 	if historyTurns <= 0 {
 		historyTurns = 6
 	}
 
+	// 输入框和视口在初始化阶段统一配置，后续 Update/View 只处理状态变化。
 	input := textarea.New()
 	focusedStyle, blurredStyle := textarea.DefaultStyles()
 	focusedStyle.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color("#61AFEF"))
@@ -99,23 +118,25 @@ func NewModel(client infra.ChatClient, persona string, historyTurns int, configP
 	vp.SetContent("")
 
 	return Model{
-		mode:           ModeChat,
-		focused:        "input",
-		messages:       make([]Message, 0),
-		historyTurns:   historyTurns,
-		activeModel:    client.DefaultModel(),
-		memoryStats:    *stats,
-		commandHistory: make([]string, 0),
-		cmdHistIndex:   -1,
-		client:         client,
-		persona:        persona,
-		workspaceRoot:  workspaceRoot,
-		apiKeyReady:    configs.RuntimeAPIKey() != "",
-		configPath:     configPath,
-		textarea:       input,
-		viewport:       vp,
-		autoScroll:     true,
-		mu:             &sync.Mutex{},
+		mode:                     ModeChat,
+		focused:                  "input",
+		messages:                 make([]Message, 0),
+		historyTurns:             historyTurns,
+		maxToolContextMessages:   maxToolContextMessages,
+		maxToolContextOutputSize: maxToolContextOutputSize,
+		activeModel:              client.DefaultModel(),
+		memoryStats:              *stats,
+		commandHistory:           make([]string, 0),
+		cmdHistIndex:             -1,
+		client:                   client,
+		persona:                  persona,
+		workspaceRoot:            workspaceRoot,
+		apiKeyReady:              configs.RuntimeAPIKey() != "",
+		configPath:               configPath,
+		textarea:                 input,
+		viewport:                 vp,
+		autoScroll:               true,
+		mu:                       &sync.Mutex{},
 	}
 }
 
@@ -182,6 +203,7 @@ func (m *Model) TrimHistory(maxTurns int) {
 		return
 	}
 
+	// 系统消息承载 persona、工具上下文等结构化信息，不参与普通轮次裁剪。
 	var system []Message
 	var others []Message
 

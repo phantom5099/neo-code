@@ -3,6 +3,7 @@ package core
 import (
 	"strings"
 
+	"go-llm-demo/internal/server/domain"
 	"go-llm-demo/internal/tui/components"
 
 	"github.com/charmbracelet/lipgloss"
@@ -14,9 +15,13 @@ func (m Model) View() string {
 	}
 
 	statusHeight := 1
+	todoHeight := 0
+	if len(m.todos) > 0 {
+		todoHeight = minInt(len(m.todos)+2, 8)
+	}
 	helpHeight := 0
 	if m.mode == ModeHelp {
-		helpHeight = minInt(20, m.height-statusHeight-3)
+		helpHeight = minInt(20, m.height-statusHeight-todoHeight-3)
 	}
 
 	inputContent := m.renderInputArea()
@@ -25,7 +30,7 @@ func (m Model) View() string {
 		inputHeight = 4
 	}
 
-	contentHeight := m.height - statusHeight - inputHeight - helpHeight
+	contentHeight := m.height - statusHeight - inputHeight - helpHeight - todoHeight
 	if contentHeight < 3 {
 		contentHeight = 3
 	}
@@ -51,15 +56,62 @@ func (m Model) View() string {
 		Width(m.width).
 		Render(inputContent)
 
+	var todoArea string
+	if todoHeight > 0 {
+		todoArea = lipgloss.NewStyle().
+			Width(m.width).
+			Height(todoHeight).
+			Border(lipgloss.NormalBorder(), true, false, false, false).
+			BorderForeground(lipgloss.Color("#3E4452")).
+			Render(m.renderTodoArea())
+	}
+
 	if m.mode == ModeHelp {
 		help := lipgloss.NewStyle().
 			Width(m.width).
 			Height(helpHeight).
 			Render(RenderHelp(m.width))
-		return lipgloss.JoinVertical(lipgloss.Left, statusBar, chatArea, help, inputArea)
+		return lipgloss.JoinVertical(lipgloss.Left, statusBar, chatArea, todoArea, help, inputArea)
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left, statusBar, chatArea, inputArea)
+	return lipgloss.JoinVertical(lipgloss.Left, statusBar, chatArea, todoArea, inputArea)
+}
+
+func (m Model) renderTodoArea() string {
+	if len(m.todos) == 0 {
+		return ""
+	}
+
+	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#E5C07B")).Bold(true)
+	todoStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#ABB2BF"))
+	doneStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#5C6370")).Strikethrough(true)
+	inProgressStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#61AFEF"))
+
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("任务清单:"))
+	b.WriteString("\n")
+
+	// 仅显示最近的 6 个任务
+	displayTodos := m.todos
+	if len(displayTodos) > 6 {
+		displayTodos = displayTodos[len(displayTodos)-6:]
+	}
+
+	for _, todo := range displayTodos {
+		icon := "[ ] "
+		style := todoStyle
+		if todo.Status == domain.TodoInProgress {
+			icon = "[/] "
+			style = inProgressStyle
+		} else if todo.Status == domain.TodoCompleted {
+			icon = "[x] "
+			style = doneStyle
+		}
+		b.WriteString(style.Render(icon + todo.Content))
+		b.WriteString("\n")
+	}
+
+	return b.String()
 }
 
 func countLines(s string) int {

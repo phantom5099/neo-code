@@ -10,6 +10,7 @@ import (
 	"github.com/bmatcuk/doublestar/v4"
 )
 
+// SecurityService 根据工具类型和目标对象给出允许、拒绝或询问的决策。
 type SecurityService interface {
 	Check(toolType string, target string) domain.Action
 }
@@ -22,6 +23,7 @@ type securityServiceImpl struct {
 	yellowList *domain.Config
 }
 
+// NewSecurityService 创建基于规则配置仓库的安全检查服务。
 func NewSecurityService(configRepo domain.SecurityConfigRepository) SecurityService {
 	return &securityServiceImpl{
 		configRepo: configRepo,
@@ -113,6 +115,7 @@ func ruleMatches(rule domain.Rule, toolType string, target string) bool {
 		return false
 	}
 
+	// Bash 规则匹配命令字符串；其余规则统一走 doublestar 路径/域名匹配。
 	if toolType == "Bash" {
 		return matchCommand(pattern, target)
 	}
@@ -126,6 +129,7 @@ func ruleMatches(rule domain.Rule, toolType string, target string) bool {
 }
 
 func matchCommand(pattern, command string) bool {
+	// 命令规则沿用类似 glob 的写法，再转换为正则以便复用配置表达力。
 	rePattern := regexp.QuoteMeta(pattern)
 	rePattern = strings.ReplaceAll(rePattern, `\*\*`, `.*`)
 	rePattern = strings.ReplaceAll(rePattern, `\*`, `.*`)

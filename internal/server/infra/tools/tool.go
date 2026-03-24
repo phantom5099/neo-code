@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"encoding/json"
 	"fmt"
 	"sort"
 
@@ -21,6 +20,7 @@ type ToolRegistry struct {
 	tools map[string]Tool
 }
 
+// NewToolRegistry 创建并注册默认工具集合。
 func NewToolRegistry() *ToolRegistry {
 	r := &ToolRegistry{tools: make(map[string]Tool)}
 	r.Register(&ReadTool{})
@@ -69,6 +69,7 @@ func (r *ToolRegistry) Execute(call domain.ToolCall) *ToolResult {
 	if tool == nil {
 		return &ToolResult{ToolName: call.Tool, Success: false, Error: fmt.Sprintf("不支持的工具: %s", call.Tool)}
 	}
+	// 统一规范参数命名，避免模型同时输出 snake_case 与 camelCase 时各工具重复兼容。
 	params := NormalizeParams(call.Params)
 	result := tool.Run(params)
 	if result == nil {
@@ -80,11 +81,7 @@ func (r *ToolRegistry) Execute(call domain.ToolCall) *ToolResult {
 	if result.Metadata == nil {
 		result.Metadata = map[string]interface{}{}
 	}
+	// 为后续日志、UI 展示和上下文回灌补齐最基础的工具元信息。
 	result.Metadata["tool"] = call.Tool
 	return result
-}
-
-// JsonMarshalIndent 用于缩进JSON编码。
-func JsonMarshalIndent(v interface{}, prefix, indent string) ([]byte, error) {
-	return json.MarshalIndent(v, prefix, indent)
 }

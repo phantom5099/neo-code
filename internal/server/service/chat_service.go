@@ -11,15 +11,17 @@ import (
 type chatServiceImpl struct {
 	memorySvc    domain.MemoryService
 	workingSvc   domain.WorkingMemoryService
+	todoSvc      domain.TodoService
 	roleSvc      domain.RoleService
 	chatProvider domain.ChatProvider
 }
 
-// NewChatService 使用记忆、角色和模型提供方依赖创建聊天服务。
-func NewChatService(memorySvc domain.MemoryService, workingSvc domain.WorkingMemoryService, roleSvc domain.RoleService, chatProvider domain.ChatProvider) domain.ChatGateway {
+// NewChatService 使用记忆、角色、任务清单和模型提供方依赖创建聊天服务。
+func NewChatService(memorySvc domain.MemoryService, workingSvc domain.WorkingMemoryService, todoSvc domain.TodoService, roleSvc domain.RoleService, chatProvider domain.ChatProvider) domain.ChatGateway {
 	return &chatServiceImpl{
 		memorySvc:    memorySvc,
 		workingSvc:   workingSvc,
+		todoSvc:      todoSvc,
 		roleSvc:      roleSvc,
 		chatProvider: chatProvider,
 	}
@@ -55,26 +57,31 @@ func (s *chatServiceImpl) Send(ctx context.Context, req *domain.ChatRequest) (<-
 			return nil, err
 		}
 	}
+	todoContext := ""
+	if s.todoSvc != nil {
+		todos, _ := s.todoSvc.ListTodos(ctx)
+		todoContext = buildTodoContext(todos)
+	}
+
 	if userInput != "" {
 		memoryContext, err := s.memorySvc.BuildContext(ctx, userInput)
 		if err != nil {
 			return nil, err
 		}
-		combinedContext := joinContextBlocks(workingContext, memoryContext)
+		combinedContext := joinContextBlocks(workingContext, todoContext, memoryContext)
 		if combinedContext != "" {
-			// 如果前面已经注入了 role prompt，则把工作记忆和长期记忆继续拼到同一条 system 消息中，
-			// 避免生成多条 system 消息打乱提示优先级。
 			if rolePrompt != "" && len(messages) > 0 && messages[0].Role == "system" {
 				messages[0].Content = rolePrompt + "\n\n" + combinedContext
 			} else {
 				messages = append([]domain.Message{{Role: "system", Content: combinedContext}}, messages...)
 			}
 		}
-	} else if workingContext != "" {
+	} else if workingContext != "" || todoContext != "" {
+		combinedContext := joinContextBlocks(workingContext, todoContext)
 		if rolePrompt != "" && len(messages) > 0 && messages[0].Role == "system" {
-			messages[0].Content = rolePrompt + "\n\n" + workingContext
+			messages[0].Content = rolePrompt + "\n\n" + combinedContext
 		} else {
-			messages = append([]domain.Message{{Role: "system", Content: workingContext}}, messages...)
+			messages = append([]domain.Message{{Role: "system", Content: combinedContext}}, messages...)
 		}
 	}
 
@@ -119,6 +126,24 @@ func (s *chatServiceImpl) latestUserInput(messages []domain.Message) string {
 		}
 	}
 	return ""
+}
+
+func buildTodoContext(todos []domain.Todo) string {
+	if len(todos) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("[TODO_LIST]\n")
+	for _, todo := range todos {
+		status := "pending"
+		if todo.Status == domain.TodoInProgress {
+			status = "in_progress"
+		} else if todo.Status == domain.TodoCompleted {
+			status = "completed"
+		}
+		sb.WriteString(fmt.Sprintf("- %s: %s (status: %s, priority: %s)\n", todo.ID, todo.Content, status, todo.Priority))
+	}
+	return sb.String()
 }
 
 func joinContextBlocks(blocks ...string) string {
