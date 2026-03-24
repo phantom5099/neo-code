@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"go-llm-demo/internal/server/domain"
 	"go-llm-demo/internal/tui/infra"
 )
 
@@ -29,6 +30,10 @@ func (fakeChatClient) ClearSessionMemory(context.Context) error {
 
 func (fakeChatClient) DefaultModel() string {
 	return "test-model"
+}
+
+func (fakeChatClient) GetTodoList(context.Context) ([]domain.Todo, error) {
+	return nil, nil
 }
 
 func TestBuildMessagesSkipsEmptyAssistantPlaceholder(t *testing.T) {
@@ -127,8 +132,8 @@ func TestBuildMessagesKeepsOnlyRecentToolContextMessages(t *testing.T) {
 			toolCtxCount++
 		}
 	}
-	if toolCtxCount != maxToolContextMessages {
-		t.Fatalf("expected %d tool context messages, got %d", maxToolContextMessages, toolCtxCount)
+	if toolCtxCount != 3 {
+		t.Fatalf("expected 3 tool context messages, got %d", toolCtxCount)
 	}
 
 	joined := ""
