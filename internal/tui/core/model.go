@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"go-llm-demo/configs"
-	"go-llm-demo/internal/tui/infra"
+	"go-llm-demo/internal/tui/services"
 	"go-llm-demo/internal/tui/state"
 
 	"github.com/charmbracelet/bubbles/cursor"
@@ -37,12 +37,12 @@ type Model struct {
 	generating  bool
 	activeModel string
 
-	memoryStats infra.MemoryStats
+	memoryStats services.MemoryStats
 
 	commandHistory []string
 	cmdHistIndex   int
 
-	client  infra.ChatClient
+	client  services.ChatClient
 	persona string
 
 	workspaceRoot string
@@ -61,10 +61,10 @@ type Model struct {
 
 // NewModel 创建 TUI 状态模型。
 // historyTurns 用于限制发送给后端的短期对话轮数，避免原始消息无限增长。
-func NewModel(client infra.ChatClient, persona string, historyTurns int, configPath, workspaceRoot string) Model {
+func NewModel(client services.ChatClient, persona string, historyTurns int, configPath, workspaceRoot string) Model {
 	stats, _ := client.GetMemoryStats(context.Background())
 	if stats == nil {
-		stats = &infra.MemoryStats{}
+		stats = &services.MemoryStats{}
 	}
 	if historyTurns <= 0 {
 		historyTurns = 6

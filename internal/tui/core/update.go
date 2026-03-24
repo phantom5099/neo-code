@@ -13,7 +13,7 @@ import (
 	"go-llm-demo/internal/server/domain"
 	"go-llm-demo/internal/server/infra/provider"
 	"go-llm-demo/internal/server/infra/tools"
-	"go-llm-demo/internal/tui/infra"
+	"go-llm-demo/internal/tui/services"
 	"go-llm-demo/internal/tui/state"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -527,11 +527,11 @@ func formatTypeStats(byType map[string]int) string {
 	return strings.Join(parts, ", ")
 }
 
-func (m *Model) buildMessages() []infra.Message {
+func (m *Model) buildMessages() []services.Message {
 	mu := m.mutex()
 	mu.Lock()
 	defer mu.Unlock()
-	result := make([]infra.Message, 0, len(m.messages))
+	result := make([]services.Message, 0, len(m.messages))
 	// 工具结果会被注入成 system 上下文，但只保留最近几条，
 	// 否则连续工具链很容易把真正的对话历史挤出上下文窗口。
 	keepToolContextIndex := recentToolContextIndexes(m.messages, maxToolContextMessages)
@@ -551,7 +551,7 @@ func (m *Model) buildMessages() []infra.Message {
 			continue
 		}
 		// 将非空消息按其原始角色和内容添加到结果中
-		result = append(result, infra.Message{
+		result = append(result, services.Message{
 			Role:    msg.Role,
 			Content: msg.Content,
 		})
@@ -560,7 +560,7 @@ func (m *Model) buildMessages() []infra.Message {
 	return result
 }
 
-func (m *Model) streamResponse(messages []infra.Message) tea.Cmd {
+func (m *Model) streamResponse(messages []services.Message) tea.Cmd {
 	stream, err := m.client.Chat(context.Background(), messages, m.activeModel)
 	if err != nil {
 		return func() tea.Msg { return StreamErrorMsg{Err: err} }

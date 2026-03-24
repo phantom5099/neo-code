@@ -6,18 +6,18 @@ import (
 	"strings"
 	"testing"
 
-	"go-llm-demo/internal/tui/infra"
+	"go-llm-demo/internal/tui/services"
 	"go-llm-demo/internal/tui/state"
 )
 
 type fakeChatClient struct{}
 
-func (fakeChatClient) Chat(context.Context, []infra.Message, string) (<-chan string, error) {
+func (fakeChatClient) Chat(context.Context, []services.Message, string) (<-chan string, error) {
 	return nil, errors.New("not implemented")
 }
 
-func (fakeChatClient) GetMemoryStats(context.Context) (*infra.MemoryStats, error) {
-	return &infra.MemoryStats{}, nil
+func (fakeChatClient) GetMemoryStats(context.Context) (*services.MemoryStats, error) {
+	return &services.MemoryStats{}, nil
 }
 
 func (fakeChatClient) ClearMemory(context.Context) error {
