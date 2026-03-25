@@ -74,6 +74,7 @@ func (b *BashTool) Run(params map[string]interface{}) *ToolResult {
 	}
 
 	// 使用动态选择的 shell 和参数创建命令
+	shell, shellArgs = preferredShellCommand(runtime.GOOS, command, exec.LookPath, shell, shellArgs)
 	cmd := exec.CommandContext(ctx, shell, shellArgs...)
 	cmd.Dir = workdir
 	var stdoutBuf, stderrBuf bytes.Buffer
@@ -100,4 +101,31 @@ func (b *BashTool) Run(params map[string]interface{}) *ToolResult {
 		result.Output += fmt.Sprintf("\nSTDERR: %s", stderrBuf.String())
 	}
 	return result
+}
+
+type shellLookup func(string) (string, error)
+
+func preferredShellCommand(goos, command string, lookPath shellLookup, shell string, shellArgs []string) (string, []string) {
+	switch goos {
+	case "windows":
+		for _, candidate := range []struct {
+			name string
+			args []string
+		}{
+			{name: "powershell", args: []string{"-Command", command}},
+			{name: "pwsh", args: []string{"-Command", command}},
+			{name: "cmd.exe", args: []string{"/C", command}},
+			{name: "cmd", args: []string{"/C", command}},
+		} {
+			if _, err := lookPath(candidate.name); err == nil {
+				return candidate.name, candidate.args
+			}
+		}
+		return "cmd", []string{"/C", command}
+	default:
+		if _, err := lookPath("bash"); err == nil {
+			return "bash", []string{"-lc", command}
+		}
+		return "sh", []string{"-c", command}
+	}
 }

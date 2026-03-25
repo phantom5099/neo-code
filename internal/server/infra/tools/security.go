@@ -2,6 +2,7 @@ package tools
 
 import (
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 
@@ -34,8 +35,9 @@ func getSecurityChecker() domain.SecurityChecker {
 // ApproveSecurityAsk 为指定的安全询问发放一次性放行许可。
 // 该许可会在下一次匹配到同一 (toolType, target) 时被消费。
 func ApproveSecurityAsk(toolType, target string) {
-	key := securityApprovalKey(toolType, target)
-	if key == "" {
+	key, err := securityApprovalKey(toolType, target)
+	if err != nil {
+		log.Printf("warning: failed to record security ask approval: %v", err)
 		return
 	}
 	securityAskApprovalMu.Lock()
@@ -44,8 +46,9 @@ func ApproveSecurityAsk(toolType, target string) {
 }
 
 func consumeSecurityAskApproval(toolType, target string) bool {
-	key := securityApprovalKey(toolType, target)
-	if key == "" {
+	key, err := securityApprovalKey(toolType, target)
+	if err != nil {
+		log.Printf("warning: failed to consume security ask approval: %v", err)
 		return false
 	}
 	securityAskApprovalMu.Lock()
@@ -62,13 +65,13 @@ func consumeSecurityAskApproval(toolType, target string) bool {
 	return true
 }
 
-func securityApprovalKey(toolType, target string) string {
+func securityApprovalKey(toolType, target string) (string, error) {
 	normalizedType := strings.ToLower(strings.TrimSpace(toolType))
 	normalizedTarget := strings.TrimSpace(target)
 	if normalizedType == "" || normalizedTarget == "" {
-		return ""
+		return "", fmt.Errorf("invalid security approval context: toolType=%q target=%q", toolType, target)
 	}
-	return normalizedType + "\x00" + normalizedTarget
+	return normalizedType + "\x00" + normalizedTarget, nil
 }
 
 func guardToolExecution(toolType, target, toolName string) *ToolResult {

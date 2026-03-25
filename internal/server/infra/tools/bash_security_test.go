@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -56,5 +57,39 @@ func TestBashTool_Run_AskBySecurity(t *testing.T) {
 	}
 	if result.Metadata["securityAction"] != string(domain.ActionAsk) {
 		t.Fatalf("unexpected security action: %#v", result.Metadata["securityAction"])
+	}
+}
+
+func TestPreferredShellCommandFallsBackToCmdOnWindows(t *testing.T) {
+	lookup := func(name string) (string, error) {
+		if name == "cmd.exe" {
+			return name, nil
+		}
+		return "", errors.New("not found")
+	}
+
+	shell, args := preferredShellCommand("windows", "echo hello", lookup, "powershell", []string{"-Command", "echo hello"})
+	if shell != "cmd.exe" {
+		t.Fatalf("expected cmd.exe fallback, got %q", shell)
+	}
+	if len(args) != 2 || args[0] != "/C" || args[1] != "echo hello" {
+		t.Fatalf("unexpected cmd.exe args: %#v", args)
+	}
+}
+
+func TestPreferredShellCommandFallsBackToShWithoutBash(t *testing.T) {
+	lookup := func(name string) (string, error) {
+		if name == "sh" {
+			return name, nil
+		}
+		return "", errors.New("not found")
+	}
+
+	shell, args := preferredShellCommand("linux", "echo hello", lookup, "bash", []string{"-lc", "echo hello"})
+	if shell != "sh" {
+		t.Fatalf("expected sh fallback, got %q", shell)
+	}
+	if len(args) != 2 || args[0] != "-c" || args[1] != "echo hello" {
+		t.Fatalf("unexpected sh args: %#v", args)
 	}
 }
