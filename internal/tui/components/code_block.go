@@ -241,7 +241,7 @@ func FormatCopyNotice(ref CodeBlockRef) string {
 	if lineCount == 0 && strings.TrimSpace(ref.Code) != "" {
 		lineCount = 1
 	}
-	return fmt.Sprintf("已复制 %s 代码块（%d 行）", lang, lineCount)
+	return fmt.Sprintf("Copied %s code block (%d lines)", lang, lineCount)
 }
 
 func isFenceLine(line string) bool {

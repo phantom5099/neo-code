@@ -53,49 +53,19 @@ func (ml MessageList) RenderLayout() RenderedChatLayout {
 		idx := i + 1
 		switch msg.Role {
 		case "user":
-			line := userMsgStyle.Render(fmt.Sprintf("你 [%d]:", idx)) + " " + wrapStyle.Render(msg.Content)
+			line := renderMessageLine(fmt.Sprintf("You [%d]:", idx), msg.Content, userMsgStyle, wrapStyle)
 			b.WriteString(line)
 			b.WriteString("\n\n")
 			row += strings.Count(line, "\n") + 2
 
 		case "assistant":
-			label := assistantMsgStyle.Render(fmt.Sprintf("Neo [%d]:", idx))
-			b.WriteString(label)
-			b.WriteString("\n")
-			row++
-
-			segments := ParseContentSegments(msg.Content)
-			if len(segments) == 0 {
-				segments = []ContentSegment{{Type: SegmentText, Text: "..."}}
-			}
-			blockIndex := 0
-			for _, segment := range segments {
-				switch segment.Type {
-				case SegmentCodeBlock:
-					blockIndex++
-					headerRow := row
-					codeLang := strings.TrimSpace(segment.Lang)
-					if codeLang == "" {
-						codeLang = DetectLanguage(segment.Code)
-					}
-					if codeLang == "" {
-						codeLang = "text"
-					}
-					b.WriteString(RenderCodeBlock(segment, contentWidth, CopyActionLabel()))
-					regions = append(regions, BuildCopyRegion(i, blockIndex, headerRow, segment.Code, codeLang))
-					row += strings.Count(RenderCodeBlock(segment, contentWidth, CopyActionLabel()), "\n")
-				case SegmentText:
-					text := renderTextSegment(segment.Text, contentWidth)
-					b.WriteString(text)
-					row += strings.Count(text, "\n")
-				}
-			}
-
-			b.WriteString("\n\n")
-			row += 2
+			rendered, assistantRegions, consumedRows := renderAssistantMessage(i, idx, msg.Content, contentWidth, row, assistantMsgStyle)
+			b.WriteString(rendered)
+			regions = append(regions, assistantRegions...)
+			row += consumedRows
 
 		case "system":
-			line := systemMsgStyle.Render("[系统]") + " " + wrapStyle.Render(msg.Content)
+			line := renderMessageLine("[System]", msg.Content, systemMsgStyle, wrapStyle)
 			b.WriteString(line)
 			b.WriteString("\n\n")
 			row += strings.Count(line, "\n") + 2
@@ -103,6 +73,69 @@ func (ml MessageList) RenderLayout() RenderedChatLayout {
 	}
 
 	return RenderedChatLayout{Content: b.String(), Regions: regions}
+}
+
+func renderMessageLine(label string, content string, labelStyle lipgloss.Style, wrapStyle lipgloss.Style) string {
+	return labelStyle.Render(label) + " " + wrapStyle.Render(content)
+}
+
+func renderAssistantMessage(messageIndex, displayIndex int, content string, width int, startRow int, labelStyle lipgloss.Style) (string, []ClickableRegion, int) {
+	var b strings.Builder
+	regions := make([]ClickableRegion, 0)
+	rows := 0
+
+	b.WriteString(labelStyle.Render(fmt.Sprintf("Neo [%d]:", displayIndex)))
+	b.WriteString("\n")
+	rows++
+
+	currentRow := startRow + rows
+	blockIndex := 0
+	for _, segment := range assistantSegments(content) {
+		rendered, region, consumedRows := renderAssistantSegment(messageIndex, &blockIndex, segment, width, currentRow)
+		b.WriteString(rendered)
+		if region != nil {
+			regions = append(regions, *region)
+		}
+		rows += consumedRows
+		currentRow += consumedRows
+	}
+
+	b.WriteString("\n\n")
+	rows += 2
+
+	return b.String(), regions, rows
+}
+
+func assistantSegments(content string) []ContentSegment {
+	segments := ParseContentSegments(content)
+	if len(segments) == 0 {
+		return []ContentSegment{{Type: SegmentText, Text: "..."}}
+	}
+	return segments
+}
+
+func renderAssistantSegment(messageIndex int, blockIndex *int, segment ContentSegment, width int, row int) (string, *ClickableRegion, int) {
+	if segment.Type == SegmentCodeBlock {
+		*blockIndex = *blockIndex + 1
+		codeLang := resolveSegmentLanguage(segment)
+		rendered := RenderCodeBlock(segment, width, CopyActionLabel())
+		region := BuildCopyRegion(messageIndex, *blockIndex, row, segment.Code, codeLang)
+		return rendered, &region, strings.Count(rendered, "\n")
+	}
+
+	rendered := renderTextSegment(segment.Text, width)
+	return rendered, nil, strings.Count(rendered, "\n")
+}
+
+func resolveSegmentLanguage(segment ContentSegment) string {
+	codeLang := strings.TrimSpace(segment.Lang)
+	if codeLang == "" {
+		codeLang = DetectLanguage(segment.Code)
+	}
+	if codeLang == "" {
+		return "text"
+	}
+	return codeLang
 }
 
 func renderTextSegment(text string, width int) string {

@@ -9,14 +9,14 @@ type InputBox struct {
 }
 
 func (i InputBox) Render() string {
-	helpText := "[Enter换行 F5/F8发送 PgUp/PgDn滚动]"
+	helpText := "[Enter: newline | F5/F8: send | PgUp/PgDn: scroll]"
 	if !i.Generating {
-		helpText = "[Enter换行 F5/F8发送 Ctrl+V粘贴 鼠标点[Copy]复制 PgUp/PgDn滚动]"
+		helpText = "[Enter: newline | F5/F8: send | Ctrl+V: paste | click [Copy]: copy | PgUp/PgDn: scroll]"
 	}
 
 	statusText := i.Status
 	if statusText == "" {
-		statusText = "就绪"
+		statusText = "Ready"
 	}
 
 	status := lipgloss.NewStyle().

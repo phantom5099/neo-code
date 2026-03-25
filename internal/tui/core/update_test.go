@@ -830,8 +830,29 @@ func TestMouseClickCopiesCodeBlock(t *testing.T) {
 	if copied != "fmt.Println(1)" {
 		t.Fatalf("expected code to be copied, got %q", copied)
 	}
-	if !strings.Contains(got.ui.CopyStatus, "已复制 go 代码块") {
+	if !strings.Contains(got.ui.CopyStatus, "Copied go code block") {
 		t.Fatalf("expected copy status, got %q", got.ui.CopyStatus)
+	}
+}
+
+func TestMouseClickCopyFailureShowsEnglishStatus(t *testing.T) {
+	client := &fakeChatClient{}
+	m := newTestModel(t, client)
+	m.chat.Messages = []state.Message{{Role: "assistant", Content: "```go\nfmt.Println(1)\n```"}}
+	m.refreshViewport()
+
+	m.copyToClipboard = func(string) error {
+		return errors.New("clipboard unavailable")
+	}
+
+	updated, cmd := m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: 1, Y: 2})
+	got := updated.(Model)
+
+	if cmd != nil {
+		t.Fatal("expected no follow-up command")
+	}
+	if !strings.Contains(got.ui.CopyStatus, "Copy failed: clipboard unavailable") {
+		t.Fatalf("expected english copy failure status, got %q", got.ui.CopyStatus)
 	}
 }
 

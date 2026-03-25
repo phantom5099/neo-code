@@ -11,7 +11,7 @@ import (
 
 func (m Model) View() string {
 	if m.ui.Width < 20 || m.ui.Height < 6 {
-		return "窗口太小"
+		return "Window too small"
 	}
 
 	statusHeight := 1

@@ -290,7 +290,7 @@ func (m *Model) handleMouseClick(msg tea.MouseMsg) bool {
 		return false
 	}
 	if err := m.copyCodeBlock(region.CodeBlock); err != nil {
-		m.ui.CopyStatus = fmt.Sprintf("复制失败: %v", err)
+		m.ui.CopyStatus = fmt.Sprintf("Copy failed: %v", err)
 		return true
 	}
 	m.ui.CopyStatus = components.FormatCopyNotice(region.CodeBlock)
@@ -623,7 +623,7 @@ func (m *Model) handleCommand(input string) (tea.Model, tea.Cmd) {
 		}
 		return *m, nil
 	default:
-		m.AddMessage("assistant", fmt.Sprintf("未知命令: %s，输入 /help 查看帮助", cmd))
+		m.AddMessage("assistant", fmt.Sprintf("Unknown command: %s. Enter /help to view the available commands.", cmd))
 	}
 	m.refreshViewport()
 

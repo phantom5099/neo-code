@@ -9,7 +9,7 @@ import (
 func TestRenderHelpContainsKeyCommands(t *testing.T) {
 	rendered := RenderHelp(80)
 
-	for _, want := range []string{"NeoCode 帮助", "/help", "/provider <name>", "按 Esc 或 /help 关闭"} {
+	for _, want := range []string{"NeoCode Help", "/help", "/provider <name>", "Press Esc or /help to close"} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected help to contain %q, got %q", want, rendered)
 		}
@@ -18,18 +18,18 @@ func TestRenderHelpContainsKeyCommands(t *testing.T) {
 
 func TestInputBoxRenderChangesFooterByGeneratingState(t *testing.T) {
 	idle := InputBox{Body: "body", Generating: false}.Render()
-	if !strings.Contains(idle, "Ctrl+V粘贴") {
+	if !strings.Contains(idle, "Ctrl+V: paste") {
 		t.Fatalf("expected idle footer to mention paste, got %q", idle)
 	}
-	if !strings.Contains(idle, "鼠标点[Copy]复制") {
+	if !strings.Contains(idle, "click [Copy]: copy") {
 		t.Fatalf("expected idle footer to mention copy action, got %q", idle)
 	}
 
 	busy := InputBox{Body: "body", Generating: true}.Render()
-	if strings.Contains(busy, "Ctrl+V粘贴") {
+	if strings.Contains(busy, "Ctrl+V: paste") {
 		t.Fatalf("expected generating footer to omit paste hint, got %q", busy)
 	}
-	if !strings.Contains(busy, "F5/F8发送") {
+	if !strings.Contains(busy, "F5/F8: send") {
 		t.Fatalf("expected busy footer to keep send hint, got %q", busy)
 	}
 }
@@ -44,7 +44,7 @@ func TestMessageListRenderIncludesRoleSpecificLabels(t *testing.T) {
 		},
 	}.Render()
 
-	for _, want := range []string{"你 [1]:", "Neo [2]:", "[系统]", "hello", "world", "note"} {
+	for _, want := range []string{"You [1]:", "Neo [2]:", "[System]", "hello", "world", "note"} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected rendered list to contain %q, got %q", want, rendered)
 		}

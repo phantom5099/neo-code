@@ -128,3 +128,14 @@ func TestHighlightCodeBlockIncludesClosingFenceOnlyWhenClosed(t *testing.T) {
 		t.Fatalf("expected unclosed block to contain only opening fence, got %q", unclosed)
 	}
 }
+
+func TestFormatCopyNoticeUsesEnglishSummary(t *testing.T) {
+	notice := FormatCopyNotice(CodeBlockRef{
+		Lang: "go",
+		Code: "fmt.Println(1)\nfmt.Println(2)\n",
+	})
+
+	if notice != "Copied go code block (2 lines)" {
+		t.Fatalf("unexpected copy notice %q", notice)
+	}
+}
