@@ -12,7 +12,9 @@ import (
 	"go-llm-demo/configs"
 	"go-llm-demo/internal/tui/services"
 	"go-llm-demo/internal/tui/state"
+	"go-llm-demo/internal/tui/todo"
 
+	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -214,10 +216,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if msg.Type == tea.KeyEsc && m.ui.Mode == state.ModeHelp {
-		m.ui.Mode = state.ModeChat
-		m.refreshViewport()
-		return *m, nil
+	if m.ui.Mode == state.ModeHelp {
+		if msg.Type == tea.KeyEsc || msg.String() == "q" {
+			m.ui.Mode = state.ModeChat
+			m.refreshViewport()
+			return *m, nil
+		}
+	}
+
+	if m.ui.Mode == state.ModeTodo {
+		return m.handleTodoKey(msg)
 	}
 
 	switch msg.Type {
@@ -542,6 +550,38 @@ func (m *Model) handleCommand(input string) (tea.Model, tea.Cmd) {
 			m.chat.MemoryStats = *stats
 		}
 		m.AddMessage("assistant", "已清空本地长期记忆")
+	case "/todo":
+		if len(args) == 0 {
+			m.ui.Mode = state.ModeTodo
+			return m.refreshTodos()
+		}
+		subCmd := args[0]
+		switch subCmd {
+		case "add":
+			if len(args) < 2 {
+				m.AddMessage("assistant", todo.MsgUsageAdd)
+				return *m, nil
+			}
+			content := args[1]
+			priority := services.TodoPriorityMedium
+			if len(args) > 2 {
+				if p, ok := services.ParseTodoPriority(args[2]); ok {
+					priority = p
+				}
+			}
+			_, err := m.client.AddTodo(context.Background(), content, priority)
+			if err != nil {
+				m.AddMessage("assistant", fmt.Sprintf(todo.MsgAddFailed, err))
+				return *m, nil
+			}
+			m.AddMessage("assistant", fmt.Sprintf(todo.MsgAddSuccess, content))
+			return m.refreshTodos()
+		case "list":
+			m.ui.Mode = state.ModeTodo
+			return m.refreshTodos()
+		default:
+			m.AddMessage("assistant", fmt.Sprintf(todo.MsgUnknownSubCmd, subCmd))
+		}
 	case "/clear-context":
 		if err := m.client.ClearSessionMemory(context.Background()); err != nil {
 			m.AddMessage("assistant", fmt.Sprintf("清空会话记忆失败: %v", err))
@@ -571,6 +611,73 @@ func (m *Model) handleCommand(input string) (tea.Model, tea.Cmd) {
 		m.AddMessage("assistant", fmt.Sprintf("未知命令: %s，输入 /help 查看帮助", cmd))
 	}
 	m.refreshViewport()
+
+	return *m, nil
+}
+
+func (m *Model) refreshTodos() (tea.Model, tea.Cmd) {
+	todos, err := m.client.GetTodoList(context.Background())
+	if err == nil {
+		m.todos = todos
+	}
+	m.refreshViewport()
+	return *m, nil
+}
+
+func (m *Model) handleTodoKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, todo.Keys.Back):
+		m.ui.Mode = state.ModeChat
+		m.refreshViewport()
+		return *m, nil
+
+	case key.Matches(msg, todo.Keys.Up):
+		if m.todoCursor > 0 {
+			m.todoCursor--
+		}
+		m.refreshViewport()
+		return *m, nil
+
+	case key.Matches(msg, todo.Keys.Down):
+		if m.todoCursor < len(m.todos)-1 {
+			m.todoCursor++
+		}
+		m.refreshViewport()
+		return *m, nil
+
+	case key.Matches(msg, todo.Keys.Done):
+		if len(m.todos) > 0 {
+			t := m.todos[m.todoCursor]
+			nextStatus := services.TodoInProgress
+			switch t.Status {
+			case services.TodoPending:
+				nextStatus = services.TodoInProgress
+			case services.TodoInProgress:
+				nextStatus = services.TodoCompleted
+			case services.TodoCompleted:
+				nextStatus = services.TodoPending
+			}
+			_ = m.client.UpdateTodoStatus(context.Background(), t.ID, nextStatus)
+			return m.refreshTodos()
+		}
+
+	case key.Matches(msg, todo.Keys.Delete):
+		if len(m.todos) > 0 {
+			t := m.todos[m.todoCursor]
+			_ = m.client.RemoveTodo(context.Background(), t.ID)
+			if m.todoCursor >= len(m.todos)-1 && m.todoCursor > 0 {
+				m.todoCursor--
+			}
+			return m.refreshTodos()
+		}
+
+	case key.Matches(msg, todo.Keys.Add):
+		// 切换到聊天模式，让用户通过 /todo add 命令行新增，或者这里可以简单处理
+		m.AddMessage("assistant", todo.MsgPromptAdd)
+		m.ui.Mode = state.ModeChat
+		m.refreshViewport()
+		return *m, nil
+	}
 
 	return *m, nil
 }
@@ -754,7 +861,7 @@ func formatPendingApprovalMessage(pending *state.PendingApproval) string {
 
 func formatToolContextMessage(result *services.ToolResult) string {
 	if result == nil {
-		return toolContextPrefix + "\n" + "tool=unknown\n" + "success=false\n" + "error:\n工具返回为空"
+		return toolContextPrefix + "\n" + "tool=unknown\n" + "success=false\n" + "error:\nTool returned empty result"
 	}
 
 	// 这里故意使用稳定的纯文本 key/value 结构，而不是直接把 ToolResult 原样塞回模型：
@@ -794,7 +901,7 @@ func formatToolContextMessage(result *services.ToolResult) string {
 }
 
 func formatToolErrorContext(err error) string {
-	errText := "未知错误"
+	errText := "Unknown error"
 	if err != nil {
 		errText = err.Error()
 	}

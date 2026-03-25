@@ -19,13 +19,13 @@ func NewTodoTool(todoSvc domain.TodoService) *TodoTool {
 func (t *TodoTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "todo",
-		Description: "管理显式任务清单。可以添加任务、更新任务状态（pending, in_progress, completed）、列出所有任务或移除任务。",
+		Description: "Manage an explicit todo list: add tasks, update status, list items, remove items, or clear the list.",
 		Parameters: []ToolParamSpec{
-			{Name: "action", Type: "string", Required: true, Description: "操作类型: add, update, list, remove, clear"},
-			{Name: "content", Type: "string", Description: "任务内容（仅用于 add 操作）"},
-			{Name: "priority", Type: "string", Description: "优先级: high, medium, low（仅用于 add 操作，默认为 medium）"},
-			{Name: "id", Type: "string", Description: "任务 ID（用于 update 和 remove 操作）"},
-			{Name: "status", Type: "string", Description: "新状态: pending, in_progress, completed（仅用于 update 操作）"},
+			{Name: "action", Type: "string", Required: true, Description: "Action type: add, update, list, remove, clear."},
+			{Name: "content", Type: "string", Description: "Task content, used by add."},
+			{Name: "priority", Type: "string", Description: "Task priority: high, medium, low. Used by add, default is medium."},
+			{Name: "id", Type: "string", Description: "Task id, used by update and remove."},
+			{Name: "status", Type: "string", Description: "Task status: pending, in_progress, completed. Used by update."},
 		},
 	}
 }
@@ -39,21 +39,31 @@ func (t *TodoTool) Run(params map[string]interface{}) *ToolResult {
 
 	ctx := context.Background()
 
-	switch strings.ToLower(action) {
-	case "add":
+	normalizedAction := strings.ToLower(action)
+	actionType, ok := domain.ParseTodoAction(normalizedAction)
+	if !ok {
+		return &ToolResult{ToolName: t.Definition().Name, Success: false, Error: fmt.Sprintf("unsupported action: %s", action)}
+	}
+
+	switch actionType {
+	case domain.TodoActionAdd:
 		content, errRes := requiredString(params, "content")
 		if errRes != nil {
 			errRes.ToolName = t.Definition().Name
 			return errRes
 		}
-		priority := optionalStringDefault(params, "priority", "medium")
+		priorityStr := strings.ToLower(optionalStringDefault(params, "priority", string(domain.TodoPriorityMedium)))
+		priority, ok := domain.ParseTodoPriority(priorityStr)
+		if !ok {
+			return &ToolResult{ToolName: t.Definition().Name, Success: false, Error: "invalid priority value"}
+		}
 		todo, err := t.todoSvc.AddTodo(ctx, content, priority)
 		if err != nil {
 			return &ToolResult{ToolName: t.Definition().Name, Success: false, Error: err.Error()}
 		}
-		return &ToolResult{ToolName: t.Definition().Name, Success: true, Output: fmt.Sprintf("已添加任务: %s (%s)", todo.ID, todo.Content)}
+		return &ToolResult{ToolName: t.Definition().Name, Success: true, Output: fmt.Sprintf("Added task: %s (%s)", todo.ID, todo.Content)}
 
-	case "update":
+	case domain.TodoActionUpdate:
 		id, errRes := requiredString(params, "id")
 		if errRes != nil {
 			errRes.ToolName = t.Definition().Name
@@ -64,26 +74,26 @@ func (t *TodoTool) Run(params map[string]interface{}) *ToolResult {
 			errRes.ToolName = t.Definition().Name
 			return errRes
 		}
-		status := domain.TodoStatus(strings.ToLower(statusStr))
-		if status != domain.TodoPending && status != domain.TodoInProgress && status != domain.TodoCompleted {
-			return &ToolResult{ToolName: t.Definition().Name, Success: false, Error: "无效的状态值"}
+		status, ok := domain.ParseTodoStatus(strings.ToLower(statusStr))
+		if !ok {
+			return &ToolResult{ToolName: t.Definition().Name, Success: false, Error: "invalid status value"}
 		}
 		err := t.todoSvc.UpdateTodoStatus(ctx, id, status)
 		if err != nil {
 			return &ToolResult{ToolName: t.Definition().Name, Success: false, Error: err.Error()}
 		}
-		return &ToolResult{ToolName: t.Definition().Name, Success: true, Output: fmt.Sprintf("任务 %s 状态已更新为 %s", id, status)}
+		return &ToolResult{ToolName: t.Definition().Name, Success: true, Output: fmt.Sprintf("Task %s status updated to %s", id, status)}
 
-	case "list":
+	case domain.TodoActionList:
 		todos, err := t.todoSvc.ListTodos(ctx)
 		if err != nil {
 			return &ToolResult{ToolName: t.Definition().Name, Success: false, Error: err.Error()}
 		}
 		if len(todos) == 0 {
-			return &ToolResult{ToolName: t.Definition().Name, Success: true, Output: "当前任务清单为空"}
+			return &ToolResult{ToolName: t.Definition().Name, Success: true, Output: "Todo list is empty"}
 		}
 		var sb strings.Builder
-		sb.WriteString("当前任务清单:\n")
+		sb.WriteString("Todo list:\n")
 		for _, todo := range todos {
 			statusIcon := "[ ]"
 			if todo.Status == domain.TodoInProgress {
@@ -91,11 +101,11 @@ func (t *TodoTool) Run(params map[string]interface{}) *ToolResult {
 			} else if todo.Status == domain.TodoCompleted {
 				statusIcon = "[x]"
 			}
-			sb.WriteString(fmt.Sprintf("%s %s: %s (优先级: %s)\n", statusIcon, todo.ID, todo.Content, todo.Priority))
+			sb.WriteString(fmt.Sprintf("%s %s: %s (priority: %s)\n", statusIcon, todo.ID, todo.Content, todo.Priority))
 		}
 		return &ToolResult{ToolName: t.Definition().Name, Success: true, Output: sb.String()}
 
-	case "remove":
+	case domain.TodoActionRemove:
 		id, errRes := requiredString(params, "id")
 		if errRes != nil {
 			errRes.ToolName = t.Definition().Name
@@ -105,18 +115,16 @@ func (t *TodoTool) Run(params map[string]interface{}) *ToolResult {
 		if err != nil {
 			return &ToolResult{ToolName: t.Definition().Name, Success: false, Error: err.Error()}
 		}
-		return &ToolResult{ToolName: t.Definition().Name, Success: true, Output: fmt.Sprintf("已移除任务 %s", id)}
+		return &ToolResult{ToolName: t.Definition().Name, Success: true, Output: fmt.Sprintf("Removed task %s", id)}
 
-	case "clear":
+	case domain.TodoActionClear:
 		err := t.todoSvc.ClearTodos(ctx)
 		if err != nil {
 			return &ToolResult{ToolName: t.Definition().Name, Success: false, Error: err.Error()}
 		}
-		return &ToolResult{ToolName: t.Definition().Name, Success: true, Output: "任务清单已清空"}
-
-	default:
-		return &ToolResult{ToolName: t.Definition().Name, Success: false, Error: fmt.Sprintf("不支持的操作: %s", action)}
+		return &ToolResult{ToolName: t.Definition().Name, Success: true, Output: "Todo list cleared"}
 	}
+	return &ToolResult{ToolName: t.Definition().Name, Success: false, Error: fmt.Sprintf("unsupported action: %s", action)}
 }
 
 func optionalStringDefault(params map[string]interface{}, key, fallback string) string {

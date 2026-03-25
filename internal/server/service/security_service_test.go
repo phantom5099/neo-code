@@ -74,32 +74,32 @@ func TestSecurityService_Check(t *testing.T) {
 		want     domain.Action // 我们期望拦截器给出的裁定 (deny/allow/ask)
 	}{
 		// --- 黑名单拦截测试 ---
-		{"完全拦截-禁止读取Git", "Read", ".git/config", domain.ActionDeny},
-		{"完全拦截-禁止写入Git", "Write", ".git/HEAD", domain.ActionDeny},
-		{"命令拦截-禁止删库", "Bash", "rm -rf /", domain.ActionDeny},
+		{"完全拦截-禁止读取Git", string(domain.ToolRead), ".git/config", domain.ActionDeny},
+		{"完全拦截-禁止写入Git", string(domain.ToolWrite), ".git/HEAD", domain.ActionDeny},
+		{"命令拦截-禁止删库", string(domain.ToolBash), "rm -rf /", domain.ActionDeny},
 
 		// --- 路径规范化/绕过攻击测试 (安全核心) ---
-		{"路径绕过-尝试跨出目录绕过黑名单", "Read", "src/../.git/config", domain.ActionDeny},
-		{"路径绕过-冗余斜杠绕过", "Read", ".git///config", domain.ActionDeny},
-		{"路径绕过-相对路径前缀", "Read", "./.git/config", domain.ActionDeny},
+		{"路径绕过-尝试跨出目录绕过黑名单", string(domain.ToolRead), "src/../.git/config", domain.ActionDeny},
+		{"路径绕过-冗余斜杠绕过", string(domain.ToolRead), ".git///config", domain.ActionDeny},
+		{"路径绕过-相对路径前缀", string(domain.ToolRead), "./.git/config", domain.ActionDeny},
 
 		// --- 规则穿透测试 ---
-		{"拦截-黑名单明确禁止Read", "Read", "config/.env", domain.ActionDeny},
-		{"穿透-黑名单未定义Write-落入兜底", "Write", "config/.env", domain.ActionAsk},
+		{"拦截-黑名单明确禁止Read", string(domain.ToolRead), "config/.env", domain.ActionDeny},
+		{"穿透-黑名单未定义Write-落入兜底", string(domain.ToolWrite), "config/.env", domain.ActionAsk},
 
 		// --- 白名单与黄名单匹配深度测试 ---
-		{"白名单-允许阅读源码", "Read", "src/main.go", domain.ActionAllow},
-		{"白名单-深层目录匹配", "Read", "src/internal/pkg/util.go", domain.ActionAllow},
-		{"黄名单-修改代码需确认", "Write", "src/main.go", domain.ActionAsk},
-		{"黄名单-命令匹配", "Bash", "go build main.go", domain.ActionAsk},
-		{"白名单-精确命令匹配", "Bash", "go version", domain.ActionAllow},
+		{"白名单-允许阅读源码", string(domain.ToolRead), "src/main.go", domain.ActionAllow},
+		{"白名单-深层目录匹配", string(domain.ToolRead), "src/internal/pkg/util.go", domain.ActionAllow},
+		{"黄名单-修改代码需确认", string(domain.ToolWrite), "src/main.go", domain.ActionAsk},
+		{"黄名单-命令匹配", string(domain.ToolBash), "go build main.go", domain.ActionAsk},
+		{"白名单-精确命令匹配", string(domain.ToolBash), "go version", domain.ActionAllow},
 
 		// --- 网络与兜底策略 ---
-		{"网络-白名单域名子域", "WebFetch", "api.google.com", domain.ActionAllow},
-		{"网络-不在名单内域名", "WebFetch", "hacker.com", domain.ActionAsk},
+		{"网络-白名单域名子域", string(domain.ToolWebFetch), "api.google.com", domain.ActionAllow},
+		{"网络-不在名单内域名", string(domain.ToolWebFetch), "hacker.com", domain.ActionAsk},
 		{"兜底-完全未知工具", "SelfDestruct", "now", domain.ActionAsk},
-		{"空目标字符串", "Read", "", domain.ActionAsk},
-		{"大小写敏感性测试", "Read", ".GIT/config", domain.ActionAsk}, //依据实现，目前是敏感的
+		{"空目标字符串", string(domain.ToolRead), "", domain.ActionAsk},
+		{"大小写敏感性测试", string(domain.ToolRead), ".GIT/config", domain.ActionAsk}, //依据实现，目前是敏感的
 	}
 
 	// 补充白名单网络规则以支持上面的测试

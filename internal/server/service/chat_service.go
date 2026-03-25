@@ -135,13 +135,7 @@ func buildTodoContext(todos []domain.Todo) string {
 	var sb strings.Builder
 	sb.WriteString("[TODO_LIST]\n")
 	for _, todo := range todos {
-		status := "pending"
-		if todo.Status == domain.TodoInProgress {
-			status = "in_progress"
-		} else if todo.Status == domain.TodoCompleted {
-			status = "completed"
-		}
-		sb.WriteString(fmt.Sprintf("- %s: %s (status: %s, priority: %s)\n", todo.ID, todo.Content, status, todo.Priority))
+		sb.WriteString(fmt.Sprintf("- %s: %s (status: %s, priority: %s)\n", todo.ID, todo.Content, todo.Status, todo.Priority))
 	}
 	return sb.String()
 }

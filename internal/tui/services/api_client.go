@@ -13,6 +13,23 @@ import (
 )
 
 type Message = domain.Message
+type Todo = domain.Todo
+type TodoStatus = domain.TodoStatus
+type TodoPriority = domain.TodoPriority
+
+const (
+	TodoPending    = domain.TodoPending
+	TodoInProgress = domain.TodoInProgress
+	TodoCompleted  = domain.TodoCompleted
+
+	TodoPriorityHigh   = domain.TodoPriorityHigh
+	TodoPriorityMedium = domain.TodoPriorityMedium
+	TodoPriorityLow    = domain.TodoPriorityLow
+)
+
+var (
+	ParseTodoPriority = domain.ParseTodoPriority
+)
 
 // ChatClient 定义 TUI 侧依赖的最小聊天与记忆接口。
 type ChatClient interface {
@@ -20,7 +37,10 @@ type ChatClient interface {
 	GetMemoryStats(ctx context.Context) (*MemoryStats, error)
 	ClearMemory(ctx context.Context) error
 	ClearSessionMemory(ctx context.Context) error
-	GetTodoList(ctx context.Context) ([]domain.Todo, error)
+	GetTodoList(ctx context.Context) ([]Todo, error)
+	AddTodo(ctx context.Context, content string, priority TodoPriority) (*Todo, error)
+	UpdateTodoStatus(ctx context.Context, id string, status TodoStatus) error
+	RemoveTodo(ctx context.Context, id string) error
 	DefaultModel() string
 }
 
@@ -138,6 +158,30 @@ func (c *localChatClient) GetTodoList(ctx context.Context) ([]domain.Todo, error
 		return nil, nil
 	}
 	return c.todoSvc.ListTodos(ctx)
+}
+
+// AddTodo 添加一个新任务。
+func (c *localChatClient) AddTodo(ctx context.Context, content string, priority domain.TodoPriority) (*domain.Todo, error) {
+	if c.todoSvc == nil {
+		return nil, nil
+	}
+	return c.todoSvc.AddTodo(ctx, content, priority)
+}
+
+// UpdateTodoStatus 更新任务状态。
+func (c *localChatClient) UpdateTodoStatus(ctx context.Context, id string, status domain.TodoStatus) error {
+	if c.todoSvc == nil {
+		return nil
+	}
+	return c.todoSvc.UpdateTodoStatus(ctx, id, status)
+}
+
+// RemoveTodo 移除特定任务。
+func (c *localChatClient) RemoveTodo(ctx context.Context, id string) error {
+	if c.todoSvc == nil {
+		return nil
+	}
+	return c.todoSvc.RemoveTodo(ctx, id)
 }
 
 // DefaultModel 返回 TUI 使用的默认模型。

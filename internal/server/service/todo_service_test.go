@@ -16,7 +16,7 @@ func setupTodoService() (domain.TodoService, *repository.InMemoryTodoRepository)
 func TestTodoService_AddTodo(t *testing.T) {
 	service, _ := setupTodoService()
 
-	todo, err := service.AddTodo(context.Background(), "测试任务1", "high")
+	todo, err := service.AddTodo(context.Background(), "测试任务1", domain.TodoPriorityHigh)
 	if err != nil {
 		t.Fatalf("添加任务失败: %v", err)
 	}
@@ -34,8 +34,8 @@ func TestTodoService_AddTodo(t *testing.T) {
 
 func TestTodoService_ListTodos(t *testing.T) {
 	service, _ := setupTodoService()
-	_, _ = service.AddTodo(context.Background(), "任务1", "high")
-	_, _ = service.AddTodo(context.Background(), "任务2", "low")
+	_, _ = service.AddTodo(context.Background(), "任务1", domain.TodoPriorityHigh)
+	_, _ = service.AddTodo(context.Background(), "任务2", domain.TodoPriorityLow)
 
 	todos, err := service.ListTodos(context.Background())
 	if err != nil {
@@ -52,7 +52,7 @@ func TestTodoService_ListTodos(t *testing.T) {
 
 func TestTodoService_UpdateTodoStatus(t *testing.T) {
 	service, _ := setupTodoService()
-	todo, _ := service.AddTodo(context.Background(), "待办任务", "medium")
+	todo, _ := service.AddTodo(context.Background(), "待办任务", domain.TodoPriorityMedium)
 
 	err := service.UpdateTodoStatus(context.Background(), todo.ID, domain.TodoCompleted)
 	if err != nil {
@@ -67,8 +67,8 @@ func TestTodoService_UpdateTodoStatus(t *testing.T) {
 
 func TestTodoService_RemoveTodo(t *testing.T) {
 	service, _ := setupTodoService()
-	todo1, _ := service.AddTodo(context.Background(), "任务1", "high")
-	_, _ = service.AddTodo(context.Background(), "任务2", "low")
+	todo1, _ := service.AddTodo(context.Background(), "任务1", domain.TodoPriorityHigh)
+	_, _ = service.AddTodo(context.Background(), "任务2", domain.TodoPriorityLow)
 
 	err := service.RemoveTodo(context.Background(), todo1.ID)
 	if err != nil {
@@ -86,8 +86,8 @@ func TestTodoService_RemoveTodo(t *testing.T) {
 
 func TestTodoService_ClearTodos(t *testing.T) {
 	service, _ := setupTodoService()
-	_, _ = service.AddTodo(context.Background(), "任务1", "high")
-	_, _ = service.AddTodo(context.Background(), "任务2", "low")
+	_, _ = service.AddTodo(context.Background(), "任务1", domain.TodoPriorityHigh)
+	_, _ = service.AddTodo(context.Background(), "任务2", domain.TodoPriorityLow)
 
 	err := service.ClearTodos(context.Background())
 	if err != nil {
