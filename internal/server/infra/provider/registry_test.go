@@ -2,10 +2,13 @@ package provider
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"go-llm-demo/configs"
 	"go-llm-demo/internal/server/domain"
@@ -167,5 +170,49 @@ func TestChatCompletionProviderChatStreamsFallbackMessageOnUnexpectedEOF(t *test
 	}
 	if !strings.Contains(got, "unexpectedly before completion") {
 		t.Fatalf("expected EOF fallback details, got: %q", got)
+	}
+}
+
+func TestEmitStreamErrorMessageIgnoresNilError(t *testing.T) {
+	out := make(chan string, 1)
+	emitStreamErrorMessage(context.Background(), out, nil)
+
+	select {
+	case got := <-out:
+		t.Fatalf("expected no message for nil error, got %q", got)
+	default:
+	}
+}
+
+func TestEmitStreamErrorMessageReturnsWhenContextCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	out := make(chan string)
+	done := make(chan struct{})
+
+	go func() {
+		emitStreamErrorMessage(ctx, out, errors.New("stream failed"))
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("emitStreamErrorMessage should return quickly when context is canceled")
+	}
+}
+
+func TestStreamReadErrorForNilAndGenericError(t *testing.T) {
+	if got := streamReadError(nil); got != nil {
+		t.Fatalf("expected nil for nil input, got %v", got)
+	}
+
+	got := streamReadError(io.ErrUnexpectedEOF)
+	if got == nil {
+		t.Fatal("expected wrapped stream read error")
+	}
+	if !strings.Contains(got.Error(), "chat stream read failed") {
+		t.Fatalf("expected generic stream read failure, got %v", got)
 	}
 }
