@@ -78,6 +78,14 @@ func (m Model) renderInputArea() string {
 }
 
 func (m Model) renderChatContent() string {
+	if m.ui.Mode == state.ModeTodo {
+		return components.TodoList{
+			Todos:   m.todos,
+			Cursor:  m.todoCursor,
+			Width:   m.viewport.Width,
+			Focused: true,
+		}.Render()
+	}
 	return components.MessageList{Messages: m.toComponentMessages(), Width: m.viewport.Width}.Render()
 }
 

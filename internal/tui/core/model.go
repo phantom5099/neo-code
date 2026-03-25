@@ -28,6 +28,10 @@ type Model struct {
 	viewport   viewport.Model
 
 	mu *sync.Mutex
+
+	// Todo 相关状态
+	todos      []services.Todo
+	todoCursor int
 }
 
 // NewModel 创建 TUI 状态模型。

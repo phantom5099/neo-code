@@ -173,6 +173,7 @@ func resolveWorkspacePath(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// 通过相对路径判断是否越过工作区边界，比单纯字符串前缀判断更稳妥。
 	rel, err := filepath.Rel(root, candidate)
 	if err != nil {
 		return "", fmt.Errorf("路径超出工作区: %s", path)
@@ -232,6 +233,7 @@ func AtomicWrite(filePath string, content []byte) error {
 	return nil
 }
 
+// NormalizeParams 递归将工具参数键名统一转换为 camelCase。
 func NormalizeParams(params map[string]interface{}) map[string]interface{} {
 	if params == nil {
 		return map[string]interface{}{}

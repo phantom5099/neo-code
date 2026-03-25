@@ -1,11 +1,40 @@
 package domain
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // ToolCall 表示工具调用请求。
 type ToolCall struct {
 	Tool   string                 `json:"tool"`
 	Params map[string]interface{} `json:"params"`
+}
+
+type ToolName string
+
+const (
+	ToolRead     ToolName = "Read"
+	ToolWrite    ToolName = "Write"
+	ToolEdit     ToolName = "Edit"
+	ToolBash     ToolName = "Bash"
+	ToolList     ToolName = "List"
+	ToolGrep     ToolName = "Grep"
+	ToolWebFetch ToolName = "Webfetch"
+	ToolTodo     ToolName = "Todo"
+)
+
+func ParseToolName(input string) (ToolName, bool) {
+	normalized := ToolName(strings.ToLower(strings.TrimSpace(input)))
+	if normalized == "web_fetch" {
+		normalized = ToolWebFetch
+	}
+	switch normalized {
+	case ToolRead, ToolWrite, ToolEdit, ToolBash, ToolList, ToolGrep, ToolWebFetch, ToolTodo:
+		return normalized, true
+	default:
+		return "", false
+	}
 }
 
 type Tool interface {

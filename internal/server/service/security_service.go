@@ -97,7 +97,7 @@ func ruleMatches(rule domain.Rule, toolType string, target string) bool {
 	case "Bash":
 		pattern = rule.Command
 		actionBit = rule.Exec
-	case "WebFetch":
+	case "Webfetch":
 		pattern = rule.Domain
 		actionBit = rule.Network
 	default:

@@ -24,8 +24,8 @@ const (
 )
 
 var (
-	ErrInvalidAPIKey        = errors.New("invalid api key")
-	ErrAPIKeyValidationSoft = errors.New("api key validation uncertain")
+	ErrInvalidAPIKey        = errors.New("无效的 API Key")
+	ErrAPIKeyValidationSoft = errors.New("API Key 校验结果不确定")
 )
 
 type ChatCompletionProvider struct {
@@ -82,7 +82,7 @@ func NewChatProvider(model string) (domain.ChatProvider, error) {
 // ValidateChatAPIKey 按当前提供方配置校验运行时 API Key。
 func ValidateChatAPIKey(ctx context.Context, cfg *configs.AppConfiguration) error {
 	if cfg == nil {
-		return fmt.Errorf("config is nil")
+		return fmt.Errorf("config cannot be nil")
 	}
 
 	providerName := providerNameFromConfig(cfg)
@@ -263,7 +263,7 @@ func isRetryableError(err error) bool {
 
 func validateChatAPIKey(ctx context.Context, cfg *configs.AppConfiguration) error {
 	if cfg == nil {
-		return fmt.Errorf("configs is nil")
+		return fmt.Errorf("配置不能为空")
 	}
 
 	modelName := strings.TrimSpace(cfg.AI.Model)

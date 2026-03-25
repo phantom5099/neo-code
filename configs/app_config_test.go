@@ -76,7 +76,7 @@ func TestAppConfigurationValidateBaseRejectsUnsupportedProvider(t *testing.T) {
 	cfg.AI.Provider = "unknown"
 
 	err := cfg.ValidateBase()
-	if err == nil || !strings.Contains(err.Error(), "unsupported ai.provider") {
+	if err == nil || !strings.Contains(err.Error(), "不支持的 ai.provider") {
 		t.Fatalf("expected unsupported provider error, got: %v", err)
 	}
 }
@@ -191,6 +191,8 @@ func validConfig() *AppConfiguration {
 	cfg.Memory.StoragePath = "./data/memory_rules.json"
 	cfg.Memory.PersistTypes = []string{"user_preference", "project_rule", "code_fact", "fix_recipe"}
 	cfg.History.ShortTermTurns = 6
+	cfg.History.MaxToolContextMessages = 3
+	cfg.History.MaxToolContextOutputSize = 4000
 	cfg.Persona.FilePath = DefaultPersonaFilePath
 	return cfg
 }

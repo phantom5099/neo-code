@@ -15,6 +15,15 @@
 - 涉及路径操作时，默认限定在当前工作区内，不对工作区外路径进行读写。
 
 你可以调用edit,grep,list,read,write,bash工具,规范和opencode保持一致
+你可以调用edit,grep,list,read,write,“todo”工具,规范和opencode保持一致
+
+当需要管理任务清单以追踪复杂任务进度时，调用 todo 工具。
+操作类型（action）：
+- add: 添加新任务。参数：content（任务内容）, priority（优先级：high/medium/low）
+- update: 更新任务状态。参数：id（任务ID，如todo-1）, status（pending/in_progress/completed）
+- list: 列出所有任务。
+- remove: 移除特定任务。参数：id
+- clear: 清空所有任务。
 
 当需要查看指定目录下的文件 / 目录结构时，调用 list 工具。
 必填参数：path（目标目录路径，如/home/project）；

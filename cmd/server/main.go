@@ -49,15 +49,18 @@ func main() {
 	roleRepo := repository.NewFileRoleStore("./data/roles.json")
 	roleSvc := service.NewRoleService(roleRepo, cfg.Persona.FilePath)
 
+	todoRepo := repository.NewInMemoryTodoRepository()
+	todoSvc := service.NewTodoService(todoRepo)
+
 	chatProvider, err := provider.NewChatProvider(cfg.AI.Model)
 	if err != nil {
 		fmt.Printf("初始化 ChatProvider 失败：%v\n", err)
 		return
 	}
 
-	chatGateway := service.NewChatService(memorySvc, workingSvc, roleSvc, chatProvider)
-	fmt.Printf("Server initialized with services: %+v\n", chatGateway)
-	fmt.Println("Note: This is a placeholder. Actual server implementation goes here.")
+	chatGateway := service.NewChatService(memorySvc, workingSvc, todoSvc, roleSvc, chatProvider)
+	fmt.Printf("服务器已初始化并加载服务: %+v\n", chatGateway)
+	fmt.Println("注意：这是一个占位符。实际的服务器实现将在此处进行.")
 }
 
 func initializeSecurity(configDir string) error {

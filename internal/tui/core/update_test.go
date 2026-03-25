@@ -24,6 +24,7 @@ type fakeChatClient struct {
 	clearMemoryErr   error
 	clearSessionErr  error
 	defaultModelName string
+	todos            []services.Todo
 }
 
 func (f *fakeChatClient) Chat(_ context.Context, messages []services.Message, model string) (<-chan string, error) {
@@ -68,6 +69,36 @@ func (f *fakeChatClient) DefaultModel() string {
 		return f.defaultModelName
 	}
 	return "test-model"
+}
+
+func (f *fakeChatClient) GetTodoList(context.Context) ([]services.Todo, error) {
+	return f.todos, nil
+}
+
+func (f *fakeChatClient) AddTodo(_ context.Context, content string, priority services.TodoPriority) (*services.Todo, error) {
+	t := &services.Todo{ID: "test", Content: content, Priority: priority, Status: services.TodoPending}
+	f.todos = append(f.todos, *t)
+	return t, nil
+}
+
+func (f *fakeChatClient) UpdateTodoStatus(_ context.Context, id string, status services.TodoStatus) error {
+	for i, t := range f.todos {
+		if t.ID == id {
+			f.todos[i].Status = status
+			return nil
+		}
+	}
+	return nil
+}
+
+func (f *fakeChatClient) RemoveTodo(_ context.Context, id string) error {
+	for i, t := range f.todos {
+		if t.ID == id {
+			f.todos = append(f.todos[:i], f.todos[i+1:]...)
+			return nil
+		}
+	}
+	return nil
 }
 
 func newTestModel(t *testing.T, client *fakeChatClient) *Model {

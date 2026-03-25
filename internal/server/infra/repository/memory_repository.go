@@ -103,7 +103,7 @@ func (s *FileMemoryStore) readAllLocked() ([]domain.MemoryItem, error) {
 
 func (s *FileMemoryStore) writeAllLocked(items []domain.MemoryItem) error {
 	if strings.TrimSpace(s.path) == "" {
-		return fmt.Errorf("persistent memory path is empty")
+		return fmt.Errorf("长期记忆路径为空")
 	}
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 		return err

@@ -7,6 +7,7 @@ const (
 	ModeCodeInput
 	ModeHelp
 	ModeMemory
+	ModeTodo
 )
 
 type UIState struct {

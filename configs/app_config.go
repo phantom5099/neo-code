@@ -33,7 +33,9 @@ type AppConfiguration struct {
 	} `yaml:"memory"`
 
 	History struct {
-		ShortTermTurns int `yaml:"short_term_turns"`
+		ShortTermTurns           int `yaml:"short_term_turns"`
+		MaxToolContextMessages   int `yaml:"max_tool_context_messages"`
+		MaxToolContextOutputSize int `yaml:"max_tool_context_output_size"`
 	} `yaml:"history"`
 
 	Persona struct {
@@ -58,6 +60,8 @@ func DefaultAppConfig() *AppConfiguration {
 	cfg.Memory.StoragePath = "./data/memory_rules.json"
 	cfg.Memory.PersistTypes = []string{"user_preference", "project_rule", "code_fact", "fix_recipe"}
 	cfg.History.ShortTermTurns = 6
+	cfg.History.MaxToolContextMessages = 3
+	cfg.History.MaxToolContextOutputSize = 4000
 	cfg.Persona.FilePath = DefaultPersonaFilePath
 	return cfg
 }
@@ -112,7 +116,7 @@ func EnsureConfigFile(filePath string) (*AppConfiguration, bool, error) {
 // WriteAppConfig 将应用配置写入磁盘。
 func WriteAppConfig(filePath string, cfg *AppConfiguration) error {
 	if cfg == nil {
-		return fmt.Errorf("配置信息为空")
+		return fmt.Errorf("应用配置不能为空")
 	}
 	cfgCopy := *cfg
 	cfgCopy.AI.APIKey = strings.TrimSpace(cfgCopy.AI.APIKey)
@@ -134,36 +138,42 @@ func (c *AppConfiguration) Validate() error {
 // ValidateBase 检查不包含密钥的基础配置是否合法。
 func (c *AppConfiguration) ValidateBase() error {
 	if c == nil {
-		return fmt.Errorf("app config is nil")
+		return fmt.Errorf("应用配置不能为空")
 	}
 	providerName := normalizeProviderName(c.AI.Provider)
 	if providerName == "" {
-		return fmt.Errorf("invalid config: ai.provider is required")
+		return fmt.Errorf("配置无效：需要 ai.provider")
 	}
 	if !isSupportedProvider(providerName) {
-		return fmt.Errorf("invalid config: unsupported ai.provider %q", strings.TrimSpace(c.AI.Provider))
+		return fmt.Errorf("配置无效：不支持的 ai.provider %q", strings.TrimSpace(c.AI.Provider))
 	}
 	c.AI.Provider = providerName
 	if strings.TrimSpace(c.AI.Model) == "" {
-		return fmt.Errorf("invalid config: ai.model is required")
+		return fmt.Errorf("配置无效：需要 ai.model")
 	}
 	if c.Memory.TopK <= 0 {
-		return fmt.Errorf("invalid config: memory.top_k must be greater than 0")
+		return fmt.Errorf("配置无效：memory.top_k 必须大于 0")
 	}
 	if c.Memory.MinMatchScore < 0 {
-		return fmt.Errorf("invalid config: memory.min_match_score must not be negative")
+		return fmt.Errorf("配置无效：memory.min_match_score 不能为负数")
 	}
 	if c.Memory.MaxPromptChars <= 0 {
-		return fmt.Errorf("invalid config: memory.max_prompt_chars must be greater than 0")
+		return fmt.Errorf("配置无效：memory.max_prompt_chars 必须大于 0")
 	}
 	if c.Memory.MaxItems <= 0 {
-		return fmt.Errorf("invalid config: memory.max_items must be greater than 0")
+		return fmt.Errorf("配置无效：memory.max_items 必须大于 0")
 	}
 	if strings.TrimSpace(c.Memory.StoragePath) == "" {
-		return fmt.Errorf("invalid config: memory.storage_path is required")
+		return fmt.Errorf("配置无效：需要 memory.storage_path")
 	}
 	if c.History.ShortTermTurns <= 0 {
-		return fmt.Errorf("invalid config: history.short_term_turns must be greater than 0")
+		return fmt.Errorf("配置无效：history.short_term_turns 必须大于 0")
+	}
+	if c.History.MaxToolContextMessages < 0 {
+		return fmt.Errorf("配置无效：history.max_tool_context_messages 不能为负数")
+	}
+	if c.History.MaxToolContextOutputSize <= 0 {
+		return fmt.Errorf("配置无效：history.max_tool_context_output_size 必须大于 0")
 	}
 	return nil
 }
@@ -175,7 +185,7 @@ func (c *AppConfiguration) ValidateRuntime() error {
 	}
 	envVarName := c.APIKeyEnvVarName()
 	if c.RuntimeAPIKey() == "" {
-		return fmt.Errorf("invalid runtime: %s environment variable is required", envVarName)
+		return fmt.Errorf("运行时无效：需要 %s 环境变量", envVarName)
 	}
 	return nil
 }
