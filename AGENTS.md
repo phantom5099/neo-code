@@ -1,48 +1,57 @@
-# Repository Guidelines
+# NeoCode AI Coding Agent - 系统上下文与实现指南
 
-## Project Structure & Module Organization
-- `cmd/tui/main.go` 是TUI模式的主要入口，负责初始化配置和启动终端用户界面。
-- `cmd/server/main.go` 是服务器模式的入口，用于验证服务组装，目前仅作为占位符存在。
-- `internal/tui/bootstrap/` 负责TUI启动前准备，包括工作区解析、配置初始化和程序装配。
-- `internal/tui/core/` 包含TUI的核心逻辑，实现了Bubble Tea ELM架构（Model-Update-View）。
-- `internal/tui/state/` 保存TUI纯状态结构，如聊天历史、窗口尺寸和运行时标记。
-- `internal/tui/services/` 提供TUI的本地服务适配层，负责组装后端 service/provider/repository/tools 并暴露统一接口。
-- `internal/server/domain/` 定义了核心领域模型和接口，遵循依赖倒置原则。
-- `internal/server/service/` 实现了应用服务层，负责编排业务流程。
-- `internal/server/infra/provider/` 包含具体的外部服务提供方实现，如ModelScopeProvider。
-- `internal/server/infra/repository/` 包含数据访问层的实现，包括文件存储和内存存储。
-- `configs/` 目录包含应用配置相关的代码和默认人设文件。
-- `docs/` 目录包含项目文档，如架构设计说明和安全指南。
-- `data/` 目录用于存储运行时数据，如长期记忆文件。
+## 1. 项目概述
+NeoCode 是一个基于 Go 和 Bubble Tea 构建的本地终端 Coding Agent MVP。它采用 ReAct / Tool-Calling 循环架构。
 
-## Build, Test, and Development Commands
-- `go build ./...` 编译所有Go包；在推送前修复语法或依赖问题。
-- `go test ./...` 执行所有Go测试并报告覆盖率；在修改`internal/`目录下的逻辑后重新运行。
-- `go run ./cmd/tui` 从仓库根目录运行TUI模式进行手动实验。
-- `go run ./cmd/server` 运行服务器模式以验证服务组装。
-- `gofmt -w <file>` (或 `go fmt ./...`) 格式化Go文件以保持缩进/空格一致，在暂存前执行。
+**核心目标:** 实现最小可行性的闭环系统：
+`用户输入 -> Agent 推理 -> 调用工具 -> 获取结果 -> 继续推理 -> UI 展示`
 
-## Coding Style & Naming Conventions
-- 遵循惯用的Go语言风格：使用短小的全小写包名 (`tui`, `server`, `domain`, `service`), 导出标识符使用PascalCase，未导出标识符使用camelCase。
-- 使用制表符进行缩进（Go默认），尽可能将行长度控制在~120字符以内。
-- 在提交前应用`gofmt`/`goimports`；避免手动格式化。
-- 为导出符号添加完整的句子注释，以满足Go工具链和未来读者的需求。
-- 拒绝生成硬编码实现；常量、路径、密钥、URL、阈值和环境差异项应优先通过配置、参数、环境变量或具名常量注入。
+## 2. 技术栈
+* **语言:** Go (1.21+)
+* **TUI 框架:** `github.com/charmbracelet/bubbletea`, `charmbracelet/bubbles`, `charmbracelet/lipgloss`
+* **配置:** `gopkg.in/yaml.v3`
+* **HTTP 客户端:** 标准库 `net/http` (用于 Provider API 调用)
 
-## Testing Guidelines
-- 将单元测试命名为 `*_test.go` 并且函数名为 `TestXxx`；当添加新的测试套件时模仿现有的包结构。
-- 当前行内没有使用标准库以外的测试框架。
-- 在任何触及接口边界的更改后运行 `go test ./...`，特别是在 `provider` 提供方或 `service` 层内。
+## 3. 核心架构与严格边界 (必须遵守)
+编写代码时，必须始终遵循以下设计原则：
+1. **严格解耦:** TUI (`tui/`) **绝对不能**直接调用 Provider (`provider/`) 或执行 Tools (`tools/`)。
+2. **Runtime 为调度中心:** UI、模型和工具之间的所有通信都必须通过 Agent Runtime (`runtime/`) 路由。
+3. **面向接口编程:** 依赖于接口 (`Provider`, `Tool`, `Runtime`)，而不是具体的实现。
+4. **流式通信 (Streaming):** Provider 接收到流式 chunk 后，通过 Go Channel (`chan RuntimeEvent`) 发送 `agent_chunk` 事件给 Runtime，Runtime 将其透传给 TUI 渲染。必须妥善处理 Channel 的生命周期和并发安全。
+5. **Tool Call 职责划分:** Provider 负责将各大 API（如 OpenAI）特有的 Tool Call 格式解析并转换为系统标准的 `[]ToolCall` 结构体。Runtime 检查此结构体，若不为空，则中断当前对话流，转而执行工具。
+6. **上下文管理:** Runtime 需实现简单的滑动窗口机制（例如保留 System Prompt，外加最近 10 轮的对话和工具结果），防止 Token 溢出。
+7. **配置管理与并发安全:** Config 必须通过 `ConfigManager` 进行管理，使用 `sync.RWMutex` 保护读写。TUI (`tui/`) 可以调用 `Update()` 修改当前选中模型，Runtime (`runtime/`) 在每次发起请求前，必须通过 `Get()` 获取最新配置。
+8. **Provider 动态构建:** Runtime 不应持有静态的 Provider 实例。应实现一个 `ProviderFactory`，根据当前 Config 动态实例化对应的 API Client，以支持对话中途无缝切换模型。
+9. **密钥安全:** `config.yaml` 中仅允许配置 API Key 的环境变量名 (`api_key_env`)，程序运行时需使用 `os.Getenv` 获取真实密钥，禁止在日志或 UI 中明文打印 API Key。
+10. **防腐层设计 (Anti-Corruption Layer):** Provider 模块必须作为防腐层存在。Runtime (`runtime/`) 只能使用 `provider` 包定义的标准 `Message` 和 `ToolCall` 结构体。绝不允许在 Runtime 层出现任何特定于 OpenAI 或 Anthropic 的数据结构（如 `tool_use` 块或特定的 `role` 转换逻辑）。
+11. **Tool Role 差异抹平:** 针对工具结果回灌，Runtime 统一使用 `Role: "tool"` 构造历史消息。`provider/anthropic` 必须在内部将连续的 `Role: "tool"` 消息自动转换并合并为 Anthropic API 要求的 `Role: "user", Type: "tool_result"` 格式，确保 API 不报 400 错误。
+12. **流式 ToolCall 拼接:** Provider 适配器负责在内部完成流式 Tool Call 碎片的拼接。只有当获取到完整的 JSON 参数字符串后，才允许向 Runtime 返回结构化的 `[]ToolCall`。
+13. **会话持久化:** MVP 阶段使用纯 JSON 文件进行 Session 存储，默认路径为 `~/.neocode/sessions/`。必须通过抽象接口 `SessionStore` 进行读写。
+14. **分离加载策略:** 为保证 TUI 性能，侧边栏列表必须使用轻量级的 `SessionSummary` 进行渲染。只有当用户明确选中并进入某个会话时，才允许将该会话的完整 `[]Message` 读取到内存中。
+15. **磁盘写入时机:** 严禁在 TUI 输入流或频繁的 UI 刷新期间进行磁盘 I/O。`SessionStore.Save()` 只能在完整的业务节点触发（如用户发送消息后、模型完整回复后、工具执行结束后）。
 
-## Commit & Pull Request Guidelines
-- 保持提交小而具有描述性；优先使用约定的前缀，例如 `feat:`、`fix:`、`docs:` 或 `refactor:`，后跟简要摘要（例如 `feat: add model switch command`）。
-- 每次提交新功能、修复行为问题或调整配置/命令/接口时，都必须检查是否有相关文档需要同步更新；如有影响，应在同一变更中一并更新 `README.md`、`docs/`、配置示例或其他相关说明，避免代码与文档脱节。
-- 包含简洁的PR描述，列出关联的问题（如果有），并注明已运行的测试命令。
-- 在请求审查之前，运行 `git status`，确保已应用gofmt，并仔细检查是否有秘密值泄露到被跟踪的文件中（例如 `.env`）。
+## 4. MVP 第一阶段实现计划
+严格聚焦于 Phase 1，不要过度设计 Phase 2/3 的功能。
+* **步骤 1:** 实现 `config` (YAML 加载、结构体验证)。
+* **步骤 2:** 实现 `Provider` 接口及一个具体适配器 (如 OpenAI 兼容接口，需支持流式解析与 Tool Call 结构化)。
+* **步骤 3:** 实现 `Tool` 接口、`Registry` 注册表及一个具体工具 (如 `filesystem.read_file`)。
+* **步骤 4:** 实现 `Agent Runtime` (核心循环、滑动窗口状态管理、事件总线 Channel)。
+* **步骤 5:** 实现 `TUI` (基础聊天输入/输出视图，对接 Runtime 的事件通道)。
 
-## Security & Configuration Tips
-- 将 `.env` 或类似文件视为本地配置；不要提交密钥。如果需要共享值，请在README或本指南中记录它们。
-- 将API密钥保留在源文件之外；优先在运行时通过环境变量传递。
-- `config.yaml` 中的 `ai.api_key` 保存的是 API Key 的环境变量名；为空时默认回退到 `AI_API_KEY`。
-- `config.yaml` 已在 `.gitignore` 中忽略，不应提交真实密钥。
-- `data/` 已在 `.gitignore` 中忽略，本地记忆不会默认入库。
+## 5. 编码规范
+* **错误处理:** 绝不吞咽错误。使用上下文包装错误 (例如：`fmt.Errorf("executing tool %s: %w", toolName, err)`)。
+* **并发控制:** 所有 Provider 和 Tool 调用必须传入 `context.Context`，以支持超时和用户取消。TUI 事件循环与 Agent Runtime 循环并发运行，需通过 Channel 或 Bubble Tea 的 `Cmd` 机制安全同步。
+* **简洁性:** 编写符合 Go 习惯的代码。尽可能使用标准库。
+
+## 6. 目录结构
+确保所有生成的代码文件放置在以下约定的目录树中：
+```text
+.
+├── cmd/neocode/main.go
+├── internal/
+│   ├── app/bootstrap.go
+│   ├── config/loader.go, model.go, validate.go
+│   ├── provider/provider.go, openai/openai.go
+│   ├── runtime/runtime.go, executor.go, prompt_builder.go, session.go, events.go
+│   ├── tools/registry.go, types.go, filesystem/fs.go
+│   └── tui/app.go, state.go, keymap.go, views/, components/
