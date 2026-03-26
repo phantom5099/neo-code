@@ -1,83 +1,104 @@
-# NeoCode 思考流程改造统一方案（优化版）
+# NeoCode Flow 改造方案 v1.2（可执行版）
 
 ## 1. 文档定位
 
-本文整合并替代此前关于 NeoCode 思考流程改造的多份草案，形成一份统一的团队讨论与实施指导文档。目标是同时回答以下问题：
+本文是面向落地的改造方案，不是概念讨论稿。目标是回答三件事：
 
-- 当前项目是否适合推进思考流程改造
-- 这次改造应该落实到什么边界
-- 当记忆模块和工具模块后续继续大改时，如何保证 Flow 模块能独立落地
-- Flow 相关新增能力应该如何组织目录与职责
-- 是否应引入设计模式，如果引入，应引入哪些、落在哪些位置
+- 本轮到底改什么，不改什么
+- 如何把 TUI 里的流程控制迁移到服务端编排层
+- 如何保证后续 memory/tools 重构时，Flow 主循环不用跟着大改
 
-本文强调两点：
+本文原则：
 
-- 先稳定边界，再扩展流程
-- 引入设计模式，但只引入“对当前项目真正有帮助的模式”，避免过度框架化
+- 先收敛边界，再扩展能力
+- 先完成可回滚的小步迁移，再谈新范式
 
 ---
 
-## 2. 结论摘要
+## 2. 本轮目标、非目标与完成标准
 
-当前项目适合推进思考流程改造，而且现有代码结构已经具备较好的基础：
+### 2.1 本轮目标
 
-- 服务端当前仍是“单次请求 -> 单次模型调用”，见 [chat_service.go](C:/Users/10116/Desktop/study/gopro/neo-code/internal/server/service/chat_service.go#L29)
-- 工具闭环主要在 TUI 内完成，见 [update.go](C:/Users/10116/Desktop/study/gopro/neo-code/internal/tui/core/update.go#L63)
-- 角色、记忆、工作记忆、安全、工具注册、配置系统均已存在，可被编排层统一收口
+- 把工具调用解析与执行闭环从 TUI 移到服务端编排层
+- 把审批流程从 TUI 本地挂起，迁移为由 Flow 编排层持有的可恢复挂起记录；首版以 token 作为最小恢复句柄
+- 把 TUI 退回为事件渲染与用户输入层
 
-但如果目标是长期可演进，那么本次改造不能只做“功能追加”，而应同时完成三类建设：
+现状参考：
 
-1. 建立 Flow 编排层  
-2. 冻结 Flow 与记忆/工具之间的稳定能力接口  
-3. 用适合当前项目的设计模式组织流程，而不是继续用散落的 `if-else` 和 UI 闭环来驱动  
+- 服务端仍是单次调用链路：[chat_service.go](../internal/server/service/chat_service.go)
+- 工具解析/执行在 TUI：[update.go](../internal/tui/core/update.go)
 
----
+### 2.2 本轮非目标
 
-## 3. 当前问题与改造动机
+- 不引入完整 `plan_execute` 落地
+- 不重写 memory 检索算法
+- 不替换现有工具系统与安全策略实现
 
-### 3.1 当前主要问题
-当前系统的核心问题不是“不能调用工具”，而是“流程能力没有统一归位”。
+### 2.3 完成标准
 
-具体表现为：
-
-- Service 只负责单轮问答
-- TUI 负责工具闭环、审批暂停、结果回灌
-- 记忆和工具能力被主链路直接调用，缺乏中间抽象
-- 新增流程时，很容易牵一发动全身
-
-### 3.2 如果不改，会发生什么
-如果继续沿用当前模式，后续新增任何一种思考流程时，都需要重复处理这些问题：
-
-- 何时调模型
-- 何时调工具
-- 工具结果如何回灌
-- 审批如何暂停与恢复
-- 记忆何时注入，何时写回
-- 何时终止，何时回退
-
-这会直接导致：
-
-- 流程逻辑分散
-- TUI 越来越重
-- 函数命名和接口不断震荡
-- 测试难以稳定
+- 聊天入口不再承担流程分支判断与工具闭环职责，统一委托给 Flow 编排层
+- `update.go` 不再解析 assistant JSON 工具调用
+- 新增 Flow 合同测试，覆盖暂停/恢复与终止条件
 
 ---
 
-## 4. 推荐的设计模式
+## 3. 当前痛点
 
-本项目可以考虑引入设计模式，但应遵循“少而准”的原则。推荐引入以下模式：
+- 流程控制散落：服务层做一次问答，TUI 做工具闭环和审批恢复
+- 边界不稳：memory、tools 直接耦合在主链路，新增流程改动面过大
+- 测试不稳：流程行为更多依赖 UI 侧状态，难做纯后端合同测试
 
-## 4.1 Strategy 模式：用于 Flow 本身
-最适合当前项目的模式是 Strategy。
+---
 
-不同思考流程本质上就是不同执行策略：
+## 4. 本轮只引入两类模式
+
+### 4.1 Strategy（必须）
+
+Flow 本质是策略切换，先只落地两种：
 
 - `single_shot`
 - `react`
-- `plan_execute`
 
-它们共享依赖、共享上下文能力、共享工具执行器，但控制步骤不同。因此最自然的建模方式就是：
+`plan_execute` 只保留文档层扩展说明，不进入当前代码结构。
+
+### 4.2 Ports and Adapters（必须）
+
+Flow 只依赖稳定端口，不直接调用具体 memory/tools 实现。  
+Factory/Registry、State、Policy 作为实现细节使用，不单独扩张为本轮“模式目标”。
+
+---
+
+## 5. 目标架构与目录
+
+```text
+internal/server/domain/
+  flow.go
+
+internal/server/orchestration/flow/
+  engine.go
+  registry.go
+  ports.go
+  single_shot.go
+  react.go
+  context_assembler.go
+  turn_finalizer.go
+  tool_executor.go
+  tool_protocol_json.go
+```
+
+说明：
+
+- `domain/flow.go`：稳定契约（接口、事件、状态、错误码）
+- `orchestration/flow/`：流程实现与适配层
+- `service/`：继续保留记忆、角色等领域服务，不承载流程编排细节
+
+---
+
+## 6. 契约定义
+
+## 6.1 接口
+
+### Flow接口
 
 ```go
 type Flow interface {
@@ -85,591 +106,273 @@ type Flow interface {
 }
 ```
 
-每个 Flow 都是一个策略实现。
-
-### 为什么适合
-- 与当前“可切换思考流程”的目标天然匹配
-- 新增流程时只新增实现，不改主链路
-- 比把流程分支继续塞进 `chat_service.go` 更可维护
-
----
-
-## 4.2 Factory + Registry 模式：用于 Flow 创建与切换
-Flow 不应靠 `switch name { ... }` 散落在多个地方创建。
-
-建议引入 Factory + Registry：
+### FlowEngine接口
 
 ```go
-type FlowFactory func(deps FlowDeps) Flow
+type FlowEngine interface {
+    Run(ctx context.Context, req *ChatRequest) (<-chan ChatEvent, error)
+    Resume(ctx context.Context, token string, approved bool) (<-chan ChatEvent, error)
+}
 ```
 
-配合注册表：
+### 事件顺序约束（示例）
 
-- 注册 `single_shot`
-- 注册 `react`
-- 注册 `plan_execute`
-- 统一负责名称归一化、查找、默认值、未知值回退
+- 每次 `Run` 必须以 `EventStarted` 开始
+- 文本流可发多个 `EventDelta`
+- 需要审批时发 `EventApprovalRequired` 并暂停
+- 正常结束必须发 `EventCompleted`
+- 异常结束必须发 `EventFailed`
+- 同一轮只允许一个终态：`Completed` 或 `Failed`
 
-### 为什么适合
-- 与配置化切换、`/flow <name>` 命令天然匹配
-- 能避免流程名称字符串散落在 TUI、Service、Config 校验中
-- 新增流程时对主链路零侵入
+### 最小可编码契约
+- 事件与错误
+```go
+type EventType string
+const (
+    EventStarted   EventType = "started"
+    EventDelta     EventType = "delta"
+    EventToolCall  EventType = "tool_call"
+    EventApproval  EventType = "approval_required"
+    EventCompleted EventType = "completed"
+    EventFailed    EventType = "failed"
+)
 
----
+type ErrorCode string
+const (
+    ErrNone         ErrorCode = ""
+    ErrParser       ErrorCode = "parser_error"
+    ErrToolFailed   ErrorCode = "tool_failed"
+    ErrFinalize     ErrorCode = "finalize_failed"
+    ErrApproval     ErrorCode = "approval_invalid"
+    ErrCanceled     ErrorCode = "canceled"
+    ErrLimitReached ErrorCode = "limit_reached"
+)
 
-## 4.3 Ports and Adapters：用于 Flow 与记忆/工具解耦
-严格来说这不是一个传统 GoF 模式，而是一种非常适合当前项目的架构模式。
+type ChatEvent struct {
+    Type       EventType
+    Text       string
+    Tool       *ToolCall
+    Approval   *PendingApproval
+    ErrorCode  ErrorCode
+    ErrorMsg   string
+    TurnID     string//
+    RunID      string//
+    Seq        int
+}
+```
+- 状态与结果
+```go
+type FlowState struct {
+    RunID        string
+    TurnID       string
+    Loops        int
+    ToolCalls    int
+    MaxLoops     int
+    MaxToolCalls int
+    Mode         string // single_shot | react
+}
 
-Flow 不应直接依赖：
-
-- `MemoryService` 内部算法
-- `WorkingMemoryService` 内部状态建模
-- `GlobalRegistry`
-- 工具安全审批内部实现
-
-Flow 只应依赖几个稳定端口：
-
-- `TurnContextAssembler`
-- `TurnFinalizer`
-- `FlowToolExecutor`
-- `ToolCallParser`
-
-然后由适配器桥接现有实现。
-
-### 为什么适合
-- 当前项目最大的风险就是“记忆和工具模块未来还会大改”
-- 这个模式可以让 Flow 成为相对稳定的上层模块
-- 底层重构时只改适配器，不改 Flow 策略本体
-
----
-
-## 4.4 State Machine 模式：用于 `react` / `plan_execute` 的内部控制
-对于 `single_shot`，不必引入状态机；但对于 `react` 和 `plan_execute`，建议显式引入轻量状态机思想。
-
-建议至少把这些状态明确化：
-
-- `PreparingContext`
-- `CallingLLM`
-- `ParsingToolCall`
-- `WaitingApproval`
-- `ExecutingTool`
-- `Summarizing`
-- `Completed`
-- `Failed`
-
-不一定需要引入外部状态机框架，但流程代码应按状态推进，而不是在一个函数里不断嵌套条件。
-
-### 为什么适合
-- ReAct 和 Plan/Execute 都天然是多阶段流程
-- 状态化后更容易处理暂停/恢复、终止条件和错误回退
-- 审批恢复特别适合用状态视角来建模
-
----
-
-## 4.5 Rule Set / Policy Object：用于终止、审批、回退决策
-你提到“规则树”，这个思路可以用，但不建议做成过重的通用规则树引擎。
-
-更适合当前项目的做法是：
-
-- 在几个高风险决策点引入轻量规则对象或策略组合
-- 不做全局通用规则树 DSL
-
-推荐用于以下场景：
-
-### 终止策略
-例如：
-- 是否达到 `max_loops`
-- 是否达到 `max_tool_calls`
-- 是否当前已完成
-- 是否应强制回退
-
-### 审批策略
-例如：
-- 当前工具调用是否应 allow / ask / deny
-- ask 后如何恢复
-- reject 后是否继续生成解释性回复
-
-### 回退策略
-例如：
-- planner schema 校验失败后回退到 `react`
-- 工具协议解析失败时改为普通文本继续处理
-- 工具异常时是否停止流程或继续下一轮总结
-
-### 为什么是“规则对象”而不是“规则树引擎”
-因为当前项目规模还没到需要引入完整规则树框架的程度。过早引入会造成：
-
-- 规则表达复杂度高于业务复杂度
-- 团队后续维护成本变大
-- 调试困难
-
-因此建议是：
-
-- 可以引入“策略对象 / policy object”
-- 不建议一开始引入重量级规则树或工作流引擎
-
----
-
-## 4.6 不建议优先引入的模式
-以下模式当前不建议优先上：
-
-### Template Method
-原因：
-- 当前流程差异不仅是步骤顺序差异，还有阶段能力差异
-- Strategy + 状态机更自然
-
-### Command 模式
-原因：
-- 当前项目里的“动作”虽然可以抽象成 `CallLLM / ExecuteTool / Emit / Finalize`
-- 但暂时没有必要将所有动作对象化，否则会把简单编排变复杂
-
-### Visitor
-原因：
-- 当前没有复杂 AST 或多层对象遍历需求
-- 不适用于当前主要问题
-
----
-
-## 5. 推荐总体架构
-
-## 5.1 目录结构
-
-```text
-internal/server/domain/
-  chat.go
-  tool.go
-  memory.go
-  working_memory.go
-  flow.go
-
-internal/server/service/
-  chat_service.go
-  memory_service.go
-  working_memory_service.go
-  todo_service.go
-  role_service.go
-  security_service.go
-
-internal/server/orchestration/flow/
-  engine.go
-  registry.go
-  ports.go
-  policy.go
-  single_shot.go
-  react.go
-  plan_execute.go
-  context_assembler.go
-  turn_finalizer.go
-  tool_executor.go
-  tool_protocol_json.go
+type TurnResult struct {
+    Completed bool
+    Failed    bool
+    ErrorCode ErrorCode
+    Text      string
+}
 ```
 
-## 5.2 各层职责
-### `domain/`
-放稳定契约：
+- 终态唯一性规则
 
-- Flow 接口
-- 事件结构
-- Flow 状态
-- 审批请求
-- 抽象端口定义
 
-### `service/`
-保留稳定领域服务：
+## 6.2 核心端口
 
-- 记忆服务
-- 工作记忆服务
-- 角色服务
-- TODO 服务
-- 安全服务
-
-### `orchestration/flow/`
-放所有与 Flow 一起变化的内容：
-
-- 流程实现
-- 工具协议解析
-- 上下文组装
-- 最终写回
-- 工具执行适配
-- 终止/审批/回退策略
-
----
-
-## 6. 稳定能力接口
-
-建议在 `domain/flow.go` 或 `orchestration/flow/ports.go` 中定义以下接口。
-
-## 6.1 TurnContextAssembler
 ```go
 type TurnContextAssembler interface {
 	Assemble(ctx context.Context, req *ChatRequest, state *FlowState) ([]ContextBlock, error)
 }
-```
 
-职责：
-
-- 统一组装 role、working memory、todo、retrieved memory
-- Flow 不直接依赖各类 context service
-
----
-
-## 6.2 TurnFinalizer
-```go
 type TurnFinalizer interface {
 	Finalize(ctx context.Context, req *ChatRequest, result *TurnResult) error
 }
-```
 
-职责：
-
-- 最终回复结束后刷新 working memory
-- 最终回复结束后写 long-term memory
-- 未来可扩展 todo、trace、metrics
-
----
-
-## 6.3 FlowToolExecutor
-```go
 type FlowToolExecutor interface {
 	Execute(ctx context.Context, call ToolCall) (*ToolExecution, error)
 	ResolveApproval(ctx context.Context, token string, approved bool) (*ToolExecution, error)
 }
-```
 
-职责：
-
-- 工具查找
-- 安全检查
-- 审批 token 生成与恢复
-- 工具结果标准化
-
----
-
-## 6.4 ToolCallParser
-```go
 type ToolCallParser interface {
 	ParseAssistantMessage(text string) (*ToolCall, bool, error)
 }
 ```
 
-职责：
+## 6.3 审批恢复 token 约束（本轮最小实现）
+- token 的唯一目的，是在审批挂起后重新定位一条待恢复的工具调用
+- token 不承诺跨进程、跨设备、跨实例恢复能力
+- token 必须在当前运行期内唯一，且能定位到一条待审批记录
+- token 可以设置过期时间，但首版允许仅在当前进程生命周期内有效
+- ResolveApproval 必须对重复提交安全：同一个 token 被重复确认时，不应重复执行工具
+- token 无效、已消费、已过期时，应返回明确错误
 
-- 从 assistant 文本中识别工具调用
-- 当前实现为 `json_v1`
-- 未来可替换为 native function calling
-
----
-
-## 6.5 FlowPolicy
-建议新增统一策略对象：
-
-```go
-type FlowPolicy interface {
-	ShouldStop(state *FlowState) (bool, string)
-	ShouldFallback(err error, state *FlowState) (bool, FlowName)
-}
-```
-
-如果不做统一接口，也至少应在 `policy.go` 中集中放置终止与回退策略。
+本轮不要求：
+- 引入正式 session_id
+- 引入正式 request_id
+- 定义远程 API 级别的审批恢复协议
+- 保证应用重启后的 token 可恢复
 
 ---
 
-## 7. 三类 Flow 的职责
+## 7. Flow 范式范围
 
-## 7.1 `single_shot`
-- 最简单的策略实现
-- 只做单轮上下文组装、单次模型调用、最终写回
-- 不进入工具循环
-- 作用是保持兼容现状，并作为所有新架构的基准流程
+### 7.1 `single_shot`
 
-## 7.2 `react`
-- 使用状态机思想驱动：
-  - 组装上下文
-  - 调模型
-  - 解析工具调用
-  - 执行工具
-  - 审批暂停/恢复
-  - 继续迭代
-- 终止逻辑由 policy 控制，不写死在流程体中
+- 一次上下文组装 + 一次模型调用 + 一次写回
+- 禁止工具闭环
+- 用于问答、解释、轻量总结
 
-## 7.3 `plan_execute`
-- 先调用 planner
-- 对计划做 schema 校验
-- 步骤执行复用 `react` 的工具执行能力
-- 校验失败或 planner 不可靠时，允许按 policy 回退到 `react`
+### 7.2 `react`
+
+- 多轮：LLM -> 解析工具 -> 执行工具 -> 观察回灌 -> 继续
+- 支持审批暂停与恢复
+- 用于代码修改、排障、探索性任务
+
+### 7.3 `plan_execute`
+
+- 本轮不注册、不暴露、不配置 plan_execute。文档仅保留其作为后续扩展方向，不产生任何实现占位代码
 
 ---
 
-## 8. 如何保证记忆模块和工具模块大改时不影响 Flow
+## 8. 边界与改动规则
 
-## 8.1 核心原则
-Flow 不依赖实现，只依赖能力。
+## 8.1 memory 重构时
 
-### 具体意味着
-Flow 不应直接依赖：
-
-- [MemoryService.BuildContext](C:/Users/10116/Desktop/study/gopro/neo-code/internal/server/domain/memory.go#L44)
-- [MemoryService.Save](C:/Users/10116/Desktop/study/gopro/neo-code/internal/server/domain/memory.go#L44)
-- [WorkingMemoryService.BuildContext](C:/Users/10116/Desktop/study/gopro/neo-code/internal/server/domain/working_memory.go#L36)
-- [WorkingMemoryService.Refresh](C:/Users/10116/Desktop/study/gopro/neo-code/internal/server/domain/working_memory.go#L36)
-- [GlobalRegistry.Execute](C:/Users/10116/Desktop/study/gopro/neo-code/internal/server/infra/tools/tool.go#L67)
-- [ApproveSecurityAsk](C:/Users/10116/Desktop/study/gopro/neo-code/internal/server/infra/tools/security.go#L33)
-
-Flow 只应依赖：
-
-- `TurnContextAssembler`
-- `TurnFinalizer`
-- `FlowToolExecutor`
-- `ToolCallParser`
-
----
-
-## 8.2 记忆模块大改时的改动边界
-如果未来记忆模块重构为：
-
-- 多源检索
-- 向量数据库
-- 结构化工作记忆
-- 新的写回策略
-
-应只改这些位置：
+优先只改：
 
 - `memory_service.go`
 - `working_memory_service.go`
 - `context_assembler.go`
 - `turn_finalizer.go`
 
-不应改：
+默认不改：
 
 - `single_shot.go`
 - `react.go`
-- `plan_execute.go`
 
-如果必须改 Flow 主循环，说明边界设计失败。
+例外条件：
 
----
+- 新能力要求改变流程控制语义（例如从“轮次驱动”改为“阶段图驱动”）
 
-## 8.3 工具模块大改时的改动边界
-如果未来工具模块重构为：
+## 8.2 tools 重构时
 
-- 远端执行
-- 原生 function calling
-- 新审批模型
-- 新工具元数据结构
-
-应只改这些位置：
+优先只改：
 
 - `infra/tools/*`
 - `tool_executor.go`
-- `tool_protocol_json.go` 或新的 parser
-- 安全相关适配层
+- `tool_protocol_json.go` 或替代 parser
 
-不应改：
+默认不改：
 
 - Flow 主循环
-- TUI 主事件处理
-- Flow 状态机逻辑
+
+例外条件：
+
+- 工具返回协议从同步结果改为异步任务句柄
 
 ---
 
-## 9. TUI 的新职责
+## 9. TUI 新职责
 
-TUI 应从当前的“半个流程控制器”退回为“事件渲染层 + 用户交互层”。
+TUI 仅保留：
 
-## 9.1 TUI 保留职责
-- 渲染文本流
-- 渲染工具状态
-- 渲染审批提示
-- 发送 `/y` `/n`
-- 发送 `/flow <name>`、`/provider`、`/switch`
+- 渲染事件流（delta、tool、approval、final）
+- 发送用户输入与审批决策（如 `/y`、`/n`）
+- 展示模型/provider/flow 当前配置
 
-## 9.2 TUI 移除职责
+TUI 移除：
+
 - assistant JSON 工具调用解析
 - 本地执行工具
-- 工具结果回灌为 system message
-- 审批恢复状态机本体
+- 工具结果拼装并回灌 system message
+- 审批恢复状态机主体
 
-相关现状参考：
+现状参考：
 
-- [update.go](C:/Users/10116/Desktop/study/gopro/neo-code/internal/tui/core/update.go#L82)
-- [update.go](C:/Users/10116/Desktop/study/gopro/neo-code/internal/tui/core/update.go#L165)
-- [runtime_services.go](C:/Users/10116/Desktop/study/gopro/neo-code/internal/tui/services/runtime_services.go#L46)
-
----
-
-## 10. 配置与切换
-
-建议在 [app_config.go](C:/Users/10116/Desktop/study/gopro/neo-code/configs/app_config.go#L20) 的 `AI` 下新增结构化 `flow` 配置：
-
-```yaml
-ai:
-  provider: "openll"
-  api_key: "AI_API_KEY"
-  model: "gpt-5.4"
-  flow:
-    name: "single_shot"
-    tool_protocol: "json_v1"
-    max_loops: 8
-    max_tool_calls: 12
-    planner_model: ""
-    executor_model: ""
-    plan_template_path: ""
-    executor_template_path: ""
-```
-
-建议支持环境变量覆盖：
-
-- `NEOCODE_FLOW`
-
-TUI 新增：
-
-- `/flow <name>`
-
-状态栏新增：
-
-- 当前 `model`
-- 当前 `flow`
+- [update.go](../internal/tui/core/update.go)
+- [runtime_services.go](../internal/tui/services/runtime_services.go)
 
 ---
 
-## 11. 推荐实施顺序
+## 10. 迁移顺序（按切片，不按模式名）
 
-## 阶段 A：先建模式与边界，不改核心实现
-实施内容：
+### Slice 1：抽离 ToolCallParser
 
-- 新建 `domain/flow.go`
-- 新建 `orchestration/flow/ports.go`
-- 新建 `orchestration/flow/registry.go`
-- 新建 `orchestration/flow/policy.go`
+- 保持当前线上默认协议实现与行为一致（不绑定具体协议名）
+- TUI 调 parser 的逻辑迁到 flow 层
+- 验收：`update.go` 不再 `json.Unmarshal` assistant 最终文本
 
-此阶段只完成：
+### Slice 2：抽离 FlowToolExecutor
 
-- Strategy
-- Factory/Registry
-- Ports and Adapters
-- 轻量 Policy
+- 接入现有 `GlobalRegistry` 与 security checker
+- 先增加内存级审批挂起记录；是否持久化作为下一步增强项
+- 验收：工具执行不再由 TUI 直接触发
 
-暂不改记忆算法和工具系统。
+### Slice 3：落地 react 主循环
 
----
+- 事件化输出替代“本地消息拼装”
+- 接入 `TurnContextAssembler` 与 `TurnFinalizer`
+- 验收：同一轮具备 Started/Completed 或 Started/Failed 的终态闭环
 
-## 阶段 B：旧实现接入新适配层
-实施内容：
+### Slice 4：切 TUI 为纯渲染层
 
-- `context_assembler.go` 桥接当前记忆/角色/todo/working memory
-- `turn_finalizer.go` 桥接当前写回逻辑
-- `tool_executor.go` 桥接当前工具注册表和安全检查
-- `tool_protocol_json.go` 承接当前 JSON 协议
-
-此阶段目标是“旧实现，新边界”。
+- TUI 只消费事件并提交审批决策
+- 验收：删除 TUI 中工具闭环逻辑分支
 
 ---
 
-## 阶段 C：落地 `single_shot` 与 `react`
-实施内容：
+## 11. 测试与验收
 
-- `single_shot.go`
-- `react.go`
-- TUI 改为事件流消费
-- `/y` `/n` 改为调用审批恢复接口
+## 11.1 Flow 合同测试
 
----
+必须覆盖：
 
-## 阶段 D：落地 `plan_execute`
-实施内容：
+- 流程切换：`single_shot` 与 `react`
+- 终止条件：`max_loops`、`max_tool_calls`、上下文取消
+- 审批暂停/恢复：同意、拒绝、重复提交、过期 token
+- 错误回退：parser 失败、工具失败、finalize 失败
 
-- `plan_execute.go`
-- planner schema 校验
-- 回退策略
-- 复用 `react` 执行器
+## 11.2 适配层测试
 
----
-
-## 阶段 E：推进记忆与工具模块重构
-前提：
-
-- Flow 已经只依赖稳定接口
-- Flow 主循环已有合同测试
-
-这样后续底层模块可独立演进。
-
----
-
-## 12. 测试策略
-
-## 12.1 Flow 合同测试
-Flow 测试必须只依赖 fake 端口，不依赖真实实现。
-
-应验证：
-
-- 流程切换
-- 状态推进
-- 审批暂停与恢复
-- 终止与回退
-- `single_shot` / `react` / `plan_execute` 的输出行为
-
-## 12.2 适配器测试
-分别验证：
+必须覆盖：
 
 - `context_assembler.go`
 - `turn_finalizer.go`
 - `tool_executor.go`
 - `tool_protocol_json.go`
 
-这些测试负责保护 Flow 与底层模块之间的桥接逻辑。
+## 11.3 TUI 回归测试
 
-## 12.3 TUI 回归测试
-现有大量测试都围绕 TUI 本地工具闭环，应逐步改为：
+目标：
 
-- TUI 接收事件
-- TUI 展示事件
-- TUI 发起审批恢复
-
-重点受影响测试参考：
-
-- [update_test.go](C:/Users/10116/Desktop/study/gopro/neo-code/internal/tui/core/update_test.go#L949)
-- [update_test.go](C:/Users/10116/Desktop/study/gopro/neo-code/internal/tui/core/update_test.go#L1009)
-- [update_test.go](C:/Users/10116/Desktop/study/gopro/neo-code/internal/tui/core/update_test.go#L1381)
+- 只验证事件渲染与用户交互，不再验证工具执行细节
 
 ---
 
-## 13. 风险与规避
+## 12. 风险与回滚
 
-### 风险一：模式引入过多，复杂度上升
-规避：
-- 只引入四类模式：Strategy、Factory/Registry、Ports and Adapters、轻量 State Machine/Policy
-- 不引入重量级规则树引擎和工作流框架
+风险 1：迁移过程出现双写逻辑（TUI 和 Flow 同时处理工具）  
+应对：通过在yaml配置开关 `flow.runtime.enabled` 控制单一路径。
 
-### 风险二：Flow 继续碰底层实现
-规避：
-- 通过包结构和合同测试约束 Flow 只能依赖端口接口
+风险 2：审批 token 不可恢复导致会话中断  
+应对：首版在编排层保存待审批记录，增加过期与幂等测试；是否写入 workspace 会话状态作为后续增强项。
 
-### 风险三：`service` 再次变成杂糅层
-规避：
-- 所有 Flow 相关适配与策略统一进入 `orchestration/flow/`
-
-### 风险四：审批恢复设计不完整
-规避：
-- 明确 token 化审批恢复接口
-- 不再依赖 TUI 本地状态机拼装流程恢复
+风险 3：事件契约不稳定导致 UI 频繁返工  
+应对：先冻结 `ChatEvent` 最小集合，再扩展字段。
 
 ---
 
-## 14. 建议团队优先确认的决策
+## 13. 需要先拍板的决策
 
-这份方案建议团队优先讨论并确认以下几点：
-
-- 是否接受以 Strategy 模式建模思考流程
-- 是否接受以 Factory + Registry 管理 Flow 创建与切换
-- 是否接受用 Ports and Adapters 保护 Flow 不受记忆与工具重构影响
-- 是否接受用轻量 Policy/State Machine 管理 `react` 和 `plan_execute`
-- 是否接受将 Flow 相关适配层统一放入 `internal/server/orchestration/flow/`
-- 是否接受本轮只升级内部事件流，不改外部传输契约
+- 本轮仅交付 `single_shot` + `react`，`plan_execute` 不进入交付范围
+- Flow 主循环事件契约先冻结，字段扩展走兼容策略
+- 首版审批挂起记录仅保存在内存，还是直接落到 workspace 状态文件
+- 是否接受通过配置开关分阶段灰度切流
 
 ---
-
-## 15. 最终建议
-
-建议团队采纳以下统一方向：
-
-“NeoCode 将引入独立的 Flow 编排上下文，以 Strategy 模式定义不同思考流程，以 Factory + Registry 模式实现配置化切换，并通过 Ports and Adapters 将记忆模块与工具模块隔离在稳定边界之外。`react` 与 `plan_execute` 的内部控制采用轻量状态机与策略对象管理终止、审批和回退决策。所有与 Flow 一起演进的适配层统一放入 `internal/server/orchestration/flow/`，而不是继续堆入 `service` 根包。外部传输契约本轮保持兼容，待内部编排稳定后再评估进一步升级。”
-
