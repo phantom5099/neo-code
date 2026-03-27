@@ -14,7 +14,8 @@ func NewProgram(configPath, workspaceRoot string) (*tea.Program, error) {
 	}
 
 	controller := services.NewRuntimeController(client, configPath)
-	model := core.NewModel(controller, workspaceRoot)
+	session := services.NewSessionService(controller)
+	model := core.NewModel(session, workspaceRoot)
 	return tea.NewProgram(model,
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),

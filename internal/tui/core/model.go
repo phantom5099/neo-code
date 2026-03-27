@@ -22,7 +22,7 @@ type Model struct {
 	ui   state.UIState
 	chat state.ChatState
 
-	controller services.Controller
+	session services.SessionService
 
 	streamChan      <-chan string
 	textarea        textarea.Model
@@ -33,7 +33,7 @@ type Model struct {
 	copyToClipboard func(string) error
 }
 
-func NewModel(controller services.Controller, workspaceRoot string) Model {
+func NewModel(session services.SessionService, workspaceRoot string) Model {
 	input := textarea.New()
 	focusedStyle, blurredStyle := textarea.DefaultStyles()
 	focusedStyle.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color("#61AFEF"))
@@ -70,12 +70,8 @@ func NewModel(controller services.Controller, workspaceRoot string) Model {
 			CommandHistory: make([]string, 0),
 			CmdHistIndex:   -1,
 		},
-		chat: state.ChatState{
-			Messages:         make([]state.Message, 0),
-			SessionStartedAt: time.Now(),
-			WorkspaceRoot:    workspaceRoot,
-		},
-		controller:      controller,
+		chat:            state.NewChatState(workspaceRoot),
+		session:         session,
 		textarea:        input,
 		viewport:        vp,
 		sideViewport:    sideVP,
@@ -100,60 +96,29 @@ func (m Model) Init() tea.Cmd {
 }
 
 func (m *Model) loadBootstrapCmd() tea.Cmd {
-	controller := m.controller
+	session := m.session
 	return func() tea.Msg {
-		if controller == nil {
+		if session == nil {
 			return BootstrapLoadedMsg{}
 		}
-		return BootstrapLoadedMsg{Data: controller.Bootstrap(context.Background())}
-	}
-}
-
-func (m *Model) conversationRequest() services.ConversationRequest {
-	return services.ConversationRequest{
-		Messages:    m.sessionMessages(),
-		ActiveModel: m.chat.ActiveModel,
+		return BootstrapLoadedMsg{Data: session.Bootstrap(context.Background())}
 	}
 }
 
 func (m *Model) sessionMessages() []services.SessionMessage {
-	result := make([]services.SessionMessage, 0, len(m.chat.Messages))
-	for _, msg := range m.chat.Messages {
-		result = append(result, services.SessionMessage{
-			Role:      msg.Role,
-			Content:   msg.Content,
-			Kind:      msg.Kind,
-			Transient: msg.Transient,
-		})
-	}
-	return result
+	return m.chat.SessionMessages()
+}
+
+func (m *Model) sessionSnapshot() services.SessionSnapshot {
+	return m.chat.Snapshot(m.ui.ApprovalRunning)
 }
 
 func (m *Model) applyBootstrap(data services.BootstrapData) {
-	m.chat.MemoryStats = data.MemoryStats
-	m.chat.APIKeyReady = data.APIKeyReady
-	m.applySnapshot(data.Snapshot)
-	if strings.TrimSpace(data.ResumeSummary.Content) != "" {
-		m.chat.Messages = append(m.chat.Messages, state.Message{
-			Role:      data.ResumeSummary.Role,
-			Content:   data.ResumeSummary.Content,
-			Kind:      data.ResumeSummary.Kind,
-			Timestamp: time.Now(),
-			Transient: true,
-		})
-	}
+	m.chat.ApplyBootstrap(data, time.Now())
 }
 
 func (m *Model) applyServiceMessages(messages []services.SessionMessage) {
-	for _, msg := range messages {
-		m.chat.Messages = append(m.chat.Messages, state.Message{
-			Role:      msg.Role,
-			Content:   msg.Content,
-			Kind:      msg.Kind,
-			Timestamp: time.Now(),
-			Transient: msg.Transient,
-		})
-	}
+	m.chat.ApplyMessages(messages, time.Now())
 }
 
 func (m *Model) SetWidth(w int) {
@@ -165,45 +130,23 @@ func (m *Model) SetHeight(h int) {
 }
 
 func (m *Model) AddMessage(role, content string) {
-	m.chat.Messages = append(m.chat.Messages, state.Message{
-		Role:      role,
-		Content:   content,
-		Kind:      services.MessageKindPlain,
-		Timestamp: time.Now(),
-	})
+	m.chat.AddPlainMessage(role, content, time.Now())
 }
 
 func (m *Model) AddTransientMessage(role, content string) {
-	m.chat.Messages = append(m.chat.Messages, state.Message{
-		Role:      role,
-		Content:   content,
-		Kind:      services.MessageKindPlain,
-		Timestamp: time.Now(),
-		Transient: true,
-	})
+	m.chat.AddTransientPlainMessage(role, content, time.Now())
 }
 
 func (m *Model) AddErrorMessage(content string) {
-	m.chat.Messages = append(m.chat.Messages, state.Message{
-		Role:      "assistant",
-		Content:   content,
-		Kind:      services.MessageKindPlain,
-		Timestamp: time.Now(),
-		Error:     true,
-		Transient: true,
-	})
+	m.chat.AddErrorMessage(content, time.Now())
 }
 
 func (m *Model) AppendLastMessage(content string) {
-	if len(m.chat.Messages) > 0 {
-		m.chat.Messages[len(m.chat.Messages)-1].Content += content
-	}
+	m.chat.AppendLastMessage(content)
 }
 
 func (m *Model) FinishLastMessage() {
-	if len(m.chat.Messages) > 0 {
-		m.chat.Messages[len(m.chat.Messages)-1].Streaming = false
-	}
+	m.chat.FinishLastMessage()
 }
 
 func (m *Model) setStatusMessage(message string) {

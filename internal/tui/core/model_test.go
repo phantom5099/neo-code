@@ -9,15 +9,19 @@ import (
 	"neo-code/internal/tui/state"
 )
 
-func TestNewModelAppliesDefaultsAndRuntimeFlags(t *testing.T) {
-	restoreCoreGlobals(t)
+func runtimeSession(client *fakeChatClient) services.SessionService {
+	return services.NewSessionService(services.NewRuntimeController(client, "config.yaml"))
+}
 
+func TestNewModelAppliesDefaultsAndRuntimeFlags(t *testing.T) {
 	client := &fakeChatClient{defaultModelName: "demo-model"}
 	t.Setenv(config.DefaultAPIKeyEnvVar, "secret")
+	origGlobalConfig := config.GlobalAppConfig
+	t.Cleanup(func() { config.GlobalAppConfig = origGlobalConfig })
 	config.GlobalAppConfig = nil
 
-	m := NewModel(services.NewRuntimeController(client, "config.yaml"), "D:/neo-code")
-	m.applyBootstrap(m.controller.Bootstrap(context.Background()))
+	m := NewModel(runtimeSession(client), "D:/neo-code")
+	m.applyBootstrap(m.session.Bootstrap(context.Background()))
 
 	if m.chat.ActiveModel != "demo-model" {
 		t.Fatalf("expected default model from client, got %q", m.chat.ActiveModel)
@@ -31,12 +35,10 @@ func TestNewModelAppliesDefaultsAndRuntimeFlags(t *testing.T) {
 }
 
 func TestNewModelUsesEmptyStatsWhenClientReturnsNil(t *testing.T) {
-	restoreCoreGlobals(t)
-
 	client := &fakeChatClient{nilMemoryStats: true}
 
-	m := NewModel(services.NewRuntimeController(client, "config.yaml"), "D:/neo-code")
-	m.applyBootstrap(m.controller.Bootstrap(context.Background()))
+	m := NewModel(runtimeSession(client), "D:/neo-code")
+	m.applyBootstrap(m.session.Bootstrap(context.Background()))
 	if m.chat.MemoryStats.TotalItems != 0 {
 		t.Fatalf("expected zero-value stats, got %+v", m.chat.MemoryStats)
 	}
@@ -58,24 +60,21 @@ func TestAppendAndFinishLastMessage(t *testing.T) {
 }
 
 func TestInitReturnsNonNilCmd(t *testing.T) {
-	restoreCoreGlobals(t)
-
-	m := NewModel(services.NewRuntimeController(&fakeChatClient{}, "config.yaml"), "D:/neo-code")
+	m := NewModel(runtimeSession(&fakeChatClient{}), "D:/neo-code")
 	if cmd := m.Init(); cmd == nil {
 		t.Fatal("expected non-nil init cmd")
 	}
 }
 
 func TestNewModelAddsResumeSummaryMessageWhenSupported(t *testing.T) {
-	restoreCoreGlobals(t)
-
 	client := &resumeSummaryClient{
 		fakeChatClient: fakeChatClient{defaultModelName: "demo-model"},
 		summary:        "Recovered previous working context:\n- Current goal: fix the memory module",
 	}
 
-	m := NewModel(services.NewRuntimeController(client, "config.yaml"), "D:/neo-code")
-	m.applyBootstrap(m.controller.Bootstrap(context.Background()))
+	m := NewModel(runtimeSession(&client.fakeChatClient), "D:/neo-code")
+	m.session = services.NewSessionService(services.NewRuntimeController(client, "config.yaml"))
+	m.applyBootstrap(m.session.Bootstrap(context.Background()))
 	if len(m.chat.Messages) != 1 {
 		t.Fatalf("expected one resume summary message, got %+v", m.chat.Messages)
 	}
@@ -85,7 +84,8 @@ func TestNewModelAddsResumeSummaryMessageWhenSupported(t *testing.T) {
 }
 
 func TestBuildRequestMessagesKeepsSystemMessagesAndLatestTurns(t *testing.T) {
-	restoreCoreGlobals(t)
+	origGlobalConfig := config.GlobalAppConfig
+	t.Cleanup(func() { config.GlobalAppConfig = origGlobalConfig })
 	config.GlobalAppConfig = config.DefaultAppConfig()
 	config.GlobalAppConfig.History.ShortTermTurns = 2
 

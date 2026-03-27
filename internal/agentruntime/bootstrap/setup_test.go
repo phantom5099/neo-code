@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"neo-code/internal/agentruntime/interaction"
 	"neo-code/internal/config"
-	"neo-code/internal/tui/services"
 )
 
 type errReader struct{}
@@ -385,7 +385,7 @@ func TestEnsureAPIKeyInteractiveAllowsContinueOnSoftValidationError(t *testing.T
 		return cfg, false, nil
 	}
 	validateChatAPIKey = func(context.Context, *config.AppConfiguration) error {
-		return services.ErrAPIKeyValidationSoft
+		return interaction.ErrAPIKeyValidationSoft
 	}
 	writeCount := 0
 	writeAppConfig = func(string, *config.AppConfiguration) error {
@@ -473,7 +473,7 @@ func TestEnsureAPIKeyInteractiveHandlesInvalidAPIKeyAndExit(t *testing.T) {
 		return cfg, false, nil
 	}
 	validateChatAPIKey = func(context.Context, *config.AppConfiguration) error {
-		return services.ErrInvalidAPIKey
+		return interaction.ErrInvalidAPIKey
 	}
 
 	ready, err := EnsureAPIKeyInteractive(context.Background(), bufio.NewScanner(strings.NewReader("/exit\n")), "config.yaml")

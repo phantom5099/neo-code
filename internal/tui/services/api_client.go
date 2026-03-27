@@ -1,16 +1,12 @@
 package services
 
-import (
-	"neo-code/internal/agentruntime"
-	"neo-code/internal/agentruntime/chat"
-	"neo-code/internal/agentruntime/memory"
-)
+import "neo-code/internal/agentruntime/interaction"
 
-type Message = chat.Message
-type ChatClient = agentruntime.ChatClient
-type WorkingSessionSummaryProvider = agentruntime.WorkingSessionSummaryProvider
-type MemoryStats = memory.MemoryStats
+type Message = interaction.Message
+type ChatClient = interaction.ChatClient
+type WorkingSessionSummaryProvider = interaction.WorkingSessionSummaryProvider
+type MemoryStats = interaction.MemoryStats
 
 func NewLocalChatClient() (ChatClient, error) {
-	return agentruntime.NewLocalChatClient()
+	return interaction.NewLocalChatClient()
 }

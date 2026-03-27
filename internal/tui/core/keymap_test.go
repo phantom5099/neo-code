@@ -18,6 +18,9 @@ func TestEnterSubmitsMessage(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected Enter to submit and start streaming")
 	}
+	msg := cmd()
+	updated, cmd = got.Update(msg)
+	got = updated.(Model)
 	if len(got.chat.Messages) != 2 || got.chat.Messages[0].Role != "user" {
 		t.Fatalf("expected submitted messages, got %+v", got.chat.Messages)
 	}

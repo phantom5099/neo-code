@@ -9,8 +9,9 @@ import (
 	"os"
 	"strings"
 
+	runtimebootstrap "neo-code/internal/agentruntime/bootstrap"
 	"neo-code/internal/config"
-	"neo-code/internal/tui/bootstrap"
+	tuibootstrap "neo-code/internal/tui/bootstrap"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -40,11 +41,11 @@ func defaultRunDeps(stdin io.Reader, stdout, stderr io.Writer) runDeps {
 		stdout:                  stdout,
 		stderr:                  stderr,
 		setUTF8Mode:             setUTF8Mode,
-		prepareWorkspace:        bootstrap.PrepareWorkspace,
-		ensureAPIKeyInteractive: bootstrap.EnsureAPIKeyInteractive,
+		prepareWorkspace:        runtimebootstrap.PrepareWorkspace,
+		ensureAPIKeyInteractive: runtimebootstrap.EnsureAPIKeyInteractive,
 		loadAppConfig:           config.LoadAppConfig,
 		newProgram: func(configPath, workspaceRoot string) (programRunner, error) {
-			return bootstrap.NewProgram(configPath, workspaceRoot)
+			return tuibootstrap.NewProgram(configPath, workspaceRoot)
 		},
 	}
 }

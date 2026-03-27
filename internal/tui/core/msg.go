@@ -8,24 +8,18 @@ type BootstrapLoadedMsg struct {
 
 func (BootstrapLoadedMsg) isMsg() {}
 
-type ChatStartedMsg struct {
-	Stream <-chan string
+type InputHandledMsg struct {
+	Result services.InputResult
+	Err    error
 }
 
-func (ChatStartedMsg) isMsg() {}
+func (InputHandledMsg) isMsg() {}
 
 type TurnResolvedMsg struct {
 	Resolution services.TurnResolution
 }
 
 func (TurnResolvedMsg) isMsg() {}
-
-type MutationFeedbackMsg struct {
-	Feedback *services.MutationFeedback
-	Err      error
-}
-
-func (MutationFeedbackMsg) isMsg() {}
 
 type MemoryFeedbackMsg struct {
 	Feedback *services.MemoryFeedback

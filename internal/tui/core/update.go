@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"neo-code/internal/tui/services"
 	"neo-code/internal/tui/state"
@@ -25,15 +26,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		return m, nil
 
-	case MutationFeedbackMsg:
+	case InputHandledMsg:
 		if msg.Err != nil {
 			m.AddErrorMessage(fmt.Sprintf("操作失败：%v", msg.Err))
 			m.setLastError(msg.Err)
 			m.refreshViewport()
 			return m, nil
 		}
-		m.applyMutationFeedback(msg.Feedback)
-		return m, nil
+		return m.applyInputResult(msg.Result)
 
 	case MemoryFeedbackMsg:
 		if msg.Err != nil {
@@ -43,17 +43,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.Feedback != nil && msg.Feedback.Action == services.MemoryActionClearSession {
-			m.chat.Messages = nil
-			m.chat.TouchedFiles = nil
 			m.ui.CommandDraft = ""
-			m.chat.WorkspaceSummary = ""
 		}
 		m.applyMemoryFeedback(msg.Feedback)
 		return m, nil
-
-	case ChatStartedMsg:
-		m.streamChan = msg.Stream
-		return m, m.streamResponseFromChannel()
 
 	case TurnResolvedMsg:
 		return m.applyTurnResolution(msg.Resolution)
@@ -66,7 +59,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case StreamChunkMsg:
 		if m.chat.Generating {
-			m.AppendLastMessage(msg.Content)
+			m.chat.AppendLastMessage(msg.Content)
 			m.refreshViewport()
 		}
 		return m, m.streamResponseFromChannel()
@@ -88,8 +81,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case RefreshMemoryMsg:
+		session := m.session
 		return m, func() tea.Msg {
-			feedback, err := loadMemoryStats(context.Background(), m.controller)
+			if session == nil {
+				return MemoryFeedbackMsg{Err: context.Canceled}
+			}
+			feedback, err := session.RefreshMemory(context.Background())
 			return MemoryFeedbackMsg{Feedback: feedback, Err: err}
 		}
 
@@ -376,21 +373,17 @@ func (m *Model) scrollFocusedViewportBottom() {
 }
 
 func (m *Model) handleStreamDone() (tea.Model, tea.Cmd) {
-	m.chat.Generating = false
+	m.chat.HandleStreamDone()
 	m.streamChan = nil
-
-	lastContent := ""
-	if len(m.chat.Messages) > 0 {
-		lastMsg := &m.chat.Messages[len(m.chat.Messages)-1]
-		lastMsg.Streaming = false
-		if lastMsg.Role == "assistant" {
-			lastContent = lastMsg.Content
-		}
-	}
 	m.setStatusMessage("生成完成")
 
+	session := m.session
+	snapshot := m.sessionSnapshot()
 	return *m, func() tea.Msg {
-		resolution, err := resolveAssistantTurn(context.Background(), m.controller, m.conversationRequest(), lastContent)
+		if session == nil {
+			return StreamErrorMsg{Err: context.Canceled}
+		}
+		resolution, err := session.ContinueAfterStream(context.Background(), snapshot)
 		if err != nil {
 			return StreamErrorMsg{Err: err}
 		}
@@ -399,12 +392,12 @@ func (m *Model) handleStreamDone() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleStreamError(err error) (tea.Model, tea.Cmd) {
-	m.chat.Generating = false
 	m.streamChan = nil
 	m.ui.ApprovalRunning = false
 
-	replacedPlaceholder := false
-	if len(m.chat.Messages) > 0 {
+	m.chat.ApplyStreamError(err, time.Now())
+	replacedPlaceholder := true
+	if false && len(m.chat.Messages) > 0 {
 		lastMsg := &m.chat.Messages[len(m.chat.Messages)-1]
 		if lastMsg.Role == "assistant" && strings.TrimSpace(lastMsg.Content) == "" {
 			lastMsg.Content = fmt.Sprintf("错误：%v", err)
@@ -415,7 +408,7 @@ func (m *Model) handleStreamError(err error) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	if !replacedPlaceholder {
+	if false && !replacedPlaceholder {
 		m.AddErrorMessage(fmt.Sprintf("错误：%v", err))
 	}
 	m.setLastError(err)
@@ -426,23 +419,11 @@ func (m *Model) handleStreamError(err error) (tea.Model, tea.Cmd) {
 
 func (m *Model) applyTurnResolution(resolution services.TurnResolution) (tea.Model, tea.Cmd) {
 	m.ui.ApprovalRunning = false
-	m.chat.PendingApproval = nil
-
-	if resolution.PendingApproval != nil {
-		m.chat.PendingApproval = &state.PendingApproval{
-			Call:     resolution.PendingApproval.Call,
-			ToolType: resolution.PendingApproval.ToolType,
-			Target:   resolution.PendingApproval.Target,
-		}
-	}
-	m.chat.TouchedFiles = services.MergeTouchedPaths(m.chat.TouchedFiles, resolution.TouchedPaths...)
-	m.applyServiceMessages(resolution.Messages)
+	stream := m.chat.ApplyTurnResolution(resolution, time.Now())
 	m.setStatusMessage(resolution.StatusMessage)
 
-	if resolution.Stream != nil {
-		m.AddMessage("assistant", "")
-		m.chat.Generating = true
-		m.streamChan = resolution.Stream
+	if stream != nil {
+		m.streamChan = stream
 		m.refreshViewport()
 		return *m, m.streamResponseFromChannel()
 	}
