@@ -30,7 +30,6 @@ config.local.yaml
 
 # Local data
 data/
-.cache/
 
 # Editor/IDE
 .idea/

@@ -1,0 +1,56 @@
+app:
+  name: "NeoCode"
+  version: "1.0.0"
+
+providers:
+  - name: "openai"
+    protocol: "openai"
+    url: "https://api.openai.com/v1/chat/completions"
+    model_id: "gpt-5.4"
+    api_key_env: "AI_API_KEY"
+  - name: "anthropic"
+    protocol: "anthropic"
+    url: "https://api.anthropic.com/v1/messages"
+    model_id: "claude-sonnet-4-5"
+    api_key_env: "ANTHROPIC_API_KEY"
+  - name: "gemini"
+    protocol: "gemini"
+    url: "https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse"
+    model_id: "gemini-2.5-pro"
+    api_key_env: "GEMINI_API_KEY"
+  - name: "deepseek"
+    protocol: "openai"
+    url: "https://api.deepseek.com/chat/completions"
+    model_id: "deepseek-chat"
+    api_key_env: "DEEPSEEK_API_KEY"
+
+selected_provider: "openai"
+current_model: "gpt-5.4"
+
+memory:
+  top_k: 5
+  min_match_score: 2.2
+  max_prompt_chars: 1800
+  max_items: 1000
+  storage_path: ""
+  persist_types:
+    - "user_preference"
+    - "project_rule"
+    - "code_fact"
+    - "fix_recipe"
+
+history:
+  short_term_turns: 6
+  max_tool_context_messages: 3
+  max_tool_context_output_size: 4000
+  persist_session_state: true
+  workspace_state_dir: ""
+  resume_last_session: true
+
+persona:
+  file_path: ""
+
+# Notes:
+# - 仍兼容旧的 ai.provider / ai.model / ai.api_key 字段，但新配置建议统一使用 providers + selected_provider + current_model。
+# - 切换 provider 时，current_model 会重置为对应 provider 的默认模型。
+# - 当以上路径为空时，程序会自动回退到 ~/.neocode 下的默认目录。
