@@ -57,10 +57,11 @@ func (t *GlobTool) Execute(ctx context.Context, input tools.ToolCallInput) (tool
 		return tools.ToolResult{Name: t.Name()}, err
 	}
 
-	pattern := normalizeSlashPath(strings.TrimSpace(args.Pattern))
-	if pattern == "" {
+	rawPattern := strings.TrimSpace(args.Pattern)
+	if rawPattern == "" {
 		return tools.ToolResult{Name: t.Name()}, errors.New(globToolName + ": pattern is required")
 	}
+	pattern := normalizeSlashPath(rawPattern)
 	if err := ctx.Err(); err != nil {
 		return tools.ToolResult{Name: t.Name()}, err
 	}
