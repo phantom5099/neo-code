@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"neo-code/internal/config"
 	toolpkg "neo-code/internal/tool"
 )
 
@@ -102,5 +103,51 @@ func TestNormalizeProviderNameSupportedProvidersAndDefaultModel(t *testing.T) {
 
 	if model := DefaultModelForProvider("openai"); strings.TrimSpace(model) == "" {
 		t.Fatal("expected default model for openai")
+	}
+}
+
+type snapshotClient struct {
+	defaultModel string
+	summary      string
+}
+
+func (c snapshotClient) Chat(context.Context, []Message, string) (<-chan string, error) {
+	return nil, nil
+}
+func (c snapshotClient) GetMemoryStats(context.Context) (*MemoryStats, error) {
+	return &MemoryStats{}, nil
+}
+func (c snapshotClient) ClearMemory(context.Context) error        { return nil }
+func (c snapshotClient) ClearSessionMemory(context.Context) error { return nil }
+func (c snapshotClient) DefaultModel() string                     { return c.defaultModel }
+func (c snapshotClient) GetWorkingSessionSummary(context.Context) (string, error) {
+	return c.summary, nil
+}
+
+func TestReadUISnapshotUsesConfigAndSummaryProvider(t *testing.T) {
+	orig := config.GlobalAppConfig
+	t.Cleanup(func() { config.GlobalAppConfig = orig })
+
+	cfg := config.DefaultAppConfig()
+	_ = cfg.SetSelectedProvider("openai")
+	cfg.SetCurrentModel("gpt-5.4-mini")
+	config.GlobalAppConfig = cfg
+
+	got := ReadUISnapshot(context.Background(), snapshotClient{
+		defaultModel: "fallback-model",
+		summary:      "workspace summary",
+	})
+
+	if got.ProviderName != "openai" {
+		t.Fatalf("expected provider openai, got %+v", got)
+	}
+	if got.CurrentModel != "gpt-5.4-mini" {
+		t.Fatalf("expected current model from config, got %+v", got)
+	}
+	if got.DefaultModel == "" {
+		t.Fatalf("expected default model, got %+v", got)
+	}
+	if got.WorkspaceSummary != "workspace summary" {
+		t.Fatalf("expected summary, got %+v", got)
 	}
 }

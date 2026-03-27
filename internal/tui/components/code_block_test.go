@@ -103,7 +103,7 @@ func TestParseContentSegmentsExtractsTextAndCodeBlocks(t *testing.T) {
 
 func TestRenderCodeBlockIncludesCopyHeader(t *testing.T) {
 	rendered := RenderCodeBlock(ContentSegment{Type: SegmentCodeBlock, Lang: "go", Code: "fmt.Println(1)", Closed: true}, 80, CopyActionLabel())
-	if !strings.Contains(rendered, "[Copy] go") {
+	if !strings.Contains(rendered, "[Copy]") || !strings.Contains(rendered, "go") {
 		t.Fatalf("expected copy header, got %q", rendered)
 	}
 }

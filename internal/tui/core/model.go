@@ -28,7 +28,9 @@ type Model struct {
 	streamChan      <-chan string
 	textarea        textarea.Model
 	viewport        viewport.Model
+	sideViewport    viewport.Model
 	chatLayout      components.RenderedChatLayout
+	layout          viewLayout
 	copyToClipboard func(string) error
 
 	mu *sync.Mutex
@@ -69,26 +71,39 @@ func NewModel(client services.ChatClient, historyTurns int, configPath, workspac
 
 	vp := viewport.New(0, 0)
 	vp.SetContent("")
+	sideVP := viewport.New(0, 0)
+	sideVP.SetContent("")
+	snapshot := services.ReadUISnapshot(context.Background(), client)
+	startedAt := time.Now()
 
 	model := Model{
 		ui: state.UIState{
-			Mode:       state.ModeChat,
-			AutoScroll: true,
+			Mode:            state.ModeChat,
+			Focus:           state.FocusInput,
+			AutoScroll:      true,
+			StatusMessage:   "Tab切换焦点，h切换侧栏，]展开系统消息",
+			HelpCollapsed:   false,
+			FirstGuideShown: true,
 		},
 		chat: state.ChatState{
-			Messages:       make([]state.Message, 0),
-			HistoryTurns:   historyTurns,
-			ActiveModel:    client.DefaultModel(),
-			MemoryStats:    *stats,
-			CommandHistory: make([]string, 0),
-			CmdHistIndex:   -1,
-			WorkspaceRoot:  workspaceRoot,
-			APIKeyReady:    services.RuntimeAPIKeyReady(),
-			ConfigPath:     configPath,
+			Messages:         make([]state.Message, 0),
+			HistoryTurns:     historyTurns,
+			SessionStartedAt: startedAt,
+			ProviderName:     snapshot.ProviderName,
+			ActiveModel:      firstNonEmpty(snapshot.CurrentModel, client.DefaultModel()),
+			DefaultModel:     snapshot.DefaultModel,
+			WorkspaceSummary: snapshot.WorkspaceSummary,
+			MemoryStats:      *stats,
+			CommandHistory:   make([]string, 0),
+			CmdHistIndex:     -1,
+			WorkspaceRoot:    workspaceRoot,
+			APIKeyReady:      services.RuntimeAPIKeyReady(),
+			ConfigPath:       configPath,
 		},
 		client:          client,
 		textarea:        input,
 		viewport:        vp,
+		sideViewport:    sideVP,
 		copyToClipboard: clipboard.WriteAll,
 		mu:              &sync.Mutex{},
 	}
@@ -104,6 +119,15 @@ func NewModel(client services.ChatClient, historyTurns int, configPath, workspac
 	}
 
 	return model
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func (m *Model) mutex() *sync.Mutex {
@@ -134,6 +158,19 @@ func (m *Model) AddMessage(role, content string) {
 		Role:      role,
 		Content:   content,
 		Timestamp: time.Now(),
+	})
+}
+
+func (m *Model) AddErrorMessage(content string) {
+	mu := m.mutex()
+	mu.Lock()
+	defer mu.Unlock()
+
+	m.chat.Messages = append(m.chat.Messages, state.Message{
+		Role:      "assistant",
+		Content:   content,
+		Timestamp: time.Now(),
+		Error:     true,
 	})
 }
 
@@ -185,4 +222,35 @@ func (m *Model) TrimHistory(maxTurns int) {
 
 func isResumeSummaryMessage(content string) bool {
 	return strings.HasPrefix(strings.TrimSpace(content), resumeSummaryPrefix)
+}
+
+func (m *Model) setStatusMessage(message string) {
+	m.ui.StatusMessage = strings.TrimSpace(message)
+}
+
+func (m *Model) setLastError(err error) {
+	if err == nil {
+		return
+	}
+	m.ui.LastError = err.Error()
+}
+
+func (m *Model) rememberTouchedFiles(paths ...string) {
+	for _, path := range paths {
+		trimmed := strings.TrimSpace(path)
+		if trimmed == "" {
+			continue
+		}
+		exists := false
+		for _, existing := range m.chat.TouchedFiles {
+			if strings.EqualFold(existing, trimmed) {
+				exists = true
+				break
+			}
+		}
+		if exists {
+			continue
+		}
+		m.chat.TouchedFiles = append(m.chat.TouchedFiles, trimmed)
+	}
 }

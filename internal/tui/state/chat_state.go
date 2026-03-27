@@ -11,6 +11,7 @@ type Message struct {
 	Content   string
 	Timestamp time.Time
 	Streaming bool
+	Error     bool
 }
 
 type PendingApproval struct {
@@ -20,16 +21,22 @@ type PendingApproval struct {
 }
 
 type ChatState struct {
-	Messages        []Message
-	HistoryTurns    int
-	Generating      bool
-	ActiveModel     string
-	MemoryStats     services.MemoryStats
-	CommandHistory  []string
-	CmdHistIndex    int
-	WorkspaceRoot   string
-	ToolExecuting   bool
-	PendingApproval *PendingApproval
-	APIKeyReady     bool
-	ConfigPath      string
+	Messages         []Message
+	HistoryTurns     int
+	Generating       bool
+	SessionStartedAt time.Time
+	ProviderName     string
+	ActiveModel      string
+	DefaultModel     string
+	WorkspaceSummary string
+	MemoryStats      services.MemoryStats
+	CommandHistory   []string
+	CmdHistIndex     int
+	CommandDraft     string
+	WorkspaceRoot    string
+	TouchedFiles     []string
+	ToolExecuting    bool
+	PendingApproval  *PendingApproval
+	APIKeyReady      bool
+	ConfigPath       string
 }

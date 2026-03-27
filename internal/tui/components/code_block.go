@@ -17,15 +17,14 @@ const (
 const copyActionLabel = "[Copy]"
 
 var codeBlockStyle = lipgloss.NewStyle().
-	Foreground(lipgloss.Color("#ABB2BF")).
-	Background(lipgloss.Color("#282C34")).
+	Foreground(lipgloss.Color(ColorMutedText)).
+	Background(lipgloss.Color(ColorPanel)).
 	Padding(0, 1)
 
 var codeBlockHeaderStyle = lipgloss.NewStyle().
-	Foreground(lipgloss.Color("#61AFEF")).
-	Background(lipgloss.Color("#21252B")).
-	Bold(true).
-	Padding(0, 1)
+	Foreground(lipgloss.Color(ColorTitle)).
+	Background(lipgloss.Color(ColorPanelAlt)).
+	Bold(true)
 
 type ContentSegment struct {
 	Type   SegmentType
@@ -52,8 +51,9 @@ type ClickableRegion struct {
 }
 
 type RenderedChatLayout struct {
-	Content string
-	Regions []ClickableRegion
+	Content       string
+	Regions       []ClickableRegion
+	ContentHeight int
 }
 
 func RenderContent(content string, width int) string {
@@ -153,41 +153,61 @@ func RenderSegments(segments []ContentSegment, width int) string {
 }
 
 func RenderCodeBlock(segment ContentSegment, width int, actionLabel string) string {
+	rendered, _, _ := RenderCodeBlockLayout(segment, width, actionLabel)
+	return rendered
+}
+
+func RenderCodeBlockLayout(segment ContentSegment, width int, actionLabel string) (string, string, int) {
 	var b strings.Builder
 	resolvedLang := strings.TrimSpace(segment.Lang)
 	if resolvedLang == "" {
 		resolvedLang = DetectLanguage(segment.Code)
 	}
-	header, resolvedLang := renderCodeBlockHeader(resolvedLang, width, actionLabel)
+	header, resolvedLang, actionStartCol := renderCodeBlockHeader(resolvedLang, width, actionLabel)
 	b.WriteString(header)
 	b.WriteString("\n")
 	b.WriteString(HighlightCodeBlock(strings.Split(segment.Code, "\n"), resolvedLang, width, segment.Closed))
-	return b.String()
+	return b.String(), resolvedLang, actionStartCol
 }
 
-func renderCodeBlockHeader(lang string, width int, actionLabel string) (string, string) {
+func renderCodeBlockHeader(lang string, width int, actionLabel string) (string, string, int) {
 	resolvedLang := strings.TrimSpace(lang)
 	if width <= 0 {
 		width = 80
 	}
-	parts := make([]string, 0, 2)
-	if strings.TrimSpace(actionLabel) != "" {
-		parts = append(parts, strings.TrimSpace(actionLabel))
-	}
 	if resolvedLang == "" {
 		resolvedLang = "text"
 	}
-	parts = append(parts, resolvedLang)
-	return codeBlockHeaderStyle.MaxWidth(width).Render(strings.Join(parts, " ")), resolvedLang
+	actionLabel = strings.TrimSpace(actionLabel)
+	if actionLabel == "" {
+		return codeBlockHeaderStyle.MaxWidth(width).Render(resolvedLang), resolvedLang, -1
+	}
+
+	plain := resolvedLang
+	actionStartCol := -1
+	minWidth := len([]rune(resolvedLang)) + len([]rune(actionLabel)) + 1
+	if width < minWidth {
+		width = minWidth
+	}
+	gapWidth := width - len([]rune(resolvedLang)) - len([]rune(actionLabel))
+	if gapWidth < 1 {
+		gapWidth = 1
+	}
+	plain = resolvedLang + strings.Repeat(" ", gapWidth) + actionLabel
+	actionStartCol = len([]rune(resolvedLang)) + gapWidth
+	return codeBlockHeaderStyle.Width(width).Render(plain), resolvedLang, actionStartCol
 }
 
-func BuildCopyRegion(messageIndex, blockIndex, row int, code string, lang string) ClickableRegion {
+func BuildCopyRegion(messageIndex, blockIndex, row int, code string, lang string, startCol int) ClickableRegion {
+	if startCol < 1 {
+		startCol = 1
+	}
 	return ClickableRegion{
 		Kind:     "copy",
 		StartRow: row,
 		EndRow:   row,
-		StartCol: 1,
-		EndCol:   len(copyActionLabel),
+		StartCol: startCol,
+		EndCol:   startCol + len(copyActionLabel) - 1,
 		CodeBlock: CodeBlockRef{
 			MessageIndex: messageIndex,
 			BlockIndex:   blockIndex,

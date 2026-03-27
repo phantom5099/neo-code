@@ -1,60 +1,34 @@
 package components
 
 import (
-	"fmt"
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/lipgloss"
 )
 
 type StatusBar struct {
-	Model      string
-	MemoryCnt  int
-	Generating bool
-	Width      int
+	Left   string
+	Center string
+	Right  string
+	Width  int
 }
 
 func (s StatusBar) Render() string {
-	modelStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#98C379")).
-		Background(lipgloss.Color("#282C34")).
-		Padding(0, 1)
+	left := lipgloss.NewStyle().Bold(true).Render(strings.TrimSpace(s.Left))
+	center := lipgloss.NewStyle().Bold(true).Render(strings.TrimSpace(s.Center))
+	right := lipgloss.NewStyle().Bold(true).Render(strings.TrimSpace(s.Right))
 
-	memStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#C678DD")).
-		Background(lipgloss.Color("#282C34")).
-		Padding(0, 1)
-
-	statusText := "Idle"
-	statusStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#5C6370")).
-		Background(lipgloss.Color("#282C34")).
-		Padding(0, 1)
-	if s.Generating {
-		statusText = "Generating"
-		statusStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#E5C07B")).
-			Background(lipgloss.Color("#282C34")).
-			Padding(0, 1)
+	totalWidth := s.Width
+	if totalWidth <= 0 {
+		totalWidth = lipgloss.Width(left) + lipgloss.Width(center) + lipgloss.Width(right) + 4
 	}
 
-	timeStr := time.Now().Format("15:04")
-	timestampStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#5C6370")).
-		Background(lipgloss.Color("#282C34")).
-		Padding(0, 1)
-
-	modelText := modelStyle.Render(s.Model)
-	memText := memStyle.Render(fmt.Sprintf("Memory: %d", s.MemoryCnt))
-	status := statusStyle.Render(statusText)
-	timestamp := timestampStyle.Render(timeStr)
-
-	left := strings.Join([]string{modelText, memText, status}, "  ")
-	padding := s.Width - lipgloss.Width(left) - lipgloss.Width(timestamp)
-	if padding < 1 {
-		padding = 1
+	remaining := totalWidth - lipgloss.Width(left) - lipgloss.Width(center) - lipgloss.Width(right)
+	if remaining < 2 {
+		remaining = 2
 	}
+	leftGap := remaining / 2
+	rightGap := remaining - leftGap
 
-	return left + strings.Repeat(" ", padding) + timestamp
+	return left + strings.Repeat(" ", leftGap) + center + strings.Repeat(" ", rightGap) + right
 }

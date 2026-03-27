@@ -741,6 +741,10 @@ func TestMouseClickCopiesCodeBlock(t *testing.T) {
 	m := newTestModel(t, client)
 	m.chat.Messages = []state.Message{{Role: "assistant", Content: "```go\nfmt.Println(1)\n```"}}
 	m.refreshViewport()
+	if len(m.chatLayout.Regions) != 1 {
+		t.Fatalf("expected one clickable region, got %d", len(m.chatLayout.Regions))
+	}
+	region := m.chatLayout.Regions[0]
 
 	var copied string
 	m.copyToClipboard = func(text string) error {
@@ -748,7 +752,7 @@ func TestMouseClickCopiesCodeBlock(t *testing.T) {
 		return nil
 	}
 
-	updated, cmd := m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: 1, Y: 2})
+	updated, cmd := m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: region.StartCol, Y: region.StartRow})
 	got := updated.(Model)
 
 	if cmd != nil {
@@ -757,8 +761,8 @@ func TestMouseClickCopiesCodeBlock(t *testing.T) {
 	if copied != "fmt.Println(1)" {
 		t.Fatalf("expected code to be copied, got %q", copied)
 	}
-	if !strings.Contains(got.ui.CopyStatus, "Copied go code block") {
-		t.Fatalf("expected copy status, got %q", got.ui.CopyStatus)
+	if !strings.Contains(got.ui.StatusMessage, "copied: go") {
+		t.Fatalf("expected copy status, got %q", got.ui.StatusMessage)
 	}
 }
 
@@ -767,19 +771,26 @@ func TestMouseClickCopyFailureShowsEnglishStatus(t *testing.T) {
 	m := newTestModel(t, client)
 	m.chat.Messages = []state.Message{{Role: "assistant", Content: "```go\nfmt.Println(1)\n```"}}
 	m.refreshViewport()
+	if len(m.chatLayout.Regions) != 1 {
+		t.Fatalf("expected one clickable region, got %d", len(m.chatLayout.Regions))
+	}
+	region := m.chatLayout.Regions[0]
 
 	m.copyToClipboard = func(string) error {
 		return errors.New("clipboard unavailable")
 	}
 
-	updated, cmd := m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: 1, Y: 2})
+	updated, cmd := m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: region.StartCol, Y: region.StartRow})
 	got := updated.(Model)
 
 	if cmd != nil {
 		t.Fatal("expected no follow-up command")
 	}
-	if !strings.Contains(got.ui.CopyStatus, "Copy failed: clipboard unavailable") {
-		t.Fatalf("expected english copy failure status, got %q", got.ui.CopyStatus)
+	if !strings.Contains(got.ui.StatusMessage, "copy failed") {
+		t.Fatalf("expected copy failure status, got %q", got.ui.StatusMessage)
+	}
+	if !strings.Contains(got.ui.LastError, "clipboard unavailable") {
+		t.Fatalf("expected last error to capture copy failure, got %q", got.ui.LastError)
 	}
 }
 
@@ -788,6 +799,7 @@ func TestMouseClickOutsideCopyRegionDoesNotCopy(t *testing.T) {
 	m := newTestModel(t, client)
 	m.chat.Messages = []state.Message{{Role: "assistant", Content: "```go\nfmt.Println(1)\n```"}}
 	m.refreshViewport()
+	initialStatus := m.ui.StatusMessage
 
 	called := false
 	m.copyToClipboard = func(string) error {
@@ -801,8 +813,8 @@ func TestMouseClickOutsideCopyRegionDoesNotCopy(t *testing.T) {
 	if called {
 		t.Fatal("expected copy not to trigger")
 	}
-	if got.ui.CopyStatus != "" {
-		t.Fatalf("expected copy status to remain empty, got %q", got.ui.CopyStatus)
+	if got.ui.StatusMessage != initialStatus {
+		t.Fatalf("expected status message to remain unchanged, got %q", got.ui.StatusMessage)
 	}
 }
 

@@ -1,31 +1,38 @@
 package components
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+)
 
 type InputBox struct {
 	Body       string
+	Focused    bool
 	Generating bool
-	Status     string
+	Width      int
 }
 
 func (i InputBox) Render() string {
-	helpText := "[Enter: send | Alt+Enter: newline | PgUp/PgDn: scroll]"
-	if !i.Generating {
-		helpText = "[Enter: send | Alt+Enter: newline | Ctrl+V: paste | click [Copy]: copy | PgUp/PgDn: scroll]"
+	title := "输入"
+	if i.Generating {
+		title = "输入 · Generating..."
+	}
+	titleStyle := TitleStyle
+	if !i.Focused {
+		titleStyle = DimStyle
 	}
 
-	statusText := i.Status
-	if statusText == "" {
-		statusText = "Ready"
+	width := i.Width
+	if width < 12 {
+		width = 12
 	}
+	box := lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(lipgloss.Color(ColorDim)).
+		Padding(0, 1).
+		Width(width).
+		Render(strings.TrimRight(i.Body, "\n"))
 
-	status := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#61AFEF")).
-		Render(statusText)
-
-	footer := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#5C6370")).
-		Render(helpText)
-
-	return i.Body + "\n" + status + "\n" + footer
+	return titleStyle.Render(title) + "\n" + box
 }

@@ -15,6 +15,13 @@ type ToolCall = tool.ToolCall
 type ToolResult = tool.ToolResult
 type ConfigMutationResult = agentruntime.ConfigMutationResult
 
+type UISnapshot struct {
+	ProviderName     string
+	CurrentModel     string
+	DefaultModel     string
+	WorkspaceSummary string
+}
+
 const (
 	TypeUserPreference = memory.TypeUserPreference
 	TypeProjectRule    = memory.TypeProjectRule
@@ -91,4 +98,27 @@ func SupportedProviders() []string {
 
 func DefaultModelForProvider(name string) string {
 	return provider.DefaultModelForProvider(name)
+}
+
+func ReadUISnapshot(ctx context.Context, client ChatClient) UISnapshot {
+	snapshot := UISnapshot{}
+	if cfg := config.GlobalAppConfig; cfg != nil {
+		snapshot.ProviderName = strings.TrimSpace(cfg.CurrentProviderName())
+		snapshot.CurrentModel = strings.TrimSpace(cfg.CurrentModelName())
+		if snapshot.ProviderName != "" {
+			snapshot.DefaultModel = strings.TrimSpace(provider.DefaultModelForProvider(snapshot.ProviderName))
+		}
+	}
+	if snapshot.CurrentModel == "" && client != nil {
+		snapshot.CurrentModel = strings.TrimSpace(client.DefaultModel())
+	}
+	if snapshot.DefaultModel == "" {
+		snapshot.DefaultModel = snapshot.CurrentModel
+	}
+	if summaryProvider, ok := client.(WorkingSessionSummaryProvider); ok && summaryProvider != nil {
+		if summary, err := summaryProvider.GetWorkingSessionSummary(ctx); err == nil {
+			snapshot.WorkspaceSummary = strings.TrimSpace(summary)
+		}
+	}
+	return snapshot
 }

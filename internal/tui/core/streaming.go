@@ -207,3 +207,29 @@ func truncateForContext(text string, maxLen int) string {
 	}
 	return trimmed[:keep] + suffix
 }
+
+func toolPathsFromCall(call services.ToolCall) []string {
+	if call.Params == nil {
+		return nil
+	}
+	paths := make([]string, 0, 2)
+	for _, key := range []string{"filePath", "path", "workdir"} {
+		if value, ok := call.Params[key].(string); ok && strings.TrimSpace(value) != "" {
+			paths = append(paths, strings.TrimSpace(value))
+		}
+	}
+	return paths
+}
+
+func toolPathsFromResult(result *services.ToolResult) []string {
+	if result == nil || result.Metadata == nil {
+		return nil
+	}
+	paths := make([]string, 0, 2)
+	for _, key := range []string{"filePath", "path"} {
+		if value, ok := result.Metadata[key].(string); ok && strings.TrimSpace(value) != "" {
+			paths = append(paths, strings.TrimSpace(value))
+		}
+	}
+	return paths
+}

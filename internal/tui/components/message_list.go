@@ -13,6 +13,7 @@ type Message struct {
 	Content   string
 	Timestamp time.Time
 	Streaming bool
+	Error     bool
 }
 
 type MessageList struct {
@@ -28,82 +29,127 @@ func (ml MessageList) RenderLayout() RenderedChatLayout {
 	if len(ml.Messages) == 0 {
 		return RenderedChatLayout{}
 	}
-	contentWidth := ml.Width - 4
-	if contentWidth < 20 {
-		contentWidth = ml.Width
+
+	width := ml.Width
+	if width <= 0 {
+		width = 80
+	}
+	bubbleWidth := width - 6
+	if bubbleWidth < 20 {
+		bubbleWidth = 20
 	}
 
-	userMsgStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#98C379")).
-		Bold(true)
-
-	assistantMsgStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#E5C07B"))
-
-	systemMsgStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#C678DD"))
-
-	var b strings.Builder
+	var builder strings.Builder
 	regions := make([]ClickableRegion, 0)
 	row := 0
 
-	wrapStyle := lipgloss.NewStyle().MaxWidth(contentWidth)
-
-	for i, msg := range ml.Messages {
-		idx := i + 1
-		switch msg.Role {
-		case "user":
-			line := renderMessageLine(fmt.Sprintf("You [%d]:", idx), msg.Content, userMsgStyle, wrapStyle)
-			b.WriteString(line)
-			b.WriteString("\n\n")
-			row += strings.Count(line, "\n") + 2
-
-		case "assistant":
-			rendered, assistantRegions, consumedRows := renderAssistantMessage(i, idx, msg.Content, contentWidth, row, assistantMsgStyle)
-			b.WriteString(rendered)
-			regions = append(regions, assistantRegions...)
-			row += consumedRows
-
-		case "system":
-			line := renderMessageLine("[System]", msg.Content, systemMsgStyle, wrapStyle)
-			b.WriteString(line)
-			b.WriteString("\n\n")
-			row += strings.Count(line, "\n") + 2
-		}
+	for idx, msg := range ml.Messages {
+		rendered, msgRegions, lines := renderMessage(idx, msg, width, bubbleWidth, row)
+		builder.WriteString(rendered)
+		builder.WriteString("\n")
+		row += lines + 1
+		regions = append(regions, msgRegions...)
 	}
 
-	return RenderedChatLayout{Content: b.String(), Regions: regions}
+	return RenderedChatLayout{
+		Content:       builder.String(),
+		Regions:       regions,
+		ContentHeight: row,
+	}
 }
 
-func renderMessageLine(label string, content string, labelStyle lipgloss.Style, wrapStyle lipgloss.Style) string {
-	return labelStyle.Render(label) + " " + wrapStyle.Render(content)
+func renderMessage(messageIndex int, msg Message, width, bubbleWidth, startRow int) (string, []ClickableRegion, int) {
+	timestamp := ""
+	if !msg.Timestamp.IsZero() {
+		timestamp = msg.Timestamp.Format("15:04")
+	}
+
+	switch msg.Role {
+	case "user":
+		return renderUserMessage(msg.Content, timestamp, width, bubbleWidth)
+	case "system":
+		return renderSystemMessage(msg.Content, timestamp, width)
+	default:
+		return renderAssistantMessage(messageIndex, msg, timestamp, bubbleWidth, startRow)
+	}
 }
 
-func renderAssistantMessage(messageIndex, displayIndex int, content string, width int, startRow int, labelStyle lipgloss.Style) (string, []ClickableRegion, int) {
-	var b strings.Builder
+func renderUserMessage(content, timestamp string, width, bubbleWidth int) (string, []ClickableRegion, int) {
+	var builder strings.Builder
+	header := DimStyle.Render(timestamp)
+	if header != "" {
+		builder.WriteString(lipgloss.PlaceHorizontal(width, lipgloss.Right, header))
+		builder.WriteString("\n")
+	}
+
+	bodyStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(ColorText)).
+		Background(lipgloss.Color(ColorPanelAlt)).
+		Padding(0, 1).
+		MaxWidth(bubbleWidth)
+
+	body := bodyStyle.Render(strings.TrimSpace(content))
+	builder.WriteString(lipgloss.PlaceHorizontal(width, lipgloss.Right, body))
+	lines := strings.Count(builder.String(), "\n") + 1
+	return builder.String(), nil, lines
+}
+
+func renderSystemMessage(content, timestamp string, width int) (string, []ClickableRegion, int) {
+	var builder strings.Builder
+	line := DimStyle.Copy().Italic(true).Render(strings.TrimSpace(content))
+	if timestamp != "" {
+		line = line + "  " + DimStyle.Render(timestamp)
+	}
+	builder.WriteString(lipgloss.PlaceHorizontal(width, lipgloss.Center, line))
+	lines := strings.Count(builder.String(), "\n") + 1
+	return builder.String(), nil, lines
+}
+
+func renderAssistantMessage(messageIndex int, msg Message, timestamp string, width int, startRow int) (string, []ClickableRegion, int) {
+	var builder strings.Builder
 	regions := make([]ClickableRegion, 0)
 	rows := 0
 
-	b.WriteString(labelStyle.Render(fmt.Sprintf("Neo [%d]:", displayIndex)))
-	b.WriteString("\n")
+	header := "Neo"
+	if timestamp != "" {
+		header = header + " · " + timestamp
+	}
+	if msg.Streaming {
+		header = header + " · streaming"
+	}
+	headerStyle := TitleStyle
+	if msg.Error {
+		headerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(ColorError)).Bold(true)
+	}
+	builder.WriteString(headerStyle.Render(header))
+	builder.WriteString("\n")
 	rows++
+
+	if msg.Error {
+		errorBody := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(ColorText)).
+			Background(lipgloss.Color(ColorError)).
+			Padding(0, 1).
+			MaxWidth(width).
+			Render(strings.TrimSpace(msg.Content))
+		builder.WriteString(errorBody)
+		rows += strings.Count(errorBody, "\n") + 1
+		return builder.String(), regions, rows
+	}
 
 	currentRow := startRow + rows
 	blockIndex := 0
-	for _, segment := range assistantSegments(content) {
+	for _, segment := range assistantSegments(msg.Content) {
 		rendered, region, consumedRows := renderAssistantSegment(messageIndex, &blockIndex, segment, width, currentRow)
-		b.WriteString(rendered)
+		builder.WriteString(rendered)
+		rows += consumedRows
+		currentRow += consumedRows
 		if region != nil {
 			regions = append(regions, *region)
 		}
-		rows += consumedRows
-		currentRow += consumedRows
 	}
 
-	b.WriteString("\n\n")
-	rows += 2
-
-	return b.String(), regions, rows
+	return strings.TrimRight(builder.String(), "\n"), regions, rows
 }
 
 func assistantSegments(content string) []ContentSegment {
@@ -117,14 +163,13 @@ func assistantSegments(content string) []ContentSegment {
 func renderAssistantSegment(messageIndex int, blockIndex *int, segment ContentSegment, width int, row int) (string, *ClickableRegion, int) {
 	if segment.Type == SegmentCodeBlock {
 		*blockIndex = *blockIndex + 1
-		codeLang := resolveSegmentLanguage(segment)
-		rendered := RenderCodeBlock(segment, width, CopyActionLabel())
-		region := BuildCopyRegion(messageIndex, *blockIndex, row, segment.Code, codeLang)
-		return rendered, &region, strings.Count(rendered, "\n")
+		rendered, codeLang, actionStartCol := RenderCodeBlockLayout(segment, width, CopyActionLabel())
+		region := BuildCopyRegion(messageIndex, *blockIndex, row, segment.Code, codeLang, actionStartCol)
+		return rendered, &region, strings.Count(strings.TrimRight(rendered, "\n"), "\n") + 1
 	}
 
 	rendered := renderTextSegment(segment.Text, width)
-	return rendered, nil, strings.Count(rendered, "\n")
+	return rendered, nil, strings.Count(strings.TrimRight(rendered, "\n"), "\n") + 1
 }
 
 func resolveSegmentLanguage(segment ContentSegment) string {
@@ -139,14 +184,22 @@ func resolveSegmentLanguage(segment ContentSegment) string {
 }
 
 func renderTextSegment(text string, width int) string {
-	if text == "" {
+	if strings.TrimSpace(text) == "" {
 		return ""
 	}
-	var b strings.Builder
-	style := lipgloss.NewStyle().MaxWidth(width)
-	for _, line := range strings.Split(text, "\n") {
-		b.WriteString(style.Render(line))
-		b.WriteString("\n")
+	style := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(ColorMutedText)).
+		MaxWidth(width)
+
+	lines := strings.Split(text, "\n")
+	var builder strings.Builder
+	for _, line := range lines {
+		builder.WriteString(style.Render(line))
+		builder.WriteString("\n")
 	}
-	return b.String()
+	return builder.String()
+}
+
+func MessageSummary(messages []Message) string {
+	return fmt.Sprintf("%d msgs", len(messages))
 }

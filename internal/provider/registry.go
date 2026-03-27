@@ -123,12 +123,37 @@ func providerSpecs(cfg *config.AppConfiguration) []ProviderSpec {
 		specs = append(specs, ProviderSpec{
 			Name:         normalized,
 			Protocol:     strings.ToLower(strings.TrimSpace(profile.Protocol)),
-			BaseURL:      strings.TrimSpace(profile.BaseURL),
+			BaseURL:      sanitizeBaseURL(profile.Protocol, profile.BaseURL),
 			DefaultModel: strings.TrimSpace(profile.Model),
 			APIKeyEnv:    strings.TrimSpace(profile.APIKeyEnv),
 		})
 	}
 	return specs
+}
+
+func sanitizeBaseURL(protocol, raw string) string {
+	baseURL := strings.TrimSpace(raw)
+	switch strings.ToLower(strings.TrimSpace(protocol)) {
+	case "openai":
+		return trimAfterKnownSuffix(baseURL, "/chat/completions")
+	case "anthropic":
+		return trimAfterKnownSuffix(baseURL, "/v1/messages")
+	case "gemini":
+		return trimAfterKnownSuffix(baseURL, "?alt=sse")
+	default:
+		return baseURL
+	}
+}
+
+func trimAfterKnownSuffix(value, suffix string) string {
+	if suffix == "" {
+		return value
+	}
+	index := strings.Index(value, suffix)
+	if index < 0 {
+		return value
+	}
+	return value[:index+len(suffix)]
 }
 
 func normalizeProviderName(name string) string {
