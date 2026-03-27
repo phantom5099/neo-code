@@ -13,14 +13,30 @@ import (
 )
 
 var (
-	getWorkspaceRoot     = services.GetWorkspaceRoot
-	parseAssistantTools  = services.ParseAssistantToolCalls
-	executeToolCall      = services.ExecuteToolCall
-	approveToolCall      = services.ApproveToolCall
-	updateAPIKeyEnvVar   = services.UpdateAPIKeyEnvVar
-	switchProviderConfig = services.SwitchProvider
-	switchModelConfig    = services.SwitchModel
-	readUISnapshot       = services.ReadUISnapshot
+	updateAPIKey = func(ctx context.Context, controller services.Controller, envName string) (*services.MutationFeedback, error) {
+		return controller.UpdateAPIKey(ctx, envName)
+	}
+	switchProvider = func(ctx context.Context, controller services.Controller, providerName string) (*services.MutationFeedback, error) {
+		return controller.SwitchProvider(ctx, providerName)
+	}
+	switchModel = func(ctx context.Context, controller services.Controller, model string) (*services.MutationFeedback, error) {
+		return controller.SwitchModel(ctx, model)
+	}
+	loadMemoryStats = func(ctx context.Context, controller services.Controller) (*services.MemoryFeedback, error) {
+		return controller.LoadMemoryStats(ctx)
+	}
+	clearPersistentMemory = func(ctx context.Context, controller services.Controller) (*services.MemoryFeedback, error) {
+		return controller.ClearPersistentMemory(ctx)
+	}
+	clearSessionContext = func(ctx context.Context, controller services.Controller) (*services.MemoryFeedback, error) {
+		return controller.ClearSessionContext(ctx)
+	}
+	resolveApproval = func(ctx context.Context, controller services.Controller, req services.ConversationRequest, pending services.ToolApprovalRequest, decision services.ApprovalDecision) (services.TurnResolution, error) {
+		return controller.ResolveApproval(ctx, req, pending, decision)
+	}
+	resolveAssistantTurn = func(ctx context.Context, controller services.Controller, req services.ConversationRequest, assistantContent string) (services.TurnResolution, error) {
+		return controller.ResolveAssistantTurn(ctx, req, assistantContent)
+	}
 )
 
 func (m *Model) handleSubmit() (tea.Model, tea.Cmd) {
@@ -33,8 +49,7 @@ func (m *Model) handleSubmit() (tea.Model, tea.Cmd) {
 		return *m, nil
 	}
 
-	switch m.ui.Mode {
-	case state.ModeHelp:
+	if m.ui.Mode == state.ModeHelp {
 		m.ui.Mode = state.ModeChat
 		return *m, nil
 	}
@@ -47,7 +62,7 @@ func (m *Model) handleSubmit() (tea.Model, tea.Cmd) {
 		return *m, nil
 	}
 	if !m.chat.APIKeyReady {
-		m.AddErrorMessage("当前 API Key 无法通过校验，请使用 /apikey、/provider 或 /switch 调整配置。")
+		m.AddErrorMessage("当前 API Key 不可用，请使用 /apikey、/provider 或 /switch 调整配置。")
 		m.setLastError(errors.New("api key unavailable"))
 		return *m, nil
 	}
@@ -58,18 +73,16 @@ func (m *Model) handleSubmit() (tea.Model, tea.Cmd) {
 
 	m.AddMessage("user", input)
 	m.AddMessage("assistant", "")
-	m.TrimHistory(m.chat.HistoryTurns)
 	m.chat.Generating = true
 	m.ui.AutoScroll = true
 	m.refreshViewport()
 
-	m.chat.CommandHistory = append(m.chat.CommandHistory, input)
-	m.chat.CmdHistIndex = -1
-	m.chat.CommandDraft = ""
+	m.ui.CommandHistory = append(m.ui.CommandHistory, input)
+	m.ui.CmdHistIndex = -1
+	m.ui.CommandDraft = ""
 	m.setStatusMessage("")
 
-	messages := m.buildMessages()
-	return *m, m.streamResponse(messages)
+	return *m, m.streamResponse()
 }
 
 func (m *Model) handleCommand(input string) (tea.Model, tea.Cmd) {
@@ -81,253 +94,196 @@ func (m *Model) handleCommand(input string) (tea.Model, tea.Cmd) {
 	cmd := fields[0]
 	args := fields[1:]
 	if !m.chat.APIKeyReady && !isAPIKeyRecoveryCommand(cmd) {
-		m.AddMessage("assistant", "The current API Key could not be validated. Only /apikey <env_name>, /provider <name>, /help, /switch <model>, /pwd (/workspace), and /exit are available.")
+		m.AddTransientMessage("assistant", "当前 API Key 不可用。现在仅可使用 /apikey、/provider、/switch、/help、/pwd(/workspace) 和 /exit。")
+		m.refreshViewport()
 		return *m, nil
 	}
 
 	switch cmd {
 	case "/help":
 		m.ui.Mode = state.ModeHelp
+		m.refreshViewport()
+		return *m, nil
 
 	case "/y":
 		if len(args) > 0 {
-			m.AddMessage("assistant", "Usage: /y")
+			m.AddTransientMessage("assistant", "用法：/y")
+			m.refreshViewport()
 			return *m, nil
 		}
 		if m.chat.PendingApproval == nil {
-			m.AddMessage("assistant", "There is no pending security approval.")
+			m.AddTransientMessage("assistant", "当前没有待确认的安全审批。")
+			m.refreshViewport()
 			return *m, nil
 		}
-		if m.chat.ToolExecuting {
-			m.AddMessage("assistant", "Another tool is still running. Please retry /y after it finishes.")
+		if m.ui.ApprovalRunning {
+			m.AddTransientMessage("assistant", "另一个工具仍在运行，请稍后再试 /y。")
+			m.refreshViewport()
 			return *m, nil
 		}
 
 		pending := *m.chat.PendingApproval
 		m.chat.PendingApproval = nil
-		if strings.TrimSpace(pending.Call.Tool) == "" {
-			m.AddMessage("assistant", "The pending tool request is incomplete and cannot be executed.")
-			return *m, nil
-		}
-
-		m.AddMessage("assistant", fmt.Sprintf("Approved. Running tool %s.", pending.Call.Tool))
-		m.AddMessage("system", formatToolStatusMessage(pending.Call.Tool, pending.Call.Params))
-
-		mu := m.mutex()
-		mu.Lock()
-		if m.chat.ToolExecuting {
-			m.chat.PendingApproval = &pending
-			mu.Unlock()
-			return *m, nil
-		}
-		m.chat.ToolExecuting = true
-		mu.Unlock()
-
+		m.ui.ApprovalRunning = true
+		m.setStatusMessage("Running tool...")
 		m.refreshViewport()
 		return *m, func() tea.Msg {
-			approveToolCall(pending.ToolType, pending.Target)
-			result := executeToolCall(pending.Call)
-			if result == nil {
-				mu := m.mutex()
-				mu.Lock()
-				m.chat.ToolExecuting = false
-				mu.Unlock()
-				return ToolErrorMsg{Err: fmt.Errorf("tool execution failed: empty result")}
+			resolution, err := resolveApproval(context.Background(), m.controller, m.conversationRequest(), services.ToolApprovalRequest{
+				Call:             pending.Call,
+				ToolType:         pending.ToolType,
+				Target:           pending.Target,
+				AssistantMessage: "",
+			}, services.ApprovalDecisionApprove)
+			if err != nil {
+				return StreamErrorMsg{Err: err}
 			}
-			return ToolResultMsg{Result: result, Call: pending.Call}
+			return TurnResolvedMsg{Resolution: resolution}
 		}
 
 	case "/n":
 		if len(args) > 0 {
-			m.AddMessage("assistant", "Usage: /n")
+			m.AddTransientMessage("assistant", "用法：/n")
+			m.refreshViewport()
 			return *m, nil
 		}
 		if m.chat.PendingApproval == nil {
-			m.AddMessage("assistant", "There is no pending security approval.")
+			m.AddTransientMessage("assistant", "当前没有待确认的安全审批。")
+			m.refreshViewport()
 			return *m, nil
 		}
-
 		pending := *m.chat.PendingApproval
 		m.chat.PendingApproval = nil
-		toolName := strings.TrimSpace(pending.Call.Tool)
-		if toolName == "" {
-			toolName = "unknown"
+		return *m, func() tea.Msg {
+			resolution, err := resolveApproval(context.Background(), m.controller, m.conversationRequest(), services.ToolApprovalRequest{
+				Call:             pending.Call,
+				ToolType:         pending.ToolType,
+				Target:           pending.Target,
+				AssistantMessage: "",
+			}, services.ApprovalDecisionReject)
+			if err != nil {
+				return StreamErrorMsg{Err: err}
+			}
+			return TurnResolvedMsg{Resolution: resolution}
 		}
-		m.AddMessage("assistant", fmt.Sprintf("Rejected tool %s for target %s.", toolName, pending.Target))
-		return *m, nil
 
 	case "/exit", "/quit", "/q":
 		return *m, tea.Quit
 
 	case "/apikey":
 		if len(args) == 0 {
-			m.AddMessage("assistant", "Usage: /apikey <env_name>")
+			m.AddTransientMessage("assistant", "用法：/apikey <env_name>")
+			m.refreshViewport()
 			return *m, nil
 		}
-		result, err := updateAPIKeyEnvVar(context.Background(), m.chat.ConfigPath, args[0])
-		if err != nil {
-			m.AddErrorMessage(fmt.Sprintf("切换 API Key 环境变量失败：%v", err))
-			m.setLastError(err)
-			return *m, nil
+		return *m, func() tea.Msg {
+			feedback, err := updateAPIKey(context.Background(), m.controller, args[0])
+			return MutationFeedbackMsg{Feedback: feedback, Err: err}
 		}
-
-		m.chat.APIKeyReady = result.APIKeyReady
-		m.refreshRuntimeSnapshot()
-		if result.ValidationErr == nil {
-			m.AddMessage("assistant", fmt.Sprintf("Switched the API key environment variable name to %s and validated it successfully.", result.APIKeyEnvVar))
-			m.setStatusMessage("已更新 API Key 环境变量")
-			return *m, nil
-		}
-		if errors.Is(result.ValidationErr, services.ErrAPIKeyMissing) {
-			m.AddMessage("assistant", fmt.Sprintf("Environment variable %s is not set. Use /apikey <env_name> to switch to another one, or /exit to quit.", result.APIKeyEnvVar))
-			m.setLastError(result.ValidationErr)
-			return *m, nil
-		}
-		if errors.Is(result.ValidationErr, services.ErrInvalidAPIKey) {
-			m.AddMessage("assistant", fmt.Sprintf("The API key in environment variable %s is invalid: %v. Use /apikey <env_name>, /provider <name>, or /switch <model> to update the configuration, or /exit to quit.", result.APIKeyEnvVar, result.ValidationErr))
-			m.setLastError(result.ValidationErr)
-			return *m, nil
-		}
-		m.AddMessage("assistant", fmt.Sprintf("The API key in environment variable %s could not be validated: %v. Use /apikey <env_name>, /provider <name>, or /switch <model> to update the configuration, or /exit to quit.", result.APIKeyEnvVar, result.ValidationErr))
-		m.setLastError(result.ValidationErr)
-		return *m, nil
 
 	case "/provider":
 		if len(args) == 0 {
-			m.AddMessage("assistant", fmt.Sprintf("Usage: /provider <name>\nSupported providers:\n  - %s", strings.Join(services.SupportedProviders(), "\n  - ")))
-			return *m, nil
-		}
-		result, err := switchProviderConfig(context.Background(), m.chat.ConfigPath, strings.Join(args, " "))
-		if err != nil {
-			if _, ok := services.NormalizeProviderName(strings.Join(args, " ")); !ok {
-				m.AddMessage("assistant", fmt.Sprintf("Unsupported provider: %s\nSupported providers:\n  - %s", strings.Join(args, " "), strings.Join(services.SupportedProviders(), "\n  - ")))
-				return *m, nil
-			}
-			m.AddErrorMessage(fmt.Sprintf("切换 provider 失败：%v", err))
-			m.setLastError(err)
-			return *m, nil
-		}
-
-		m.refreshRuntimeSnapshot()
-		m.chat.ActiveModel = result.Model
-		m.chat.APIKeyReady = result.APIKeyReady
-		if result.ValidationErr == nil {
-			m.AddMessage("assistant", fmt.Sprintf("Switched provider to %s. The current model was reset to the default: %s.", result.Provider, result.Model))
-			m.setStatusMessage("provider 已切换")
-			return *m, nil
-		}
-		if errors.Is(result.ValidationErr, services.ErrAPIKeyMissing) {
-			m.AddMessage("assistant", fmt.Sprintf("Switched provider to %s, but environment variable %s is not set. Use /apikey <env_name> or set that environment variable.", result.Provider, result.APIKeyEnvVar))
-			m.setLastError(result.ValidationErr)
-			return *m, nil
-		}
-		m.AddMessage("assistant", fmt.Sprintf("Switched provider to %s, but the API key could not be validated: %v. You can continue using /apikey <env_name>, /provider <name>, or /switch <model> to adjust the configuration.", result.Provider, result.ValidationErr))
-		m.setLastError(result.ValidationErr)
-		return *m, nil
-
-	case "/switch":
-		if len(args) == 0 {
-			m.AddMessage("assistant", "Usage: /switch <model>")
+			m.AddTransientMessage("assistant", fmt.Sprintf("用法：/provider <name>\n支持的 provider：\n  - %s", strings.Join(services.SupportedProviders(), "\n  - ")))
+			m.refreshViewport()
 			return *m, nil
 		}
 		target := strings.Join(args, " ")
-		result, err := switchModelConfig(context.Background(), m.chat.ConfigPath, target)
-		if err != nil {
-			m.AddErrorMessage(fmt.Sprintf("切换模型失败：%v", err))
-			m.setLastError(err)
-			return *m, nil
+		return *m, func() tea.Msg {
+			feedback, err := switchProvider(context.Background(), m.controller, target)
+			return MutationFeedbackMsg{Feedback: feedback, Err: err}
 		}
 
-		m.refreshRuntimeSnapshot()
-		m.chat.ActiveModel = result.Model
-		m.chat.APIKeyReady = result.APIKeyReady
-		if result.ValidationErr == nil {
-			m.AddMessage("assistant", fmt.Sprintf("Switched model to: %s", result.Model))
-			m.setStatusMessage("模型已切换")
+	case "/switch":
+		if len(args) == 0 {
+			m.AddTransientMessage("assistant", "用法：/switch <model>")
+			m.refreshViewport()
 			return *m, nil
 		}
-		if errors.Is(result.ValidationErr, services.ErrAPIKeyMissing) {
-			m.AddMessage("assistant", fmt.Sprintf("Switched model to %s, but environment variable %s is not set.", result.Model, result.APIKeyEnvVar))
-			m.setLastError(result.ValidationErr)
-			return *m, nil
+		target := strings.Join(args, " ")
+		return *m, func() tea.Msg {
+			feedback, err := switchModel(context.Background(), m.controller, target)
+			return MutationFeedbackMsg{Feedback: feedback, Err: err}
 		}
-		m.AddMessage("assistant", fmt.Sprintf("Switched model to %s, but the API key could not be validated: %v.", result.Model, result.ValidationErr))
-		m.setLastError(result.ValidationErr)
-		return *m, nil
 
 	case "/pwd", "/workspace":
 		if len(args) > 0 {
-			m.AddMessage("assistant", "Usage: /pwd or /workspace")
+			m.AddTransientMessage("assistant", "用法：/pwd 或 /workspace")
+			m.refreshViewport()
 			return *m, nil
 		}
 		root := strings.TrimSpace(m.chat.WorkspaceRoot)
 		if root == "" {
-			root = getWorkspaceRoot()
+			m.AddTransientMessage("assistant", "当前工作区：unknown")
+		} else {
+			m.AddTransientMessage("assistant", fmt.Sprintf("当前工作区：%s", root))
 		}
-		if strings.TrimSpace(root) == "" {
-			m.AddMessage("assistant", "Current workspace: unknown")
-			return *m, nil
-		}
-		m.AddMessage("assistant", fmt.Sprintf("Current workspace: %s", root))
+		m.refreshViewport()
+		return *m, nil
 
 	case "/memory":
-		stats, err := m.client.GetMemoryStats(context.Background())
-		if err != nil {
-			m.AddErrorMessage(fmt.Sprintf("读取记忆统计失败：%v", err))
-			m.setLastError(err)
-			return *m, nil
+		return *m, func() tea.Msg {
+			feedback, err := loadMemoryStats(context.Background(), m.controller)
+			return MemoryFeedbackMsg{Feedback: feedback, Err: err}
 		}
-		m.chat.MemoryStats = *stats
-		m.setStatusMessage("Memory 已刷新")
-		m.AddMessage("assistant", fmt.Sprintf(
-			"Memory stats:\n  Persistent: %d\n  Session: %d\n  Total: %d\n  TopK: %d\n  Min score: %.2f\n  File: %s\n  Types: %s",
-			stats.PersistentItems, stats.SessionItems, stats.TotalItems, stats.TopK, stats.MinScore, stats.Path, formatTypeStats(stats.ByType),
-		))
 
 	case "/clear-memory":
 		if len(args) == 0 || args[0] != "confirm" {
-			m.AddMessage("assistant", "This command will clear persistent memory. Use /clear-memory confirm")
+			m.AddTransientMessage("assistant", "该命令会清空持久记忆，请使用 /clear-memory confirm。")
+			m.refreshViewport()
 			return *m, nil
 		}
-		if err := m.client.ClearMemory(context.Background()); err != nil {
-			m.AddErrorMessage(fmt.Sprintf("清除持久记忆失败：%v", err))
-			m.setLastError(err)
-			return *m, nil
+		return *m, func() tea.Msg {
+			feedback, err := clearPersistentMemory(context.Background(), m.controller)
+			return MemoryFeedbackMsg{Feedback: feedback, Err: err}
 		}
-		stats, _ := m.client.GetMemoryStats(context.Background())
-		if stats != nil {
-			m.chat.MemoryStats = *stats
-		}
-		m.AddMessage("assistant", "Cleared local persistent memory")
-		m.setStatusMessage("已清除持久记忆")
 
 	case "/clear-context":
-		if err := m.client.ClearSessionMemory(context.Background()); err != nil {
-			m.AddErrorMessage(fmt.Sprintf("清除会话上下文失败：%v", err))
-			m.setLastError(err)
-			return *m, nil
+		return *m, func() tea.Msg {
+			feedback, err := clearSessionContext(context.Background(), m.controller)
+			return MemoryFeedbackMsg{Feedback: feedback, Err: err}
 		}
-		m.chat.Messages = nil
-		m.chat.TouchedFiles = nil
-		m.chat.CommandDraft = ""
-		stats, _ := m.client.GetMemoryStats(context.Background())
-		if stats != nil {
-			m.chat.MemoryStats = *stats
-		}
-		m.chat.WorkspaceSummary = ""
-		m.AddMessage("assistant", "Cleared the current session context")
-		m.setStatusMessage("会话上下文已清空")
 
 	default:
-		m.AddMessage("assistant", fmt.Sprintf("Unknown command: %s. Enter /help to view the available commands.", cmd))
+		m.AddTransientMessage("assistant", fmt.Sprintf("未知命令：%s。输入 /help 查看可用命令。", cmd))
+		m.refreshViewport()
+		return *m, nil
 	}
-
-	m.refreshViewport()
-	return *m, nil
 }
 
-func (m *Model) refreshRuntimeSnapshot() {
-	snapshot := readUISnapshot(context.Background(), m.client)
+func (m *Model) applyMutationFeedback(feedback *services.MutationFeedback) {
+	if feedback == nil {
+		return
+	}
+	m.chat.APIKeyReady = feedback.APIKeyReady
+	m.applySnapshot(feedback.Snapshot)
+	if strings.TrimSpace(feedback.AssistantMessage) != "" {
+		if feedback.ErrorKind == services.MutationErrorUnsupportedProvider && len(feedback.SupportedProviders) > 0 {
+			m.AddTransientMessage("assistant", feedback.AssistantMessage+"\n支持的 provider：\n  - "+strings.Join(feedback.SupportedProviders, "\n  - "))
+		} else {
+			m.AddTransientMessage("assistant", feedback.AssistantMessage)
+		}
+	}
+	m.setStatusMessage(feedback.StatusMessage)
+	if feedback.ValidationErr != nil {
+		m.setLastError(feedback.ValidationErr)
+	}
+	m.refreshViewport()
+}
+
+func (m *Model) applyMemoryFeedback(feedback *services.MemoryFeedback) {
+	if feedback == nil {
+		return
+	}
+	if feedback.Stats != nil {
+		m.chat.MemoryStats = *feedback.Stats
+	}
+	if strings.TrimSpace(feedback.AssistantMessage) != "" {
+		m.AddTransientMessage("assistant", feedback.AssistantMessage)
+	}
+	m.setStatusMessage(feedback.StatusMessage)
+	m.refreshViewport()
+}
+
+func (m *Model) applySnapshot(snapshot services.UISnapshot) {
 	if strings.TrimSpace(snapshot.ProviderName) != "" {
 		m.chat.ProviderName = snapshot.ProviderName
 	}
@@ -347,29 +303,4 @@ func isAPIKeyRecoveryCommand(cmd string) bool {
 	default:
 		return false
 	}
-}
-
-func formatTypeStats(byType map[string]int) string {
-	if len(byType) == 0 {
-		return "none"
-	}
-
-	ordered := []string{
-		services.TypeUserPreference,
-		services.TypeProjectRule,
-		services.TypeCodeFact,
-		services.TypeFixRecipe,
-		services.TypeSessionMemory,
-	}
-
-	parts := make([]string, 0, len(byType))
-	for _, key := range ordered {
-		if count := byType[key]; count > 0 {
-			parts = append(parts, fmt.Sprintf("%s=%d", key, count))
-		}
-	}
-	if len(parts) == 0 {
-		return "none"
-	}
-	return strings.Join(parts, ", ")
 }

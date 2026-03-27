@@ -13,6 +13,8 @@ import (
 	"neo-code/internal/config"
 	"neo-code/internal/provider"
 	"neo-code/internal/tool"
+	toolregistry "neo-code/internal/tool/registry"
+	toolworkflow "neo-code/internal/tool/workflow"
 )
 
 // ChatClient is the application-facing runtime interface used by the TUI.
@@ -77,7 +79,7 @@ func NewLocalChatClient() (ChatClient, error) {
 
 	todoRepo := todo.NewInMemoryTodoRepository()
 	todoSvc := todo.NewTodoService(todoRepo)
-	tool.GlobalRegistry.Register(tool.NewTodoTool(todoSvc))
+	toolregistry.GlobalRegistry.Register(toolworkflow.NewTodoTool(todoSvc))
 
 	return &localChatClient{
 		promptSvc:  promptSvc,

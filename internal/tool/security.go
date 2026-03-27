@@ -127,3 +127,7 @@ func guardToolExecution(toolType, target, toolName string) *ToolResult {
 		return nil
 	}
 }
+
+func GuardToolExecution(toolType, target, toolName string) *ToolResult {
+	return guardToolExecution(toolType, target, toolName)
+}

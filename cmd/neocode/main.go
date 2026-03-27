@@ -31,7 +31,7 @@ type runDeps struct {
 	prepareWorkspace        func(string) (string, error)
 	ensureAPIKeyInteractive func(context.Context, *bufio.Scanner, string) (bool, error)
 	loadAppConfig           func(string) error
-	newProgram              func(int, string, string) (programRunner, error)
+	newProgram              func(string, string) (programRunner, error)
 }
 
 func defaultRunDeps(stdin io.Reader, stdout, stderr io.Writer) runDeps {
@@ -43,8 +43,8 @@ func defaultRunDeps(stdin io.Reader, stdout, stderr io.Writer) runDeps {
 		prepareWorkspace:        bootstrap.PrepareWorkspace,
 		ensureAPIKeyInteractive: bootstrap.EnsureAPIKeyInteractive,
 		loadAppConfig:           config.LoadAppConfig,
-		newProgram: func(historyTurns int, configPath, workspaceRoot string) (programRunner, error) {
-			return bootstrap.NewProgram(historyTurns, configPath, workspaceRoot)
+		newProgram: func(configPath, workspaceRoot string) (programRunner, error) {
+			return bootstrap.NewProgram(configPath, workspaceRoot)
 		},
 	}
 }
@@ -101,8 +101,7 @@ func runWithDeps(workspaceFlag string, deps runDeps) error {
 		return fmt.Errorf("load app config: %w", err)
 	}
 
-	historyTurns := config.GlobalAppConfig.History.ShortTermTurns
-	p, err := deps.newProgram(historyTurns, defaultConfigPath, workspaceRoot)
+	p, err := deps.newProgram(defaultConfigPath, workspaceRoot)
 	if err != nil {
 		return fmt.Errorf("initialize program: %w", err)
 	}

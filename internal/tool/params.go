@@ -6,25 +6,29 @@ import (
 	"strings"
 )
 
-func requiredString(params map[string]interface{}, key string) (string, *ToolResult) {
+func RequiredString(params map[string]interface{}, key string) (string, *ToolResult) {
 	if params == nil {
-		return "", invalidParamResult("missing required parameter: %s", key)
+		return "", InvalidParamResult("missing required parameter: %s", key)
 	}
 
 	value, ok := params[key]
 	if !ok {
-		return "", invalidParamResult("missing required parameter: %s", key)
+		return "", InvalidParamResult("missing required parameter: %s", key)
 	}
 
 	str, ok := value.(string)
 	if !ok || strings.TrimSpace(str) == "" {
-		return "", invalidParamResult("parameter %q must be a non-empty string", key)
+		return "", InvalidParamResult("parameter %q must be a non-empty string", key)
 	}
 
 	return str, nil
 }
 
-func optionalString(params map[string]interface{}, key, fallback string) (string, *ToolResult) {
+func requiredString(params map[string]interface{}, key string) (string, *ToolResult) {
+	return RequiredString(params, key)
+}
+
+func OptionalString(params map[string]interface{}, key, fallback string) (string, *ToolResult) {
 	if params == nil {
 		return fallback, nil
 	}
@@ -36,7 +40,7 @@ func optionalString(params map[string]interface{}, key, fallback string) (string
 
 	str, ok := value.(string)
 	if !ok {
-		return "", invalidParamResult("parameter %q must be a string", key)
+		return "", InvalidParamResult("parameter %q must be a string", key)
 	}
 	if strings.TrimSpace(str) == "" {
 		return fallback, nil
@@ -45,7 +49,11 @@ func optionalString(params map[string]interface{}, key, fallback string) (string
 	return str, nil
 }
 
-func optionalInt(params map[string]interface{}, key string, fallback int) (int, *ToolResult) {
+func optionalString(params map[string]interface{}, key, fallback string) (string, *ToolResult) {
+	return OptionalString(params, key, fallback)
+}
+
+func OptionalInt(params map[string]interface{}, key string, fallback int) (int, *ToolResult) {
 	if params == nil {
 		return fallback, nil
 	}
@@ -67,15 +75,19 @@ func optionalInt(params map[string]interface{}, key string, fallback int) (int, 
 	case string:
 		parsed, err := strconv.Atoi(strings.TrimSpace(v))
 		if err != nil {
-			return 0, invalidParamResult("parameter %q must be an integer", key)
+			return 0, InvalidParamResult("parameter %q must be an integer", key)
 		}
 		return parsed, nil
 	default:
-		return 0, invalidParamResult("parameter %q must be an integer", key)
+		return 0, InvalidParamResult("parameter %q must be an integer", key)
 	}
 }
 
-func optionalBool(params map[string]interface{}, key string, fallback bool) (bool, *ToolResult) {
+func optionalInt(params map[string]interface{}, key string, fallback int) (int, *ToolResult) {
+	return OptionalInt(params, key, fallback)
+}
+
+func OptionalBool(params map[string]interface{}, key string, fallback bool) (bool, *ToolResult) {
 	if params == nil {
 		return fallback, nil
 	}
@@ -95,11 +107,15 @@ func optionalBool(params map[string]interface{}, key string, fallback bool) (boo
 		case "false", "0", "no", "n", "off":
 			return false, nil
 		default:
-			return false, invalidParamResult("parameter %q must be a boolean", key)
+			return false, InvalidParamResult("parameter %q must be a boolean", key)
 		}
 	default:
-		return false, invalidParamResult("parameter %q must be a boolean", key)
+		return false, InvalidParamResult("parameter %q must be a boolean", key)
 	}
+}
+
+func optionalBool(params map[string]interface{}, key string, fallback bool) (bool, *ToolResult) {
+	return OptionalBool(params, key, fallback)
 }
 
 func NormalizeParams(params map[string]interface{}) map[string]interface{} {
@@ -147,9 +163,21 @@ func normalizeParamValue(value interface{}) interface{} {
 	}
 }
 
-func invalidParamResult(format string, args ...interface{}) *ToolResult {
+func InvalidParamResult(format string, args ...interface{}) *ToolResult {
 	return &ToolResult{
 		Success: false,
 		Error:   fmt.Sprintf(format, args...),
 	}
+}
+
+func invalidParamResult(format string, args ...interface{}) *ToolResult {
+	return InvalidParamResult(format, args...)
+}
+
+func OptionalStringDefault(params map[string]interface{}, key, fallback string) string {
+	val, ok := params[key].(string)
+	if !ok || strings.TrimSpace(val) == "" {
+		return fallback
+	}
+	return val
 }

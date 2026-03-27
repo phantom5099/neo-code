@@ -70,8 +70,7 @@ func DefaultProviderCatalog() []ProviderProfile {
 		{Name: "modelscope", Protocol: "openai", BaseURL: "https://api-inference.modelscope.cn/v1/chat/completions", Model: "Qwen/Qwen3-Coder-480B-A35B-Instruct", APIKeyEnv: "MODELSCOPE_API_KEY"},
 		{Name: "siliconflow", Protocol: "openai", BaseURL: "https://api.siliconflow.cn/v1/chat/completions", Model: "zai-org/GLM-4.6", APIKeyEnv: "SILICONFLOW_API_KEY"},
 		{Name: "doubao", Protocol: "openai", BaseURL: "https://ark.cn-beijing.volces.com/api/v3/chat/completions", Model: "doubao-pro-v1", APIKeyEnv: "DOUBAO_API_KEY"},
-		{Name: "openll", Protocol: "openai", BaseURL: "https://www.openll.top/v1/chat/completions阿达" +
-			"", Model: "gpt-5.4", APIKeyEnv: DefaultAPIKeyEnvVar},
+		{Name: "openll", Protocol: "openai", BaseURL: "https://www.openll.top/v1/chat/completions", Model: "gpt-5.4", APIKeyEnv: DefaultAPIKeyEnvVar},
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"neo-code/internal/config"
+	"neo-code/internal/tui/services"
 	"neo-code/internal/tui/state"
 )
 
@@ -15,11 +16,9 @@ func TestNewModelAppliesDefaultsAndRuntimeFlags(t *testing.T) {
 	t.Setenv(config.DefaultAPIKeyEnvVar, "secret")
 	config.GlobalAppConfig = nil
 
-	m := NewModel(client, 0, "config.yaml", "D:/neo-code")
+	m := NewModel(services.NewRuntimeController(client, "config.yaml"), "D:/neo-code")
+	m.applyBootstrap(m.controller.Bootstrap(context.Background()))
 
-	if m.chat.HistoryTurns != 6 {
-		t.Fatalf("expected default history turns 6, got %d", m.chat.HistoryTurns)
-	}
 	if m.chat.ActiveModel != "demo-model" {
 		t.Fatalf("expected default model from client, got %q", m.chat.ActiveModel)
 	}
@@ -36,7 +35,8 @@ func TestNewModelUsesEmptyStatsWhenClientReturnsNil(t *testing.T) {
 
 	client := &fakeChatClient{nilMemoryStats: true}
 
-	m := NewModel(client, 4, "config.yaml", "D:/neo-code")
+	m := NewModel(services.NewRuntimeController(client, "config.yaml"), "D:/neo-code")
+	m.applyBootstrap(m.controller.Bootstrap(context.Background()))
 	if m.chat.MemoryStats.TotalItems != 0 {
 		t.Fatalf("expected zero-value stats, got %+v", m.chat.MemoryStats)
 	}
@@ -60,7 +60,7 @@ func TestAppendAndFinishLastMessage(t *testing.T) {
 func TestInitReturnsNonNilCmd(t *testing.T) {
 	restoreCoreGlobals(t)
 
-	m := NewModel(&fakeChatClient{}, 4, "config.yaml", "D:/neo-code")
+	m := NewModel(services.NewRuntimeController(&fakeChatClient{}, "config.yaml"), "D:/neo-code")
 	if cmd := m.Init(); cmd == nil {
 		t.Fatal("expected non-nil init cmd")
 	}
@@ -71,21 +71,25 @@ func TestNewModelAddsResumeSummaryMessageWhenSupported(t *testing.T) {
 
 	client := &resumeSummaryClient{
 		fakeChatClient: fakeChatClient{defaultModelName: "demo-model"},
-		summary:        "宸叉仮澶嶄笂娆″伐浣滅幇鍦猴細\n- 褰撳墠鐩爣: 淇璁板繂妯″潡",
+		summary:        "Recovered previous working context:\n- Current goal: fix the memory module",
 	}
 
-	m := NewModel(client, 4, "config.yaml", "D:/neo-code")
+	m := NewModel(services.NewRuntimeController(client, "config.yaml"), "D:/neo-code")
+	m.applyBootstrap(m.controller.Bootstrap(context.Background()))
 	if len(m.chat.Messages) != 1 {
 		t.Fatalf("expected one resume summary message, got %+v", m.chat.Messages)
 	}
-	if m.chat.Messages[0].Role != "system" || !isResumeSummaryMessage(m.chat.Messages[0].Content) {
+	if m.chat.Messages[0].Role != "system" || m.chat.Messages[0].Kind != services.MessageKindResumeSummary {
 		t.Fatalf("expected resume summary system message, got %+v", m.chat.Messages[0])
 	}
 }
 
-func TestTrimHistoryKeepsSystemMessagesAndLatestTurns(t *testing.T) {
-	m := Model{}
-	m.chat.Messages = []state.Message{
+func TestBuildRequestMessagesKeepsSystemMessagesAndLatestTurns(t *testing.T) {
+	restoreCoreGlobals(t)
+	config.GlobalAppConfig = config.DefaultAppConfig()
+	config.GlobalAppConfig.History.ShortTermTurns = 2
+
+	got := services.BuildRequestMessages([]services.SessionMessage{
 		{Role: "system", Content: "persona"},
 		{Role: "user", Content: "u1"},
 		{Role: "assistant", Content: "a1"},
@@ -93,18 +97,16 @@ func TestTrimHistoryKeepsSystemMessagesAndLatestTurns(t *testing.T) {
 		{Role: "assistant", Content: "a2"},
 		{Role: "user", Content: "u3"},
 		{Role: "assistant", Content: "a3"},
-	}
+	})
 
-	m.TrimHistory(2)
-
-	if len(m.chat.Messages) != 5 {
-		t.Fatalf("expected system message plus last two turns, got %d messages", len(m.chat.Messages))
+	if len(got) != 5 {
+		t.Fatalf("expected system message plus last two turns, got %d messages", len(got))
 	}
-	if m.chat.Messages[0].Role != "system" || m.chat.Messages[0].Content != "persona" {
-		t.Fatalf("expected system message to be preserved, got %+v", m.chat.Messages[0])
+	if got[0].Role != "system" || got[0].Content != "persona" {
+		t.Fatalf("expected system message to be preserved, got %+v", got[0])
 	}
-	if m.chat.Messages[1].Content != "u2" || m.chat.Messages[4].Content != "a3" {
-		t.Fatalf("expected only latest turns to remain, got %+v", m.chat.Messages)
+	if got[1].Content != "u2" || got[4].Content != "a3" {
+		t.Fatalf("expected only latest turns to remain, got %+v", got)
 	}
 }
 

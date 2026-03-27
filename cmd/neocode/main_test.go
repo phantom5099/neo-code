@@ -214,7 +214,7 @@ func TestRunWithDepsReturnsLoadAppConfigError(t *testing.T) {
 	}
 }
 
-func TestRunWithDepsPassesHistoryTurnsToProgram(t *testing.T) {
+func TestRunWithDepsPassesProgramArgs(t *testing.T) {
 	origGlobalConfig := config.GlobalAppConfig
 	t.Cleanup(func() { config.GlobalAppConfig = origGlobalConfig })
 
@@ -233,11 +233,8 @@ func TestRunWithDepsPassesHistoryTurnsToProgram(t *testing.T) {
 			config.GlobalAppConfig = cfg
 			return nil
 		},
-		newProgram: func(historyTurns int, configPath, workspaceRoot string) (programRunner, error) {
+		newProgram: func(configPath, workspaceRoot string) (programRunner, error) {
 			newProgramCalled = true
-			if historyTurns != cfg.History.ShortTermTurns {
-				t.Fatalf("unexpected history turns %d", historyTurns)
-			}
 			if configPath != defaultConfigPath || workspaceRoot != "D:/neo-code" {
 				t.Fatalf("unexpected program args: %q %q", configPath, workspaceRoot)
 			}
@@ -269,7 +266,7 @@ func TestRunWithDepsReturnsNewProgramError(t *testing.T) {
 			config.GlobalAppConfig = cfg
 			return nil
 		},
-		newProgram: func(int, string, string) (programRunner, error) { return nil, errors.New("new program failed") },
+		newProgram: func(string, string) (programRunner, error) { return nil, errors.New("new program failed") },
 	})
 	if err == nil || !strings.Contains(err.Error(), "new program failed") {
 		t.Fatalf("expected new program error, got %v", err)
@@ -294,7 +291,7 @@ func TestRunWithDepsReturnsProgramRunError(t *testing.T) {
 			config.GlobalAppConfig = cfg
 			return nil
 		},
-		newProgram: func(int, string, string) (programRunner, error) { return program, nil },
+		newProgram: func(string, string) (programRunner, error) { return program, nil },
 	})
 	if err == nil || !strings.Contains(err.Error(), "program failed") {
 		t.Fatalf("expected run error, got %v", err)
@@ -322,7 +319,7 @@ func TestRunWithDepsHappyPathCallsUTF8Hook(t *testing.T) {
 			config.GlobalAppConfig = cfg
 			return nil
 		},
-		newProgram: func(int, string, string) (programRunner, error) { return program, nil },
+		newProgram: func(string, string) (programRunner, error) { return program, nil },
 	})
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)

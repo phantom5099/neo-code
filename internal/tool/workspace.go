@@ -118,6 +118,10 @@ func ensureWorkspacePath(path string) (string, *ToolResult) {
 	return resolved, nil
 }
 
+func EnsureWorkspacePath(path string) (string, *ToolResult) {
+	return ensureWorkspacePath(path)
+}
+
 func AtomicWrite(filePath string, content []byte) error {
 	dir := filepath.Dir(filePath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {

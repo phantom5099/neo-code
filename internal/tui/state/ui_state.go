@@ -21,11 +21,13 @@ type UIState struct {
 	Mode            Mode
 	Focus           FocusTarget
 	AutoScroll      bool
+	ApprovalRunning bool
 	SystemExpanded  bool
 	SideCollapsed   bool
 	SideNarrowOpen  bool
 	StatusMessage   string
 	LastError       string
-	HelpCollapsed   bool
-	FirstGuideShown bool
+	CommandHistory  []string
+	CmdHistIndex    int
+	CommandDraft    string
 }

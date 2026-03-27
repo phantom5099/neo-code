@@ -78,9 +78,11 @@ func newTestModel(t *testing.T, client *fakeChatClient) *Model {
 	cfg := config.DefaultAppConfig()
 	config.GlobalAppConfig = cfg
 
-	m := NewModel(client, 4, "config.yaml", "")
+	controller := services.NewRuntimeController(client, "config.yaml")
+	m := NewModel(controller, "")
 	m.ui.Width = 80
 	m.ui.Height = 24
+	m.applyBootstrap(m.controller.Bootstrap(context.Background()))
 	m.syncLayout()
 	return &m
 }
@@ -88,23 +90,25 @@ func newTestModel(t *testing.T, client *fakeChatClient) *Model {
 func restoreCoreGlobals(t *testing.T) {
 	t.Helper()
 
-	origGetWorkspaceRoot := getWorkspaceRoot
-	origParseAssistantTools := parseAssistantTools
-	origExecuteToolCall := executeToolCall
-	origApproveToolCall := approveToolCall
-	origUpdateAPIKeyEnvVar := updateAPIKeyEnvVar
-	origSwitchProviderConfig := switchProviderConfig
-	origSwitchModelConfig := switchModelConfig
+	origUpdateAPIKey := updateAPIKey
+	origSwitchProvider := switchProvider
+	origSwitchModel := switchModel
+	origResolveAssistantTurn := resolveAssistantTurn
+	origResolveApproval := resolveApproval
+	origLoadMemoryStats := loadMemoryStats
+	origClearPersistentMemory := clearPersistentMemory
+	origClearSessionContext := clearSessionContext
 	origGlobalConfig := config.GlobalAppConfig
 
 	t.Cleanup(func() {
-		getWorkspaceRoot = origGetWorkspaceRoot
-		parseAssistantTools = origParseAssistantTools
-		executeToolCall = origExecuteToolCall
-		approveToolCall = origApproveToolCall
-		updateAPIKeyEnvVar = origUpdateAPIKeyEnvVar
-		switchProviderConfig = origSwitchProviderConfig
-		switchModelConfig = origSwitchModelConfig
+		updateAPIKey = origUpdateAPIKey
+		switchProvider = origSwitchProvider
+		switchModel = origSwitchModel
+		resolveAssistantTurn = origResolveAssistantTurn
+		resolveApproval = origResolveApproval
+		loadMemoryStats = origLoadMemoryStats
+		clearPersistentMemory = origClearPersistentMemory
+		clearSessionContext = origClearSessionContext
 		config.GlobalAppConfig = origGlobalConfig
 	})
 }
@@ -122,6 +126,18 @@ func assertLastMessageContains(t *testing.T, m Model, want string) {
 	if !strings.Contains(lastMessageContent(t, m), want) {
 		t.Fatalf("expected last message to contain %q, got %q", want, lastMessageContent(t, m))
 	}
+}
+
+func runCommand(t *testing.T, m *Model, input string) Model {
+	t.Helper()
+
+	updated, cmd := m.handleCommand(input)
+	got := updated.(Model)
+	if cmd != nil {
+		updated, _ = got.Update(cmd())
+		got = updated.(Model)
+	}
+	return got
 }
 
 func TestHandleSubmitEmptyInputNoOp(t *testing.T) {
@@ -207,14 +223,20 @@ func TestHandleSubmitStartsStreamingConversation(t *testing.T) {
 	if got.chat.Messages[1].Role != "assistant" || got.chat.Messages[1].Content != "" {
 		t.Fatalf("expected assistant placeholder, got %+v", got.chat.Messages[1])
 	}
-	if len(got.chat.CommandHistory) != 1 || got.chat.CommandHistory[0] != "hello" {
-		t.Fatalf("expected command history to record input, got %+v", got.chat.CommandHistory)
+	if len(got.ui.CommandHistory) != 1 || got.ui.CommandHistory[0] != "hello" {
+		t.Fatalf("expected command history to record input, got %+v", got.ui.CommandHistory)
 	}
 
 	msg := cmd()
+	started, ok := msg.(ChatStartedMsg)
+	if !ok {
+		t.Fatalf("expected ChatStartedMsg, got %T", msg)
+	}
+	m.streamChan = started.Stream
+	msg = m.streamResponseFromChannel()()
 	chunk, ok := msg.(StreamChunkMsg)
 	if !ok {
-		t.Fatalf("expected StreamChunkMsg, got %T", msg)
+		t.Fatalf("expected StreamChunkMsg after chat start, got %T", msg)
 	}
 	if chunk.Content != "hello back" {
 		t.Fatalf("expected first stream chunk, got %q", chunk.Content)
@@ -247,34 +269,30 @@ func TestHandleCommandAPIKeyRequiresArgument(t *testing.T) {
 	client := &fakeChatClient{}
 	m := newTestModel(t, client)
 
-	updated, _ := m.handleCommand("/apikey")
-	got := updated.(Model)
+	got := runCommand(t, m, "/apikey")
 	assertLastMessageContains(t, got, "/apikey <env_name>")
 }
 
 func TestHandleCommandAPIKeyRequiresLoadedConfig(t *testing.T) {
 	client := &fakeChatClient{}
 	m := newTestModel(t, client)
-	updateAPIKeyEnvVar = func(context.Context, string, string) (*services.ConfigMutationResult, error) {
+	updateAPIKey = func(context.Context, services.Controller, string) (*services.MutationFeedback, error) {
 		return nil, errors.New("app config is not loaded")
 	}
-
-	updated, _ := m.handleCommand("/apikey TEST_ENV")
-	got := updated.(Model)
+	got := runCommand(t, m, "/apikey TEST_ENV")
 	assertLastMessageContains(t, got, "not loaded")
 }
 
 func TestHandleCommandAPIKeyEnvStillMissing(t *testing.T) {
 	client := &fakeChatClient{}
 	m := newTestModel(t, client)
-	updateAPIKeyEnvVar = func(context.Context, string, string) (*services.ConfigMutationResult, error) {
-		return &services.ConfigMutationResult{
-			APIKeyEnvVar: "MISSING_ENV",
+	updateAPIKey = func(context.Context, services.Controller, string) (*services.MutationFeedback, error) {
+		return &services.MutationFeedback{
+			AssistantMessage: "Environment variable MISSING_ENV is not set.",
+			APIKeyReady:      false,
 		}, nil
 	}
-
-	updated, _ := m.handleCommand("/apikey MISSING_ENV")
-	got := updated.(Model)
+	got := runCommand(t, m, "/apikey MISSING_ENV")
 
 	if got.chat.APIKeyReady {
 		t.Fatal("expected API key to remain not ready")
@@ -285,15 +303,14 @@ func TestHandleCommandAPIKeyEnvStillMissing(t *testing.T) {
 func TestHandleCommandAPIKeyInvalidKey(t *testing.T) {
 	client := &fakeChatClient{}
 	m := newTestModel(t, client)
-	updateAPIKeyEnvVar = func(context.Context, string, string) (*services.ConfigMutationResult, error) {
-		return &services.ConfigMutationResult{
-			APIKeyEnvVar:  "BAD_ENV",
-			ValidationErr: services.ErrInvalidAPIKey,
+	updateAPIKey = func(context.Context, services.Controller, string) (*services.MutationFeedback, error) {
+		return &services.MutationFeedback{
+			AssistantMessage: "The API key in environment variable BAD_ENV is invalid.",
+			APIKeyReady:      false,
+			ValidationErr:    services.ErrInvalidAPIKey,
 		}, nil
 	}
-
-	updated, _ := m.handleCommand("/apikey BAD_ENV")
-	got := updated.(Model)
+	got := runCommand(t, m, "/apikey BAD_ENV")
 
 	if got.chat.APIKeyReady {
 		t.Fatal("expected invalid key to mark API key as not ready")
@@ -304,15 +321,14 @@ func TestHandleCommandAPIKeyInvalidKey(t *testing.T) {
 func TestHandleCommandAPIKeyGenericValidationError(t *testing.T) {
 	client := &fakeChatClient{}
 	m := newTestModel(t, client)
-	updateAPIKeyEnvVar = func(context.Context, string, string) (*services.ConfigMutationResult, error) {
-		return &services.ConfigMutationResult{
-			APIKeyEnvVar:  "GENERIC_ENV",
-			ValidationErr: errors.New("validation failed"),
+	updateAPIKey = func(context.Context, services.Controller, string) (*services.MutationFeedback, error) {
+		return &services.MutationFeedback{
+			AssistantMessage: "validation failed",
+			APIKeyReady:      false,
+			ValidationErr:    errors.New("validation failed"),
 		}, nil
 	}
-
-	updated, _ := m.handleCommand("/apikey GENERIC_ENV")
-	got := updated.(Model)
+	got := runCommand(t, m, "/apikey GENERIC_ENV")
 
 	if got.chat.APIKeyReady {
 		t.Fatal("expected generic validation failure to mark API key as not ready")
@@ -323,25 +339,16 @@ func TestHandleCommandAPIKeyGenericValidationError(t *testing.T) {
 func TestHandleCommandAPIKeySuccessWritesConfig(t *testing.T) {
 	client := &fakeChatClient{}
 	m := newTestModel(t, client)
-	updateAPIKeyEnvVar = func(_ context.Context, path, envName string) (*services.ConfigMutationResult, error) {
-		if path != "config.yaml" {
-			t.Fatalf("expected config path config.yaml, got %q", path)
-		}
+	updateAPIKey = func(_ context.Context, _ services.Controller, envName string) (*services.MutationFeedback, error) {
 		if envName != "TEST_API_KEY_ENV" {
 			t.Fatalf("expected env name TEST_API_KEY_ENV, got %q", envName)
 		}
-		return &services.ConfigMutationResult{
-			APIKeyEnvVar: "TEST_API_KEY_ENV",
-			APIKeyReady:  true,
+		return &services.MutationFeedback{
+			AssistantMessage: "Switched the API key environment variable name to TEST_API_KEY_ENV and validated it successfully.",
+			APIKeyReady:      true,
 		}, nil
 	}
-
-	updated, cmd := m.handleCommand("/apikey TEST_API_KEY_ENV")
-	got := updated.(Model)
-
-	if cmd != nil {
-		t.Fatal("expected no command")
-	}
+	got := runCommand(t, m, "/apikey TEST_API_KEY_ENV")
 	if !got.chat.APIKeyReady {
 		t.Fatal("expected API key to be ready after validation")
 	}
@@ -354,12 +361,10 @@ func TestHandleCommandAPIKeyWriteFailureRestoresPreviousEnvName(t *testing.T) {
 	client := &fakeChatClient{}
 	m := newTestModel(t, client)
 	m.chat.APIKeyReady = true
-	updateAPIKeyEnvVar = func(context.Context, string, string) (*services.ConfigMutationResult, error) {
+	updateAPIKey = func(context.Context, services.Controller, string) (*services.MutationFeedback, error) {
 		return nil, errors.New("write failed")
 	}
-
-	updated, _ := m.handleCommand("/apikey NEW_ENV")
-	got := updated.(Model)
+	got := runCommand(t, m, "/apikey NEW_ENV")
 
 	if !got.chat.APIKeyReady {
 		t.Fatal("expected previous API key readiness to be preserved")
@@ -372,17 +377,15 @@ func TestHandleCommandAPIKeyWriteFailureRestoresPreviousEnvName(t *testing.T) {
 func TestHandleCommandProviderWithoutRuntimeKeyMarksAPIKeyNotReady(t *testing.T) {
 	client := &fakeChatClient{}
 	m := newTestModel(t, client)
-	switchProviderConfig = func(context.Context, string, string) (*services.ConfigMutationResult, error) {
-		return &services.ConfigMutationResult{
-			Provider:      "openai",
-			Model:         "gpt-5.4",
-			APIKeyEnvVar:  "MISSING_ENV",
-			ValidationErr: fmt.Errorf("%w: MISSING_ENV", services.ErrAPIKeyMissing),
+	switchProvider = func(context.Context, services.Controller, string) (*services.MutationFeedback, error) {
+		return &services.MutationFeedback{
+			AssistantMessage: "Switched provider to openai, but environment variable MISSING_ENV is not set.",
+			APIKeyReady:      false,
+			Snapshot:         services.UISnapshot{ProviderName: "openai", CurrentModel: "gpt-5.4"},
+			ValidationErr:    fmt.Errorf("%w: MISSING_ENV", services.ErrAPIKeyMissing),
 		}, nil
 	}
-
-	updated, _ := m.handleCommand("/provider openai")
-	got := updated.(Model)
+	got := runCommand(t, m, "/provider openai")
 
 	if got.chat.APIKeyReady {
 		t.Fatal("expected API key to become not ready when provider env var is missing")
@@ -399,60 +402,56 @@ func TestHandleCommandProviderRequiresArgument(t *testing.T) {
 	client := &fakeChatClient{}
 	m := newTestModel(t, client)
 
-	updated, _ := m.handleCommand("/provider")
-	got := updated.(Model)
+	got := runCommand(t, m, "/provider")
 	assertLastMessageContains(t, got, "/provider <name>")
 }
 
 func TestHandleCommandProviderRejectsUnknownProvider(t *testing.T) {
 	client := &fakeChatClient{}
 	m := newTestModel(t, client)
-	switchProviderConfig = func(context.Context, string, string) (*services.ConfigMutationResult, error) {
-		return nil, errors.New("unsupported provider")
+	switchProvider = func(context.Context, services.Controller, string) (*services.MutationFeedback, error) {
+		return &services.MutationFeedback{
+			ErrorKind:          services.MutationErrorUnsupportedProvider,
+			AssistantMessage:   "Unsupported provider: unknown",
+			SupportedProviders: []string{"openai", "anthropic"},
+		}, nil
 	}
-
-	updated, _ := m.handleCommand("/provider unknown")
-	got := updated.(Model)
+	got := runCommand(t, m, "/provider unknown")
 	assertLastMessageContains(t, got, "unknown")
 }
 
 func TestHandleCommandProviderRequiresLoadedConfig(t *testing.T) {
 	client := &fakeChatClient{}
 	m := newTestModel(t, client)
-	switchProviderConfig = func(context.Context, string, string) (*services.ConfigMutationResult, error) {
+	switchProvider = func(context.Context, services.Controller, string) (*services.MutationFeedback, error) {
 		return nil, errors.New("app config is not loaded")
 	}
-
-	updated, _ := m.handleCommand("/provider openai")
-	got := updated.(Model)
+	got := runCommand(t, m, "/provider openai")
 	assertLastMessageContains(t, got, "not loaded")
 }
 
 func TestHandleCommandProviderWriteFailure(t *testing.T) {
 	client := &fakeChatClient{}
 	m := newTestModel(t, client)
-	switchProviderConfig = func(context.Context, string, string) (*services.ConfigMutationResult, error) {
+	switchProvider = func(context.Context, services.Controller, string) (*services.MutationFeedback, error) {
 		return nil, errors.New("write failed")
 	}
-
-	updated, _ := m.handleCommand("/provider openai")
-	got := updated.(Model)
+	got := runCommand(t, m, "/provider openai")
 	assertLastMessageContains(t, got, "write failed")
 }
 
 func TestHandleCommandProviderValidationFailure(t *testing.T) {
 	client := &fakeChatClient{}
 	m := newTestModel(t, client)
-	switchProviderConfig = func(context.Context, string, string) (*services.ConfigMutationResult, error) {
-		return &services.ConfigMutationResult{
-			Provider:      "openai",
-			Model:         "gpt-5.4",
-			ValidationErr: errors.New("validation failed"),
+	switchProvider = func(context.Context, services.Controller, string) (*services.MutationFeedback, error) {
+		return &services.MutationFeedback{
+			AssistantMessage: "validation failed",
+			APIKeyReady:      false,
+			Snapshot:         services.UISnapshot{ProviderName: "openai", CurrentModel: "gpt-5.4"},
+			ValidationErr:    errors.New("validation failed"),
 		}, nil
 	}
-
-	updated, _ := m.handleCommand("/provider openai")
-	got := updated.(Model)
+	got := runCommand(t, m, "/provider openai")
 
 	if got.chat.APIKeyReady {
 		t.Fatal("expected validation failure to mark API key as not ready")
@@ -463,16 +462,14 @@ func TestHandleCommandProviderValidationFailure(t *testing.T) {
 func TestHandleCommandProviderSuccess(t *testing.T) {
 	client := &fakeChatClient{}
 	m := newTestModel(t, client)
-	switchProviderConfig = func(context.Context, string, string) (*services.ConfigMutationResult, error) {
-		return &services.ConfigMutationResult{
-			Provider:    "openai",
-			Model:       "gpt-5.4",
-			APIKeyReady: true,
+	switchProvider = func(context.Context, services.Controller, string) (*services.MutationFeedback, error) {
+		return &services.MutationFeedback{
+			AssistantMessage: "Switched provider to openai.",
+			APIKeyReady:      true,
+			Snapshot:         services.UISnapshot{ProviderName: "openai", CurrentModel: "gpt-5.4"},
 		}, nil
 	}
-
-	updated, _ := m.handleCommand("/provider openai")
-	got := updated.(Model)
+	got := runCommand(t, m, "/provider openai")
 
 	if !got.chat.APIKeyReady {
 		t.Fatal("expected successful provider switch to keep API key ready")
@@ -486,15 +483,14 @@ func TestHandleCommandProviderSuccess(t *testing.T) {
 func TestHandleCommandSwitchModelValidationSuccess(t *testing.T) {
 	client := &fakeChatClient{}
 	m := newTestModel(t, client)
-	switchModelConfig = func(context.Context, string, string) (*services.ConfigMutationResult, error) {
-		return &services.ConfigMutationResult{
-			Model:       "gpt-5.4-mini",
-			APIKeyReady: true,
+	switchModel = func(context.Context, services.Controller, string) (*services.MutationFeedback, error) {
+		return &services.MutationFeedback{
+			AssistantMessage: "Switched model to: gpt-5.4-mini",
+			APIKeyReady:      true,
+			Snapshot:         services.UISnapshot{CurrentModel: "gpt-5.4-mini"},
 		}, nil
 	}
-
-	updated, _ := m.handleCommand("/switch gpt-5.4-mini")
-	got := updated.(Model)
+	got := runCommand(t, m, "/switch gpt-5.4-mini")
 
 	if !got.chat.APIKeyReady {
 		t.Fatal("expected API key to stay ready")
@@ -508,48 +504,42 @@ func TestHandleCommandSwitchRequiresArgument(t *testing.T) {
 	client := &fakeChatClient{}
 	m := newTestModel(t, client)
 
-	updated, _ := m.handleCommand("/switch")
-	got := updated.(Model)
+	got := runCommand(t, m, "/switch")
 	assertLastMessageContains(t, got, "/switch <model>")
 }
 
 func TestHandleCommandSwitchRequiresLoadedConfig(t *testing.T) {
 	client := &fakeChatClient{}
 	m := newTestModel(t, client)
-	switchModelConfig = func(context.Context, string, string) (*services.ConfigMutationResult, error) {
+	switchModel = func(context.Context, services.Controller, string) (*services.MutationFeedback, error) {
 		return nil, errors.New("app config is not loaded")
 	}
-
-	updated, _ := m.handleCommand("/switch gpt-5.4")
-	got := updated.(Model)
+	got := runCommand(t, m, "/switch gpt-5.4")
 	assertLastMessageContains(t, got, "not loaded")
 }
 
 func TestHandleCommandSwitchWriteFailure(t *testing.T) {
 	client := &fakeChatClient{}
 	m := newTestModel(t, client)
-	switchModelConfig = func(context.Context, string, string) (*services.ConfigMutationResult, error) {
+	switchModel = func(context.Context, services.Controller, string) (*services.MutationFeedback, error) {
 		return nil, errors.New("write failed")
 	}
-
-	updated, _ := m.handleCommand("/switch gpt-5.4")
-	got := updated.(Model)
+	got := runCommand(t, m, "/switch gpt-5.4")
 	assertLastMessageContains(t, got, "write failed")
 }
 
 func TestHandleCommandSwitchMissingRuntimeKey(t *testing.T) {
 	client := &fakeChatClient{}
 	m := newTestModel(t, client)
-	switchModelConfig = func(context.Context, string, string) (*services.ConfigMutationResult, error) {
-		return &services.ConfigMutationResult{
-			Model:         "gpt-5.4",
-			APIKeyEnvVar:  "MISSING_ENV",
-			ValidationErr: fmt.Errorf("%w: MISSING_ENV", services.ErrAPIKeyMissing),
+	switchModel = func(context.Context, services.Controller, string) (*services.MutationFeedback, error) {
+		return &services.MutationFeedback{
+			AssistantMessage: "MISSING_ENV",
+			APIKeyReady:      false,
+			Snapshot:         services.UISnapshot{CurrentModel: "gpt-5.4"},
+			ValidationErr:    fmt.Errorf("%w: MISSING_ENV", services.ErrAPIKeyMissing),
 		}, nil
 	}
-
-	updated, _ := m.handleCommand("/switch gpt-5.4")
-	got := updated.(Model)
+	got := runCommand(t, m, "/switch gpt-5.4")
 
 	if got.chat.APIKeyReady {
 		t.Fatal("expected API key to be not ready when runtime key is missing")
@@ -560,15 +550,15 @@ func TestHandleCommandSwitchMissingRuntimeKey(t *testing.T) {
 func TestHandleCommandSwitchValidationFailure(t *testing.T) {
 	client := &fakeChatClient{}
 	m := newTestModel(t, client)
-	switchModelConfig = func(context.Context, string, string) (*services.ConfigMutationResult, error) {
-		return &services.ConfigMutationResult{
-			Model:         "gpt-5.4",
-			ValidationErr: errors.New("validation failed"),
+	switchModel = func(context.Context, services.Controller, string) (*services.MutationFeedback, error) {
+		return &services.MutationFeedback{
+			AssistantMessage: "validation failed",
+			APIKeyReady:      false,
+			Snapshot:         services.UISnapshot{CurrentModel: "gpt-5.4"},
+			ValidationErr:    errors.New("validation failed"),
 		}, nil
 	}
-
-	updated, _ := m.handleCommand("/switch gpt-5.4")
-	got := updated.(Model)
+	got := runCommand(t, m, "/switch gpt-5.4")
 
 	if got.chat.APIKeyReady {
 		t.Fatal("expected validation failure to mark API key not ready")
@@ -576,17 +566,16 @@ func TestHandleCommandSwitchValidationFailure(t *testing.T) {
 	assertLastMessageContains(t, got, "validation failed")
 }
 
-func TestHandleCommandWorkspaceFallsBackToGlobalRoot(t *testing.T) {
+func TestHandleCommandWorkspaceShowsUnknownWhenRootMissing(t *testing.T) {
 	client := &fakeChatClient{}
 	m := newTestModel(t, client)
 	m.chat.WorkspaceRoot = ""
-	getWorkspaceRoot = func() string { return `D:/neo-code/workspace` }
 
 	updated, _ := m.handleCommand("/workspace")
 	got := updated.(Model)
 
-	if !strings.Contains(lastMessageContent(t, got), `D:/neo-code/workspace`) {
-		t.Fatalf("expected workspace fallback path, got %q", lastMessageContent(t, got))
+	if !strings.Contains(lastMessageContent(t, got), "unknown") {
+		t.Fatalf("expected unknown workspace message, got %q", lastMessageContent(t, got))
 	}
 }
 
@@ -604,8 +593,7 @@ func TestHandleCommandMemoryFailure(t *testing.T) {
 	m := newTestModel(t, client)
 	m.chat.APIKeyReady = true
 
-	updated, _ := m.handleCommand("/memory")
-	got := updated.(Model)
+	got := runCommand(t, m, "/memory")
 	assertLastMessageContains(t, got, "stats failed")
 }
 
@@ -624,8 +612,7 @@ func TestHandleCommandMemorySuccess(t *testing.T) {
 	m := newTestModel(t, client)
 	m.chat.APIKeyReady = true
 
-	updated, _ := m.handleCommand("/memory")
-	got := updated.(Model)
+	got := runCommand(t, m, "/memory")
 	assertLastMessageContains(t, got, "memory.json")
 }
 
@@ -644,8 +631,7 @@ func TestHandleCommandClearMemoryFailure(t *testing.T) {
 	m := newTestModel(t, client)
 	m.chat.APIKeyReady = true
 
-	updated, _ := m.handleCommand("/clear-memory confirm")
-	got := updated.(Model)
+	got := runCommand(t, m, "/clear-memory confirm")
 	assertLastMessageContains(t, got, "clear failed")
 }
 
@@ -667,8 +653,7 @@ func TestHandleCommandClearContextFailure(t *testing.T) {
 	m := newTestModel(t, client)
 	m.chat.APIKeyReady = true
 
-	updated, _ := m.handleCommand("/clear-context")
-	got := updated.(Model)
+	got := runCommand(t, m, "/clear-context")
 	assertLastMessageContains(t, got, "clear session failed")
 }
 
@@ -832,23 +817,29 @@ func TestStreamChunkMsgNoOpWhenNotGenerating(t *testing.T) {
 	}
 }
 
-func TestStreamDoneMsgCompletesWithoutToolCall(t *testing.T) {
+func TestStreamDoneMsgRequestsAssistantTurnResolution(t *testing.T) {
 	client := &fakeChatClient{}
 	m := newTestModel(t, client)
 	m.chat.Generating = true
-	ch := make(chan string)
-	close(ch)
-	m.streamChan = ch
 	m.chat.Messages = []state.Message{{Role: "assistant", Content: "done", Streaming: true}}
+
+	called := false
+	resolveAssistantTurn = func(_ context.Context, _ services.Controller, req services.ConversationRequest, assistantContent string) (services.TurnResolution, error) {
+		called = true
+		if assistantContent != "done" {
+			t.Fatalf("expected assistant content to be passed through, got %q", assistantContent)
+		}
+		if len(req.Messages) != 1 || req.Messages[0].Content != "done" {
+			t.Fatalf("expected current conversation messages, got %+v", req.Messages)
+		}
+		return services.TurnResolution{}, nil
+	}
 
 	updated, cmd := m.Update(StreamDoneMsg{})
 	got := updated.(Model)
 
-	if cmd != nil {
-		t.Fatal("expected no command")
-	}
 	if got.chat.Generating {
-		t.Fatal("expected generation to stop")
+		t.Fatal("expected generation to stop before resolution")
 	}
 	if got.streamChan != nil {
 		t.Fatal("expected stream channel to be cleared")
@@ -856,31 +847,15 @@ func TestStreamDoneMsgCompletesWithoutToolCall(t *testing.T) {
 	if got.chat.Messages[0].Streaming {
 		t.Fatal("expected last message streaming flag to clear")
 	}
-}
-
-func TestStreamDoneMsgDoesNotReexecuteWhenToolAlreadyExecuting(t *testing.T) {
-	client := &fakeChatClient{}
-	m := newTestModel(t, client)
-	m.chat.Generating = true
-	m.chat.ToolExecuting = true
-	m.chat.Messages = []state.Message{{Role: "assistant", Content: `{"tool":"read","params":{"path":"README.md"}}`, Streaming: true}}
-
-	called := false
-	executeToolCall = func(services.ToolCall) *services.ToolResult {
-		called = true
-		return nil
+	if cmd == nil {
+		t.Fatal("expected resolution command")
 	}
-
-	updated, cmd := m.Update(StreamDoneMsg{})
-	got := updated.(Model)
-	if cmd != nil {
-		t.Fatal("expected no command")
+	msg := cmd()
+	if _, ok := msg.(TurnResolvedMsg); !ok {
+		t.Fatalf("expected TurnResolvedMsg, got %T", msg)
 	}
-	if !got.chat.ToolExecuting {
-		t.Fatal("expected tool executing flag to remain true")
-	}
-	if called {
-		t.Fatal("expected no duplicate tool execution")
+	if !called {
+		t.Fatal("expected assistant turn resolution to be requested")
 	}
 }
 
@@ -900,13 +875,17 @@ func TestShowHideHelpRefreshMemoryAndExitMsgs(t *testing.T) {
 		t.Fatalf("expected chat mode, got %v", got.ui.Mode)
 	}
 
-	updated, _ = got.Update(RefreshMemoryMsg{})
+	updated, cmd := got.Update(RefreshMemoryMsg{})
+	if cmd == nil {
+		t.Fatal("expected refresh memory command")
+	}
+	updated, _ = got.Update(cmd())
 	got = updated.(Model)
 	if got.chat.MemoryStats.TotalItems != 7 {
 		t.Fatalf("expected refreshed stats, got %+v", got.chat.MemoryStats)
 	}
 
-	_, cmd := got.Update(ExitMsg{})
+	_, cmd = got.Update(ExitMsg{})
 	if cmd == nil {
 		t.Fatal("expected quit command")
 	}
@@ -917,94 +896,45 @@ func TestRefreshMemoryMsgIgnoresClientError(t *testing.T) {
 	m := newTestModel(t, client)
 	m.chat.MemoryStats.TotalItems = 5
 
-	updated, _ := m.Update(RefreshMemoryMsg{})
+	updated, cmd := m.Update(RefreshMemoryMsg{})
+	if cmd == nil {
+		t.Fatal("expected refresh memory command")
+	}
+	gotModel := updated.(Model)
+	updated, _ = gotModel.Update(cmd())
 	got := updated.(Model)
 	if got.chat.MemoryStats.TotalItems != 5 {
 		t.Fatalf("expected previous stats to be preserved, got %+v", got.chat.MemoryStats)
 	}
 }
 
-func TestStreamDoneMsgExecutesToolCallFromAssistantJSON(t *testing.T) {
-	client := &fakeChatClient{}
-	m := newTestModel(t, client)
-	m.chat.Generating = true
-	m.chat.Messages = []state.Message{{Role: "assistant", Content: `{"tool":"read","params":{"path":"README.md"}}`, Streaming: true}}
-
-	expected := &services.ToolResult{ToolName: "read", Success: true, Output: "ok"}
-	executeToolCall = func(call services.ToolCall) *services.ToolResult {
-		if call.Tool != "read" {
-			t.Fatalf("expected read tool, got %q", call.Tool)
-		}
-		if got, _ := call.Params["path"].(string); got != "README.md" {
-			t.Fatalf("expected normalized path param, got %+v", call.Params)
-		}
-		return expected
-	}
-
-	updated, cmd := m.Update(StreamDoneMsg{})
-	got := updated.(Model)
-
-	if !got.chat.ToolExecuting {
-		t.Fatal("expected tool execution flag to be set")
-	}
-	if len(got.chat.Messages) != 2 {
-		t.Fatalf("expected tool status message to be appended, got %d messages", len(got.chat.Messages))
-	}
-	if !strings.HasPrefix(got.chat.Messages[1].Content, toolStatusPrefix) {
-		t.Fatalf("expected transient tool status, got %q", got.chat.Messages[1].Content)
-	}
-	if cmd == nil {
-		t.Fatal("expected tool execution command")
-	}
-	msg := cmd()
-	resultMsg, ok := msg.(ToolResultMsg)
-	if !ok {
-		t.Fatalf("expected ToolResultMsg, got %T", msg)
-	}
-	if resultMsg.Result != expected {
-		t.Fatalf("expected tool result to round-trip, got %+v", resultMsg.Result)
-	}
-}
-
-func TestStreamDoneMsgReturnsToolErrorWhenToolResultIsNil(t *testing.T) {
-	client := &fakeChatClient{}
-	m := newTestModel(t, client)
-	m.chat.Generating = true
-	m.chat.Messages = []state.Message{{Role: "assistant", Content: `{"tool":"read","params":{"path":"README.md"}}`, Streaming: true}}
-
-	executeToolCall = func(services.ToolCall) *services.ToolResult { return nil }
-
-	_, cmd := m.Update(StreamDoneMsg{})
-	if cmd == nil {
-		t.Fatal("expected tool execution command")
-	}
-	msg := cmd()
-	if _, ok := msg.(ToolErrorMsg); !ok {
-		t.Fatalf("expected ToolErrorMsg, got %T", msg)
-	}
-}
-
-func TestToolResultMsgAddsContextAndRestartsStreaming(t *testing.T) {
+func TestTurnResolvedMsgAddsContextAndRestartsStreaming(t *testing.T) {
 	client := &fakeChatClient{chatChunks: []string{"tool follow-up"}}
 	m := newTestModel(t, client)
 	m.chat.Messages = []state.Message{{Role: "user", Content: "hello"}}
-	m.chat.ToolExecuting = true
 
-	result := &services.ToolResult{ToolName: "read", Success: true, Output: "README"}
-	updated, cmd := m.Update(ToolResultMsg{Result: result})
+	stream, err := client.Chat(context.Background(), []services.Message{{Role: "user", Content: "hello"}}, "")
+	if err != nil {
+		t.Fatalf("expected fake stream, got %v", err)
+	}
+
+	updated, cmd := m.Update(TurnResolvedMsg{Resolution: services.TurnResolution{
+		Messages: []services.SessionMessage{
+			services.FormatToolContextMessage(&services.ToolResult{ToolName: "read", Success: true, Output: "README"}),
+		},
+		StatusMessage: "Generating...",
+		Stream:        stream,
+	}})
 	got := updated.(Model)
 
-	if got.chat.ToolExecuting {
-		t.Fatal("expected tool execution flag to be cleared")
-	}
 	if !got.chat.Generating {
 		t.Fatal("expected follow-up generation to start")
 	}
 	if len(got.chat.Messages) != 3 {
 		t.Fatalf("expected tool context and placeholder messages, got %d", len(got.chat.Messages))
 	}
-	if !strings.HasPrefix(got.chat.Messages[1].Content, toolContextPrefix) {
-		t.Fatalf("expected tool context message, got %q", got.chat.Messages[1].Content)
+	if got.chat.Messages[1].Kind != services.MessageKindToolContext {
+		t.Fatalf("expected tool context kind, got %+v", got.chat.Messages[1])
 	}
 	if got.chat.Messages[2].Role != "assistant" || got.chat.Messages[2].Content != "" {
 		t.Fatalf("expected assistant placeholder, got %+v", got.chat.Messages[2])
@@ -1022,35 +952,6 @@ func TestToolResultMsgAddsContextAndRestartsStreaming(t *testing.T) {
 	}
 }
 
-func TestToolErrorMsgAddsErrorContextAndRestartsStreaming(t *testing.T) {
-	client := &fakeChatClient{chatChunks: []string{"error recovery"}}
-	m := newTestModel(t, client)
-	m.chat.ToolExecuting = true
-
-	updated, cmd := m.Update(ToolErrorMsg{Err: errors.New("tool failed")})
-	got := updated.(Model)
-
-	if got.chat.ToolExecuting {
-		t.Fatal("expected tool execution flag to be cleared")
-	}
-	if !got.chat.Generating {
-		t.Fatal("expected generation restart after tool error")
-	}
-	if len(got.chat.Messages) != 2 {
-		t.Fatalf("expected tool error context and placeholder, got %d messages", len(got.chat.Messages))
-	}
-	if !strings.Contains(got.chat.Messages[0].Content, "tool failed") {
-		t.Fatalf("expected tool error context, got %q", got.chat.Messages[0].Content)
-	}
-	if cmd == nil {
-		t.Fatal("expected follow-up stream command")
-	}
-	msg := cmd()
-	if _, ok := msg.(StreamChunkMsg); !ok {
-		t.Fatalf("expected StreamChunkMsg, got %T", msg)
-	}
-}
-
 func TestBuildMessagesSkipsEmptyAssistantPlaceholder(t *testing.T) {
 	m := Model{
 		chat: state.ChatState{Messages: []state.Message{
@@ -1060,7 +961,7 @@ func TestBuildMessagesSkipsEmptyAssistantPlaceholder(t *testing.T) {
 		}},
 	}
 
-	got := m.buildMessages()
+	got := services.BuildRequestMessages(m.sessionMessages())
 	if len(got) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(got))
 	}
@@ -1073,10 +974,10 @@ func TestBuildMessagesSkipsEmptyAssistantPlaceholder(t *testing.T) {
 }
 
 func TestFormatTypeStats(t *testing.T) {
-	if got := formatTypeStats(nil); got == "" {
+	if got := services.FormatMemoryTypeStats(nil); got == "" {
 		t.Fatal("expected non-empty placeholder")
 	}
-	got := formatTypeStats(map[string]int{
+	got := services.FormatMemoryTypeStats(map[string]int{
 		services.TypeUserPreference: 2,
 		services.TypeCodeFact:       1,
 	})
@@ -1086,12 +987,12 @@ func TestFormatTypeStats(t *testing.T) {
 }
 
 func TestRecentToolContextIndexes(t *testing.T) {
-	messages := []state.Message{
-		{Role: "system", Content: "[TOOL_CONTEXT]\na"},
+	messages := []services.SessionMessage{
+		{Role: "system", Content: "Tool result\na", Kind: services.MessageKindToolContext},
 		{Role: "assistant", Content: "x"},
-		{Role: "system", Content: "[TOOL_CONTEXT]\nb"},
+		{Role: "system", Content: "Tool result\nb", Kind: services.MessageKindToolContext},
 	}
-	got := recentToolContextIndexes(messages, 1)
+	got := services.RecentToolContextIndexes(messages, 1)
 	if len(got) != 1 {
 		t.Fatalf("expected one index, got %+v", got)
 	}
@@ -1101,41 +1002,41 @@ func TestRecentToolContextIndexes(t *testing.T) {
 }
 
 func TestFormatToolStatusMessage(t *testing.T) {
-	got := formatToolStatusMessage("read", map[string]interface{}{"filePath": "README.md"})
+	got := services.FormatToolStatusMessage("read", map[string]interface{}{"filePath": "README.md"}).Content
 	if !strings.Contains(got, "tool=read") || !strings.Contains(got, "README.md") {
 		t.Fatalf("unexpected tool status %q", got)
 	}
 }
 
 func TestFormatToolContextMessage(t *testing.T) {
-	got := formatToolContextMessage(&services.ToolResult{
+	got := services.FormatToolContextMessage(&services.ToolResult{
 		ToolName: "read",
 		Success:  true,
 		Output:   "hello",
 		Metadata: map[string]interface{}{"k": "v"},
-	})
+	}).Content
 	if !strings.Contains(got, "tool=read") || !strings.Contains(got, "metadata=") || !strings.Contains(got, "output:") {
 		t.Fatalf("unexpected tool context %q", got)
 	}
 
-	got = formatToolContextMessage(&services.ToolResult{ToolName: "read", Success: false, Error: "boom"})
+	got = services.FormatToolContextMessage(&services.ToolResult{ToolName: "read", Success: false, Error: "boom"}).Content
 	if !strings.Contains(got, "error:") || !strings.Contains(got, "boom") {
 		t.Fatalf("unexpected error context %q", got)
 	}
 }
 
 func TestFormatToolErrorContext(t *testing.T) {
-	got := formatToolErrorContext(errors.New("boom"))
+	got := services.FormatToolErrorContext(errors.New("boom")).Content
 	if !strings.Contains(got, "boom") {
 		t.Fatalf("unexpected tool error context %q", got)
 	}
 }
 
 func TestTruncateForContext(t *testing.T) {
-	if got := truncateForContext("  hi  ", 10); got != "hi" {
+	if got := services.TruncateForContext("  hi  ", 10); got != "hi" {
 		t.Fatalf("expected trimmed content, got %q", got)
 	}
-	got := truncateForContext(strings.Repeat("a", 20), 10)
+	got := services.TruncateForContext(strings.Repeat("a", 20), 10)
 	if !strings.Contains(got, "truncated") {
 		t.Fatalf("expected truncation marker, got %q", got)
 	}
@@ -1157,8 +1058,9 @@ func TestCalculateInputHeight(t *testing.T) {
 func TestStreamResponseReturnsErrorMsg(t *testing.T) {
 	client := &fakeChatClient{chatErr: errors.New("chat failed")}
 	m := newTestModel(t, client)
+	m.chat.Messages = []state.Message{{Role: "user", Content: "hi"}}
 
-	cmd := m.streamResponse([]services.Message{{Role: "user", Content: "hi"}})
+	cmd := m.streamResponse()
 	if cmd == nil {
 		t.Fatal("expected command")
 	}
@@ -1171,14 +1073,21 @@ func TestStreamResponseReturnsErrorMsg(t *testing.T) {
 func TestStreamResponseAndStreamResponseFromChannelDone(t *testing.T) {
 	client := &fakeChatClient{chatChunks: nil}
 	m := newTestModel(t, client)
+	m.chat.Messages = []state.Message{{Role: "user", Content: "hi"}}
 
-	cmd := m.streamResponse([]services.Message{{Role: "user", Content: "hi"}})
+	cmd := m.streamResponse()
 	if cmd == nil {
 		t.Fatal("expected command")
 	}
 	msg := cmd()
+	started, ok := msg.(ChatStartedMsg)
+	if !ok {
+		t.Fatalf("expected ChatStartedMsg, got %T", msg)
+	}
+	m.streamChan = started.Stream
+	msg = m.streamResponseFromChannel()()
 	if _, ok := msg.(StreamDoneMsg); !ok {
-		t.Fatalf("expected StreamDoneMsg, got %T", msg)
+		t.Fatalf("expected StreamDoneMsg after empty channel, got %T", msg)
 	}
 
 	m.streamChan = nil
@@ -1190,7 +1099,6 @@ func TestStreamResponseAndStreamResponseFromChannelDone(t *testing.T) {
 func TestStreamErrorReplacesTrailingPlaceholder(t *testing.T) {
 	m := Model{
 		chat: state.ChatState{
-			HistoryTurns: 6,
 			Messages: []state.Message{
 				{Role: "user", Content: "hello"},
 				{Role: "assistant", Content: ""},
@@ -1217,8 +1125,7 @@ func TestClearContextDoesNotReinjectStalePersonaMessage(t *testing.T) {
 		{Role: "user", Content: "hello"},
 	}
 
-	updated, _ := m.handleCommand("/clear-context")
-	got := updated.(Model)
+	got := runCommand(t, m, "/clear-context")
 	if len(got.chat.Messages) != 1 {
 		t.Fatalf("expected only confirmation message after clear-context, got %d messages", len(got.chat.Messages))
 	}
@@ -1231,39 +1138,44 @@ func TestBuildMessagesSkipsTransientToolStatusMessage(t *testing.T) {
 	m := Model{
 		chat: state.ChatState{Messages: []state.Message{
 			{Role: "user", Content: "hello"},
-			{Role: "system", Content: "[TOOL_STATUS] tool=read file=README.md"},
+			{Role: "system", Content: "Tool status\ntool=read\nfile=README.md", Kind: services.MessageKindToolStatus},
 			{Role: "assistant", Content: "ok"},
 		}},
 	}
 
-	got := m.buildMessages()
+	got := services.BuildRequestMessages(m.sessionMessages())
 	if len(got) != 2 {
 		t.Fatalf("expected 2 messages after filtering tool status, got %d", len(got))
 	}
 	for _, msg := range got {
-		if msg.Role == "system" && strings.HasPrefix(msg.Content, "[TOOL_STATUS]") {
+		if msg.Role == "system" && strings.Contains(msg.Content, "Tool status") {
 			t.Fatalf("transient tool status should not be included in model context: %+v", msg)
 		}
 	}
 }
 
 func TestBuildMessagesKeepsOnlyRecentToolContextMessages(t *testing.T) {
+	config.GlobalAppConfig = config.DefaultAppConfig()
 	m := Model{}
 	m.chat.Messages = append(m.chat.Messages, state.Message{Role: "user", Content: "step 1"})
 	for i := 1; i <= 5; i++ {
-		m.chat.Messages = append(m.chat.Messages, state.Message{Role: "system", Content: "[TOOL_CONTEXT]\ntool=read\nsuccess=true\noutput:\nchunk " + string(rune('0'+i))})
+		m.chat.Messages = append(m.chat.Messages, state.Message{
+			Role:    "system",
+			Content: "Tool result\ntool=read\nsuccess=true\noutput:\nchunk " + string(rune('0'+i)),
+			Kind:    services.MessageKindToolContext,
+		})
 	}
 	m.chat.Messages = append(m.chat.Messages, state.Message{Role: "assistant", Content: "done"})
 
-	got := m.buildMessages()
+	got := services.BuildRequestMessages(m.sessionMessages())
 	toolCtxCount := 0
 	for _, msg := range got {
-		if msg.Role == "system" && strings.HasPrefix(msg.Content, "[TOOL_CONTEXT]") {
+		if msg.Role == "system" && strings.HasPrefix(msg.Content, "Tool result") {
 			toolCtxCount++
 		}
 	}
-	if toolCtxCount != maxToolContextMessages {
-		t.Fatalf("expected %d tool context messages, got %d", maxToolContextMessages, toolCtxCount)
+	if toolCtxCount != config.GlobalAppConfig.History.MaxToolContextMessages {
+		t.Fatalf("expected %d tool context messages, got %d", config.GlobalAppConfig.History.MaxToolContextMessages, toolCtxCount)
 	}
 
 	joined := ""
@@ -1297,10 +1209,12 @@ func TestWorkspaceCommandShowsWorkspaceRoot(t *testing.T) {
 	}
 }
 
-func TestApproveCommandWhileToolExecutingKeepsPendingApproval(t *testing.T) {
+func TestApproveCommandWhileApprovalRunningKeepsPendingApproval(t *testing.T) {
 	m := Model{
+		ui: state.UIState{
+			ApprovalRunning: true,
+		},
 		chat: state.ChatState{
-			ToolExecuting: true,
 			PendingApproval: &state.PendingApproval{
 				Call: services.ToolCall{
 					Tool: "bash",
@@ -1334,38 +1248,31 @@ func TestApproveCommandWhileToolExecutingKeepsPendingApproval(t *testing.T) {
 	}
 }
 
-func TestToolResultMsgSecurityAskStoresPendingApproval(t *testing.T) {
+func TestTurnResolvedMsgStoresPendingApproval(t *testing.T) {
 	client := &fakeChatClient{}
 	m := newTestModel(t, client)
-	m.chat.ToolExecuting = true
 
-	result := &services.ToolResult{
-		ToolName: "bash",
-		Success:  false,
-		Metadata: map[string]interface{}{
-			"securityAction":   "ask",
-			"securityToolType": "Bash",
-			"securityTarget":   "echo hello",
-		},
-	}
-
-	updated, cmd := m.Update(ToolResultMsg{
-		Result: result,
-		Call: services.ToolCall{
-			Tool: "bash",
-			Params: map[string]interface{}{
-				"command": "echo hello",
+	updated, cmd := m.Update(TurnResolvedMsg{Resolution: services.TurnResolution{
+		PendingApproval: &services.ToolApprovalRequest{
+			Call: services.ToolCall{
+				Tool: "bash",
+				Params: map[string]interface{}{
+					"command": "echo hello",
+				},
 			},
+			ToolType:         "Bash",
+			Target:           "echo hello",
+			AssistantMessage: "Use /y to approve.",
 		},
-	})
+		Messages: []services.SessionMessage{
+			{Role: "assistant", Content: "Use /y to approve.", Transient: true},
+		},
+	}})
 	if cmd != nil {
 		t.Fatal("expected no follow-up command while waiting for approval")
 	}
 
 	got := updated.(Model)
-	if got.chat.ToolExecuting {
-		t.Fatal("expected tool executing flag to be cleared")
-	}
 	if got.chat.PendingApproval == nil {
 		t.Fatal("expected pending approval to be recorded")
 	}

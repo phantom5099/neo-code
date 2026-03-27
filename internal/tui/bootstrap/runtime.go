@@ -7,13 +7,14 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-func NewProgram(historyTurns int, configPath, workspaceRoot string) (*tea.Program, error) {
+func NewProgram(configPath, workspaceRoot string) (*tea.Program, error) {
 	client, err := services.NewLocalChatClient()
 	if err != nil {
 		return nil, err
 	}
 
-	model := core.NewModel(client, historyTurns, configPath, workspaceRoot)
+	controller := services.NewRuntimeController(client, configPath)
+	model := core.NewModel(controller, workspaceRoot)
 	return tea.NewProgram(model,
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),

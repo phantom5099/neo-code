@@ -13,7 +13,7 @@ func TestNewProgramReturnsErrorWhenGlobalConfigMissing(t *testing.T) {
 
 	config.GlobalAppConfig = nil
 
-	p, err := NewProgram(4, "config.yaml", "D:/neo-code")
+	p, err := NewProgram("config.yaml", "D:/neo-code")
 	if err == nil {
 		t.Fatalf("expected error, got program %+v", p)
 	}
@@ -28,7 +28,7 @@ func TestNewProgramBuildsBubbleTeaProgram(t *testing.T) {
 	config.GlobalAppConfig = cfg
 	t.Setenv(cfg.APIKeyEnvVarName(), "secret")
 
-	p, err := NewProgram(4, "config.yaml", "D:/neo-code")
+	p, err := NewProgram("config.yaml", "D:/neo-code")
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}

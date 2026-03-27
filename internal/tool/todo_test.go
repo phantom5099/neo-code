@@ -1,4 +1,4 @@
-package tool
+package tool_test
 
 import (
 	"context"
@@ -6,12 +6,13 @@ import (
 	"testing"
 
 	"neo-code/internal/agentruntime/todo"
+	toolworkflow "neo-code/internal/tool/workflow"
 )
 
-func newTodoTool() (*TodoTool, todo.TodoService) {
+func newTodoTool() (*toolworkflow.TodoTool, todo.TodoService) {
 	repo := todo.NewInMemoryTodoRepository()
 	todoSvc := todo.NewTodoService(repo)
-	return NewTodoTool(todoSvc), todoSvc
+	return toolworkflow.NewTodoTool(todoSvc), todoSvc
 }
 
 func TestTodoToolRunRejectsUnsupportedAction(t *testing.T) {

@@ -1,55 +1,59 @@
-package tool
+package web
 
 import (
 	"context"
 	"fmt"
 	"strings"
 
-	webclient "neo-code/internal/tool/web"
+	"neo-code/internal/tool"
 )
 
-type WebFetchTool struct{}
+type FetchTool struct{}
 
-func (w *WebFetchTool) Definition() ToolDefinition {
-	return ToolDefinition{
+func NewFetchTool() *FetchTool {
+	return &FetchTool{}
+}
+
+func (w *FetchTool) Definition() tool.ToolDefinition {
+	return tool.ToolDefinition{
 		Category:    "web",
 		Name:        "webfetch",
 		Description: "Fetch an HTTP or HTTPS resource and return a truncated response body with status metadata.",
-		Parameters: []ToolParamSpec{
+		Parameters: []tool.ToolParamSpec{
 			{Name: "url", Type: "string", Required: true, Description: "Target HTTP or HTTPS URL."},
 			{Name: "maxBytes", Type: "integer", Description: "Maximum response bytes to read, default 20000."},
 		},
 	}
 }
 
-func (w *WebFetchTool) Run(params map[string]interface{}) *ToolResult {
-	rawURL, errRes := requiredString(params, "url")
+func (w *FetchTool) Run(params map[string]interface{}) *tool.ToolResult {
+	rawURL, errRes := tool.RequiredString(params, "url")
 	if errRes != nil {
 		errRes.ToolName = w.Definition().Name
 		return errRes
 	}
 
-	parsed, err := webclient.NormalizeHTTPURL(rawURL)
+	parsed, err := NormalizeHTTPURL(rawURL)
 	if err != nil {
-		return &ToolResult{ToolName: w.Definition().Name, Success: false, Error: err.Error()}
+		return &tool.ToolResult{ToolName: w.Definition().Name, Success: false, Error: err.Error()}
 	}
 	target := strings.TrimSpace(parsed.Hostname())
-	if denied := guardToolExecution(string(ToolWebFetch), target, w.Definition().Name); denied != nil {
+	if denied := tool.GuardToolExecution(string(tool.ToolWebFetch), target, w.Definition().Name); denied != nil {
 		return denied
 	}
 
-	maxBytes, errRes := optionalInt(params, "maxBytes", 20_000)
+	maxBytes, errRes := tool.OptionalInt(params, "maxBytes", 20_000)
 	if errRes != nil {
 		errRes.ToolName = w.Definition().Name
 		return errRes
 	}
 
-	result, err := webclient.Fetch(context.Background(), nil, parsed.String(), maxBytes)
+	result, err := Fetch(context.Background(), nil, parsed.String(), maxBytes)
 	if err != nil {
-		return &ToolResult{ToolName: w.Definition().Name, Success: false, Error: err.Error()}
+		return &tool.ToolResult{ToolName: w.Definition().Name, Success: false, Error: err.Error()}
 	}
 
-	return &ToolResult{
+	return &tool.ToolResult{
 		ToolName: w.Definition().Name,
 		Success:  true,
 		Output:   result.Body,

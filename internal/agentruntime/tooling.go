@@ -3,6 +3,7 @@ package agentruntime
 import (
 	"neo-code/internal/tool"
 	toolprotocol "neo-code/internal/tool/protocol"
+	toolregistry "neo-code/internal/tool/registry"
 )
 
 func ParseAssistantToolCalls(text string) []tool.ToolCall {
@@ -10,7 +11,7 @@ func ParseAssistantToolCalls(text string) []tool.ToolCall {
 }
 
 func ExecuteToolCall(call tool.ToolCall) *tool.ToolResult {
-	return tool.GlobalRegistry.Execute(call)
+	return toolregistry.GlobalRegistry.Execute(call)
 }
 
 func ApproveToolCall(toolType, target string) {

@@ -1,46 +1,45 @@
-package tool
+package registry
 
 import (
 	"fmt"
 	"sort"
+
+	"neo-code/internal/tool"
+	"neo-code/internal/tool/filesystem"
+	"neo-code/internal/tool/shell"
+	toolweb "neo-code/internal/tool/web"
 )
 
-// GlobalRegistry is the shared tool registry used by the local runtime.
 var GlobalRegistry = NewToolRegistry()
 
-// ToolRegistry registers tools and dispatches tool calls.
 type ToolRegistry struct {
-	tools map[string]Tool
+	tools map[string]tool.Tool
 }
 
-// NewToolRegistry creates a registry with the built-in file and shell tools.
 func NewToolRegistry() *ToolRegistry {
-	r := &ToolRegistry{tools: make(map[string]Tool)}
-	r.Register(&ReadTool{})
-	r.Register(&WriteTool{})
-	r.Register(&EditTool{})
-	r.Register(&ListTool{})
-	r.Register(&GrepTool{})
-	r.Register(&BashTool{})
-	r.Register(&WebFetchTool{})
-	r.Register(&WebSearchTool{})
+	r := &ToolRegistry{tools: make(map[string]tool.Tool)}
+	r.Register(filesystem.NewReadTool())
+	r.Register(filesystem.NewWriteTool())
+	r.Register(filesystem.NewEditTool())
+	r.Register(filesystem.NewListTool())
+	r.Register(filesystem.NewGrepTool())
+	r.Register(shell.NewBashTool())
+	r.Register(toolweb.NewFetchTool())
+	r.Register(toolweb.NewSearchTool())
 	return r
 }
 
-// Register adds a tool definition to the registry.
-func (r *ToolRegistry) Register(t Tool) {
+func (r *ToolRegistry) Register(t tool.Tool) {
 	def := t.Definition()
 	r.tools[def.Name] = t
 }
 
-// Get returns a registered tool by name.
-func (r *ToolRegistry) Get(name string) Tool {
+func (r *ToolRegistry) Get(name string) tool.Tool {
 	return r.tools[name]
 }
 
-// ListDefinitions returns all registered tool definitions in stable order.
-func (r *ToolRegistry) ListDefinitions() []ToolDefinition {
-	defs := make([]ToolDefinition, 0, len(r.tools))
+func (r *ToolRegistry) ListDefinitions() []tool.ToolDefinition {
+	defs := make([]tool.ToolDefinition, 0, len(r.tools))
 	for _, t := range r.tools {
 		defs = append(defs, t.Definition())
 	}
@@ -53,7 +52,6 @@ func (r *ToolRegistry) ListDefinitions() []ToolDefinition {
 	return defs
 }
 
-// ListTools returns the registered tool names.
 func (r *ToolRegistry) ListTools() []string {
 	defs := r.ListDefinitions()
 	names := make([]string, 0, len(defs))
@@ -63,21 +61,20 @@ func (r *ToolRegistry) ListTools() []string {
 	return names
 }
 
-// Execute normalizes params and runs the named tool.
-func (r *ToolRegistry) Execute(call ToolCall) *ToolResult {
+func (r *ToolRegistry) Execute(call tool.ToolCall) *tool.ToolResult {
 	t := r.Get(call.Tool)
 	if t == nil {
-		return &ToolResult{
+		return &tool.ToolResult{
 			ToolName: call.Tool,
 			Success:  false,
 			Error:    fmt.Sprintf("unsupported tool: %s", call.Tool),
 		}
 	}
 
-	params := NormalizeParams(call.Params)
+	params := tool.NormalizeParams(call.Params)
 	result := t.Run(params)
 	if result == nil {
-		return &ToolResult{
+		return &tool.ToolResult{
 			ToolName: call.Tool,
 			Success:  false,
 			Error:    "tool did not return a result",

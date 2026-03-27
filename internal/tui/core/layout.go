@@ -207,10 +207,6 @@ func (m Model) compactWorkspacePath(path string) string {
 	}
 
 	root := strings.TrimSpace(m.chat.WorkspaceRoot)
-	if root == "" {
-		root = strings.TrimSpace(getWorkspaceRoot())
-	}
-
 	if root != "" {
 		if rel, err := filepath.Rel(root, trimmed); err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
 			return "./" + filepath.ToSlash(rel)

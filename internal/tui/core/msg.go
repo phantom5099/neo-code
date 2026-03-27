@@ -2,6 +2,38 @@ package core
 
 import "neo-code/internal/tui/services"
 
+type BootstrapLoadedMsg struct {
+	Data services.BootstrapData
+}
+
+func (BootstrapLoadedMsg) isMsg() {}
+
+type ChatStartedMsg struct {
+	Stream <-chan string
+}
+
+func (ChatStartedMsg) isMsg() {}
+
+type TurnResolvedMsg struct {
+	Resolution services.TurnResolution
+}
+
+func (TurnResolvedMsg) isMsg() {}
+
+type MutationFeedbackMsg struct {
+	Feedback *services.MutationFeedback
+	Err      error
+}
+
+func (MutationFeedbackMsg) isMsg() {}
+
+type MemoryFeedbackMsg struct {
+	Feedback *services.MemoryFeedback
+	Err      error
+}
+
+func (MemoryFeedbackMsg) isMsg() {}
+
 type StreamChunkMsg struct {
 	Content string
 }
@@ -17,19 +49,6 @@ type StreamErrorMsg struct {
 }
 
 func (StreamErrorMsg) isMsg() {}
-
-type ToolResultMsg struct {
-	Result *services.ToolResult
-	Call   services.ToolCall
-}
-
-func (ToolResultMsg) isMsg() {}
-
-type ToolErrorMsg struct {
-	Err error
-}
-
-func (ToolErrorMsg) isMsg() {}
 
 type ExitMsg struct{}
 

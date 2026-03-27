@@ -1,10 +1,12 @@
-package tool
+package tool_test
 
 import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	toolweb "neo-code/internal/tool/web"
 )
 
 func TestWebFetchToolRun(t *testing.T) {
@@ -14,7 +16,7 @@ func TestWebFetchToolRun(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tool := &WebFetchTool{}
+	tool := toolweb.NewFetchTool()
 	result := tool.Run(map[string]interface{}{
 		"url":      server.URL,
 		"maxBytes": 128,

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"neo-code/internal/tui/services"
 	"neo-code/internal/tui/state"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -18,6 +19,44 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.syncLayout()
 		m.refreshViewport()
 		return m, nil
+
+	case BootstrapLoadedMsg:
+		m.applyBootstrap(msg.Data)
+		m.refreshViewport()
+		return m, nil
+
+	case MutationFeedbackMsg:
+		if msg.Err != nil {
+			m.AddErrorMessage(fmt.Sprintf("操作失败：%v", msg.Err))
+			m.setLastError(msg.Err)
+			m.refreshViewport()
+			return m, nil
+		}
+		m.applyMutationFeedback(msg.Feedback)
+		return m, nil
+
+	case MemoryFeedbackMsg:
+		if msg.Err != nil {
+			m.AddErrorMessage(fmt.Sprintf("读取运行时状态失败：%v", msg.Err))
+			m.setLastError(msg.Err)
+			m.refreshViewport()
+			return m, nil
+		}
+		if msg.Feedback != nil && msg.Feedback.Action == services.MemoryActionClearSession {
+			m.chat.Messages = nil
+			m.chat.TouchedFiles = nil
+			m.ui.CommandDraft = ""
+			m.chat.WorkspaceSummary = ""
+		}
+		m.applyMemoryFeedback(msg.Feedback)
+		return m, nil
+
+	case ChatStartedMsg:
+		m.streamChan = msg.Stream
+		return m, m.streamResponseFromChannel()
+
+	case TurnResolvedMsg:
+		return m.applyTurnResolution(msg.Resolution)
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -49,22 +88,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case RefreshMemoryMsg:
-		stats, err := m.client.GetMemoryStats(context.Background())
-		if err == nil && stats != nil {
-			m.chat.MemoryStats = *stats
-			m.setStatusMessage("Memory 已刷新")
+		return m, func() tea.Msg {
+			feedback, err := loadMemoryStats(context.Background(), m.controller)
+			return MemoryFeedbackMsg{Feedback: feedback, Err: err}
 		}
-		m.refreshViewport()
-		return m, nil
 
 	case ExitMsg:
 		return m, tea.Quit
-
-	case ToolResultMsg:
-		return m.handleToolResult(msg)
-
-	case ToolErrorMsg:
-		return m.handleToolError(msg.Err)
 	}
 
 	return m, nil
@@ -119,7 +149,7 @@ func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	m.chat.CmdHistIndex = -1
+	m.ui.CmdHistIndex = -1
 	var inputCmd tea.Cmd
 	m.textarea, inputCmd = m.textarea.Update(msg)
 	m.refreshViewport()
@@ -127,13 +157,10 @@ func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleViewportKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyEsc:
-		if m.ui.Focus == state.FocusSide {
-			cmd := m.setFocus(state.FocusMain)
-			m.refreshViewport()
-			return *m, cmd
-		}
+	if msg.Type == tea.KeyEsc && m.ui.Focus == state.FocusSide {
+		cmd := m.setFocus(state.FocusMain)
+		m.refreshViewport()
+		return *m, cmd
 	}
 
 	switch strings.ToLower(strings.TrimSpace(msg.String())) {
@@ -240,32 +267,32 @@ func (m *Model) handleMouseClick(msg tea.MouseMsg) bool {
 }
 
 func (m *Model) browseHistoryUp() tea.Cmd {
-	if len(m.chat.CommandHistory) == 0 {
+	if len(m.ui.CommandHistory) == 0 {
 		return nil
 	}
-	if m.chat.CmdHistIndex == -1 {
-		m.chat.CommandDraft = m.textarea.Value()
+	if m.ui.CmdHistIndex == -1 {
+		m.ui.CommandDraft = m.textarea.Value()
 	}
-	if m.chat.CmdHistIndex < len(m.chat.CommandHistory)-1 {
-		m.chat.CmdHistIndex++
+	if m.ui.CmdHistIndex < len(m.ui.CommandHistory)-1 {
+		m.ui.CmdHistIndex++
 	}
-	if m.chat.CmdHistIndex >= 0 && m.chat.CmdHistIndex < len(m.chat.CommandHistory) {
-		m.textarea.SetValue(m.chat.CommandHistory[len(m.chat.CommandHistory)-1-m.chat.CmdHistIndex])
+	if m.ui.CmdHistIndex >= 0 && m.ui.CmdHistIndex < len(m.ui.CommandHistory) {
+		m.textarea.SetValue(m.ui.CommandHistory[len(m.ui.CommandHistory)-1-m.ui.CmdHistIndex])
 		m.textarea.CursorEnd()
 	}
 	return nil
 }
 
 func (m *Model) browseHistoryDown() tea.Cmd {
-	if m.chat.CmdHistIndex > 0 {
-		m.chat.CmdHistIndex--
-		m.textarea.SetValue(m.chat.CommandHistory[len(m.chat.CommandHistory)-1-m.chat.CmdHistIndex])
+	if m.ui.CmdHistIndex > 0 {
+		m.ui.CmdHistIndex--
+		m.textarea.SetValue(m.ui.CommandHistory[len(m.ui.CommandHistory)-1-m.ui.CmdHistIndex])
 		m.textarea.CursorEnd()
 		return nil
 	}
-	if m.chat.CmdHistIndex == 0 {
-		m.chat.CmdHistIndex = -1
-		m.textarea.SetValue(m.chat.CommandDraft)
+	if m.ui.CmdHistIndex == 0 {
+		m.ui.CmdHistIndex = -1
+		m.textarea.SetValue(m.ui.CommandDraft)
 		m.textarea.CursorEnd()
 		return nil
 	}
@@ -349,64 +376,33 @@ func (m *Model) scrollFocusedViewportBottom() {
 }
 
 func (m *Model) handleStreamDone() (tea.Model, tea.Cmd) {
-	mu := m.mutex()
-	mu.Lock()
 	m.chat.Generating = false
 	m.streamChan = nil
 
-	var lastContent string
-	shouldCheckToolCall := !m.chat.ToolExecuting && len(m.chat.Messages) > 0
+	lastContent := ""
 	if len(m.chat.Messages) > 0 {
 		lastMsg := &m.chat.Messages[len(m.chat.Messages)-1]
 		lastMsg.Streaming = false
 		if lastMsg.Role == "assistant" {
 			lastContent = lastMsg.Content
-		} else {
-			shouldCheckToolCall = false
 		}
 	}
-	mu.Unlock()
 	m.setStatusMessage("生成完成")
 
-	if shouldCheckToolCall {
-		if calls := parseAssistantTools(lastContent); len(calls) > 0 {
-			call := calls[0]
-			mu := m.mutex()
-			mu.Lock()
-			if m.chat.ToolExecuting {
-				mu.Unlock()
-				return *m, nil
-			}
-			m.chat.ToolExecuting = true
-			mu.Unlock()
-
-			m.rememberTouchedFiles(toolPathsFromCall(call)...)
-			m.AddMessage("system", formatToolStatusMessage(call.Tool, call.Params))
-			m.refreshViewport()
-
-			return *m, func() tea.Msg {
-				result := executeToolCall(call)
-				if result == nil {
-					mu := m.mutex()
-					mu.Lock()
-					m.chat.ToolExecuting = false
-					mu.Unlock()
-					return ToolErrorMsg{Err: fmt.Errorf("tool execution failed: empty result")}
-				}
-				return ToolResultMsg{Result: result, Call: call}
-			}
+	return *m, func() tea.Msg {
+		resolution, err := resolveAssistantTurn(context.Background(), m.controller, m.conversationRequest(), lastContent)
+		if err != nil {
+			return StreamErrorMsg{Err: err}
 		}
+		return TurnResolvedMsg{Resolution: resolution}
 	}
-
-	m.refreshViewport()
-	return *m, nil
 }
 
 func (m *Model) handleStreamError(err error) (tea.Model, tea.Cmd) {
-	mu := m.mutex()
-	mu.Lock()
 	m.chat.Generating = false
 	m.streamChan = nil
+	m.ui.ApprovalRunning = false
+
 	replacedPlaceholder := false
 	if len(m.chat.Messages) > 0 {
 		lastMsg := &m.chat.Messages[len(m.chat.Messages)-1]
@@ -414,69 +410,43 @@ func (m *Model) handleStreamError(err error) (tea.Model, tea.Cmd) {
 			lastMsg.Content = fmt.Sprintf("错误：%v", err)
 			lastMsg.Streaming = false
 			lastMsg.Error = true
+			lastMsg.Transient = true
 			replacedPlaceholder = true
 		}
 	}
-	mu.Unlock()
 
 	if !replacedPlaceholder {
 		m.AddErrorMessage(fmt.Sprintf("错误：%v", err))
 	}
 	m.setLastError(err)
 	m.setStatusMessage("")
-	m.TrimHistory(m.chat.HistoryTurns)
 	m.refreshViewport()
 	return *m, nil
 }
 
-func (m *Model) handleToolResult(msg ToolResultMsg) (tea.Model, tea.Cmd) {
-	mu := m.mutex()
-	mu.Lock()
-	m.chat.ToolExecuting = false
-	mu.Unlock()
+func (m *Model) applyTurnResolution(resolution services.TurnResolution) (tea.Model, tea.Cmd) {
+	m.ui.ApprovalRunning = false
+	m.chat.PendingApproval = nil
 
-	if toolType, target, ok := isSecurityAskResult(msg.Result); ok {
-		mu := m.mutex()
-		mu.Lock()
+	if resolution.PendingApproval != nil {
 		m.chat.PendingApproval = &state.PendingApproval{
-			Call:     msg.Call,
-			ToolType: toolType,
-			Target:   target,
+			Call:     resolution.PendingApproval.Call,
+			ToolType: resolution.PendingApproval.ToolType,
+			Target:   resolution.PendingApproval.Target,
 		}
-		pending := m.chat.PendingApproval
-		mu.Unlock()
+	}
+	m.chat.TouchedFiles = services.MergeTouchedPaths(m.chat.TouchedFiles, resolution.TouchedPaths...)
+	m.applyServiceMessages(resolution.Messages)
+	m.setStatusMessage(resolution.StatusMessage)
 
-		m.AddMessage("assistant", formatPendingApprovalMessage(pending))
-		m.setStatusMessage("等待审批")
+	if resolution.Stream != nil {
+		m.AddMessage("assistant", "")
+		m.chat.Generating = true
+		m.streamChan = resolution.Stream
 		m.refreshViewport()
-		return *m, nil
+		return *m, m.streamResponseFromChannel()
 	}
 
-	m.rememberTouchedFiles(toolPathsFromCall(msg.Call)...)
-	m.rememberTouchedFiles(toolPathsFromResult(msg.Result)...)
-	m.AddMessage("system", formatToolContextMessage(msg.Result))
-	m.AddMessage("assistant", "")
-	m.chat.Generating = true
-	m.setStatusMessage("Generating...")
 	m.refreshViewport()
-
-	messages := m.buildMessages()
-	return *m, m.streamResponse(messages)
-}
-
-func (m *Model) handleToolError(err error) (tea.Model, tea.Cmd) {
-	mu := m.mutex()
-	mu.Lock()
-	m.chat.ToolExecuting = false
-	mu.Unlock()
-
-	m.AddMessage("system", formatToolErrorContext(err))
-	m.AddMessage("assistant", "")
-	m.chat.Generating = true
-	m.setLastError(err)
-	m.setStatusMessage("Generating...")
-	m.refreshViewport()
-
-	messages := m.buildMessages()
-	return *m, m.streamResponse(messages)
+	return *m, nil
 }

@@ -8,8 +8,8 @@ import (
 	"neo-code/internal/agentruntime/memory"
 	"neo-code/internal/agentruntime/session"
 	"neo-code/internal/agentruntime/todo"
-	"neo-code/internal/tool"
 	toolprotocol "neo-code/internal/tool/protocol"
+	toolregistry "neo-code/internal/tool/registry"
 )
 
 type chatServiceImpl struct {
@@ -66,7 +66,7 @@ func (s *chatServiceImpl) Send(ctx context.Context, req *ChatRequest) (<-chan st
 		todoContext = buildTodoContext(todos)
 	}
 
-	toolContext := toolprotocol.RenderInstructionBlock(tool.GlobalRegistry.ListDefinitions())
+	toolContext := toolprotocol.RenderInstructionBlock(toolregistry.GlobalRegistry.ListDefinitions())
 	blocks := []string{toolContext, workingContext, todoContext}
 	if userInput != "" && s.memorySvc != nil {
 		memoryContext, ctxErr := s.memorySvc.BuildContext(ctx, userInput)

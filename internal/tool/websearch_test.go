@@ -1,10 +1,12 @@
-package tool
+package tool_test
 
 import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	toolweb "neo-code/internal/tool/web"
 )
 
 func TestWebSearchToolRun(t *testing.T) {
@@ -18,7 +20,7 @@ func TestWebSearchToolRun(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tool := &WebSearchTool{}
+	tool := toolweb.NewSearchTool()
 	result := tool.Run(map[string]interface{}{
 		"query":    "neocode",
 		"endpoint": server.URL + "?q={query}",

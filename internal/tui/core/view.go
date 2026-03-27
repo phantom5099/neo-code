@@ -1,7 +1,6 @@
 package core
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -46,7 +45,7 @@ func (m Model) renderBody() string {
 		Height(m.layout.bodyHeight).
 		Render(m.sideViewport.View())
 
-	separator := components.DimStyle.Render("│")
+	separator := components.DimStyle.Render("|")
 	return lipgloss.JoinHorizontal(lipgloss.Top, mainPanel, separator, sidePanel)
 }
 
@@ -158,7 +157,7 @@ func (m *Model) renderSideContent() string {
 			builder.WriteString("\n")
 		}
 	}
-	builder.WriteString(fmt.Sprintf("Tokens ~ %d\n", m.estimatedTokenCount()))
+	builder.WriteString(fmt.Sprintf("Tokens ~ %d\n", services.EstimateMessageTokens(m.sessionMessages())))
 	builder.WriteString(fmt.Sprintf("Model: %s\n", truncateInline(m.chat.ActiveModel, m.layout.sideWidth)))
 	builder.WriteString("\n")
 
@@ -171,7 +170,7 @@ func (m *Model) renderSideContent() string {
 	builder.WriteString(renderSideBlock(summary, m.layout.sideWidth))
 	builder.WriteString("\n\n")
 
-	if !m.ui.HelpCollapsed && m.layout.bodyHeight >= 16 {
+	if m.layout.bodyHeight >= 16 {
 		builder.WriteString(components.TitleStyle.Render("快捷帮助"))
 		builder.WriteString("\n")
 		for _, line := range m.quickHelpLines() {
@@ -185,10 +184,6 @@ func (m *Model) renderSideContent() string {
 
 func (m Model) quickHelpLines() []string {
 	providerName := strings.TrimSpace(m.chat.ProviderName)
-	if providerName == "" {
-		snapshot := services.ReadUISnapshot(context.Background(), m.client)
-		providerName = snapshot.ProviderName
-	}
 	defaultModel := strings.TrimSpace(m.chat.DefaultModel)
 	if defaultModel == "" {
 		defaultModel = strings.TrimSpace(services.DefaultModelForProvider(providerName))
@@ -218,23 +213,12 @@ func renderSideBlock(text string, width int) string {
 		Render(truncateInline(text, width*3))
 }
 
-func (m Model) estimatedTokenCount() int {
-	total := 0
-	for _, msg := range m.buildMessages() {
-		total += len([]rune(msg.Content))
-	}
-	if total == 0 {
-		return 0
-	}
-	return total/4 + len(m.chat.Messages)*4
-}
-
 func (m Model) toComponentMessages() []components.Message {
 	messages := make([]components.Message, len(m.chat.Messages))
 	for i, msg := range m.chat.Messages {
 		messages[i] = components.Message{
 			Role:      msg.Role,
-			Content:   displayMessageContent(msg.Role, msg.Content, m.ui.SystemExpanded),
+			Content:   displayMessageContent(msg, m.ui.SystemExpanded),
 			Timestamp: msg.Timestamp,
 			Streaming: msg.Streaming,
 			Error:     msg.Error,
@@ -243,18 +227,19 @@ func (m Model) toComponentMessages() []components.Message {
 	return messages
 }
 
-func displayMessageContent(role, content string, showSystem bool) string {
-	if role == "system" {
-		trimmed := strings.TrimSpace(content)
-		if isResumeSummaryMessage(trimmed) {
-			trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, resumeSummaryPrefix))
-		}
+func displayMessageContent(msg state.Message, showSystem bool) string {
+	if msg.Role == "system" {
 		if !showSystem {
-			return "系统上下文已折叠，按 ] 展开"
+			switch msg.Kind {
+			case services.MessageKindResumeSummary:
+				return "恢复摘要已折叠，按 ] 展开"
+			default:
+				return "系统上下文已折叠，按 ] 展开"
+			}
 		}
-		return trimmed
+		return strings.TrimSpace(msg.Content)
 	}
-	return content
+	return msg.Content
 }
 
 func truncateInline(text string, maxLen int) string {

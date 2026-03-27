@@ -1,4 +1,4 @@
-package tool
+package shell
 
 import (
 	"bytes"
@@ -7,16 +7,22 @@ import (
 	"os/exec"
 	"runtime"
 	"time"
+
+	"neo-code/internal/tool"
 )
 
 type BashTool struct{}
 
-func (b *BashTool) Definition() ToolDefinition {
-	return ToolDefinition{
+func NewBashTool() *BashTool {
+	return &BashTool{}
+}
+
+func (b *BashTool) Definition() tool.ToolDefinition {
+	return tool.ToolDefinition{
 		Category:    "shell",
 		Name:        "bash",
 		Description: "Execute a bash command in the workspace. Supports optional workdir and timeout, default is 120000ms.",
-		Parameters: []ToolParamSpec{
+		Parameters: []tool.ToolParamSpec{
 			{Name: "command", Type: "string", Required: true, Description: "The bash command to execute."},
 			{Name: "workdir", Type: "string", Description: "Directory within the workspace to execute the command, defaults to workspace root."},
 			{Name: "timeout", Type: "integer", Description: "Command timeout in milliseconds, default 120000."},
@@ -25,34 +31,34 @@ func (b *BashTool) Definition() ToolDefinition {
 	}
 }
 
-func (b *BashTool) Run(params map[string]interface{}) *ToolResult {
-	command, errRes := requiredString(params, "command")
+func (b *BashTool) Run(params map[string]interface{}) *tool.ToolResult {
+	command, errRes := tool.RequiredString(params, "command")
 	if errRes != nil {
 		errRes.ToolName = b.Definition().Name
 		return errRes
 	}
-	if denied := guardToolExecution("Bash", command, b.Definition().Name); denied != nil {
+	if denied := tool.GuardToolExecution("Bash", command, b.Definition().Name); denied != nil {
 		return denied
 	}
-	timeoutMs, errRes := optionalInt(params, "timeout", 120000)
+	timeoutMs, errRes := tool.OptionalInt(params, "timeout", 120000)
 	if errRes != nil {
 		errRes.ToolName = b.Definition().Name
 		return errRes
 	}
 	if timeoutMs < 1 {
-		return &ToolResult{ToolName: b.Definition().Name, Success: false, Error: "timeout must be >= 1"}
+		return &tool.ToolResult{ToolName: b.Definition().Name, Success: false, Error: "timeout must be >= 1"}
 	}
-	workdir, errRes := optionalString(params, "workdir", ".")
+	workdir, errRes := tool.OptionalString(params, "workdir", ".")
 	if errRes != nil {
 		errRes.ToolName = b.Definition().Name
 		return errRes
 	}
-	workdir, pathErr := ensureWorkspacePath(workdir)
+	workdir, pathErr := tool.EnsureWorkspacePath(workdir)
 	if pathErr != nil {
 		pathErr.ToolName = b.Definition().Name
 		return pathErr
 	}
-	description, _ := optionalString(params, "description", "")
+	description, _ := tool.OptionalString(params, "description", "")
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutMs)*time.Millisecond)
 	defer cancel()
@@ -61,11 +67,9 @@ func (b *BashTool) Run(params map[string]interface{}) *ToolResult {
 	var shellArgs []string
 	switch runtime.GOOS {
 	case "linux", "darwin":
-		// Linux/macOS: use bash
 		shell = "bash"
 		shellArgs = []string{"-lc", command}
 	case "windows":
-		// Windows: use PowerShell
 		shell = "powershell"
 		shellArgs = []string{"-Command", command}
 	default:
@@ -73,15 +77,14 @@ func (b *BashTool) Run(params map[string]interface{}) *ToolResult {
 		shellArgs = []string{"-lc", command}
 	}
 
-	// Use dynamically selected shell and args to create the command
-	shell, shellArgs = preferredShellCommand(runtime.GOOS, command, exec.LookPath, shell, shellArgs)
+	shell, shellArgs = PreferredShellCommand(runtime.GOOS, command, exec.LookPath, shell, shellArgs)
 	cmd := exec.CommandContext(ctx, shell, shellArgs...)
 	cmd.Dir = workdir
 	var stdoutBuf, stderrBuf bytes.Buffer
 	cmd.Stdout = &stdoutBuf
 	cmd.Stderr = &stderrBuf
 	err := cmd.Run()
-	result := &ToolResult{ToolName: b.Definition().Name, Metadata: map[string]interface{}{"command": command, "workdir": workdir, "timeoutMs": timeoutMs, "description": description}}
+	result := &tool.ToolResult{ToolName: b.Definition().Name, Metadata: map[string]interface{}{"command": command, "workdir": workdir, "timeoutMs": timeoutMs, "description": description}}
 	if err != nil {
 		if ctx.Err() != nil {
 			result.Success = false
@@ -105,7 +108,7 @@ func (b *BashTool) Run(params map[string]interface{}) *ToolResult {
 
 type shellLookup func(string) (string, error)
 
-func preferredShellCommand(goos, command string, lookPath shellLookup, shell string, shellArgs []string) (string, []string) {
+func PreferredShellCommand(goos, command string, lookPath shellLookup, shell string, shellArgs []string) (string, []string) {
 	switch goos {
 	case "windows":
 		for _, candidate := range []struct {

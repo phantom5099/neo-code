@@ -1,21 +1,25 @@
-package tool
+package web
 
 import (
 	"context"
 	"fmt"
 	"strings"
 
-	webclient "neo-code/internal/tool/web"
+	"neo-code/internal/tool"
 )
 
-type WebSearchTool struct{}
+type SearchTool struct{}
 
-func (w *WebSearchTool) Definition() ToolDefinition {
-	return ToolDefinition{
+func NewSearchTool() *SearchTool {
+	return &SearchTool{}
+}
+
+func (w *SearchTool) Definition() tool.ToolDefinition {
+	return tool.ToolDefinition{
 		Category:    "web",
 		Name:        "websearch",
 		Description: "Search the web and return a compact list of result titles and URLs. Supports an optional custom endpoint template.",
-		Parameters: []ToolParamSpec{
+		Parameters: []tool.ToolParamSpec{
 			{Name: "query", Type: "string", Required: true, Description: "Search query text."},
 			{Name: "limit", Type: "integer", Description: "Maximum number of results to return, default 5."},
 			{Name: "endpoint", Type: "string", Description: "Optional search endpoint template. Use {query} as the placeholder for the escaped query."},
@@ -23,40 +27,40 @@ func (w *WebSearchTool) Definition() ToolDefinition {
 	}
 }
 
-func (w *WebSearchTool) Run(params map[string]interface{}) *ToolResult {
-	query, errRes := requiredString(params, "query")
+func (w *SearchTool) Run(params map[string]interface{}) *tool.ToolResult {
+	query, errRes := tool.RequiredString(params, "query")
 	if errRes != nil {
 		errRes.ToolName = w.Definition().Name
 		return errRes
 	}
-	limit, errRes := optionalInt(params, "limit", 5)
+	limit, errRes := tool.OptionalInt(params, "limit", 5)
 	if errRes != nil {
 		errRes.ToolName = w.Definition().Name
 		return errRes
 	}
-	endpoint, errRes := optionalString(params, "endpoint", "")
+	endpoint, errRes := tool.OptionalString(params, "endpoint", "")
 	if errRes != nil {
 		errRes.ToolName = w.Definition().Name
 		return errRes
 	}
-	target, err := webclient.EndpointHost(strings.TrimSpace(endpoint))
+	target, err := EndpointHost(strings.TrimSpace(endpoint))
 	if strings.TrimSpace(endpoint) == "" {
 		target = "duckduckgo.com"
 		err = nil
 	}
 	if err != nil {
-		return &ToolResult{ToolName: w.Definition().Name, Success: false, Error: err.Error()}
+		return &tool.ToolResult{ToolName: w.Definition().Name, Success: false, Error: err.Error()}
 	}
-	if denied := guardToolExecution(string(ToolWebFetch), target, w.Definition().Name); denied != nil {
+	if denied := tool.GuardToolExecution(string(tool.ToolWebFetch), target, w.Definition().Name); denied != nil {
 		return denied
 	}
 
-	results, resolvedEndpoint, err := webclient.Search(context.Background(), nil, endpoint, query, limit)
+	results, resolvedEndpoint, err := Search(context.Background(), nil, endpoint, query, limit)
 	if err != nil {
-		return &ToolResult{ToolName: w.Definition().Name, Success: false, Error: err.Error()}
+		return &tool.ToolResult{ToolName: w.Definition().Name, Success: false, Error: err.Error()}
 	}
 	if len(results) == 0 {
-		return &ToolResult{
+		return &tool.ToolResult{
 			ToolName: w.Definition().Name,
 			Success:  true,
 			Output:   "No search results found.",
@@ -73,7 +77,7 @@ func (w *WebSearchTool) Run(params map[string]interface{}) *ToolResult {
 		lines = append(lines, line)
 	}
 
-	return &ToolResult{
+	return &tool.ToolResult{
 		ToolName: w.Definition().Name,
 		Success:  true,
 		Output:   strings.Join(lines, "\n\n"),

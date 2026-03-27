@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"strings"
-	"sync"
 	"time"
 
 	"neo-code/internal/tui/components"
@@ -23,7 +22,7 @@ type Model struct {
 	ui   state.UIState
 	chat state.ChatState
 
-	client services.ChatClient
+	controller services.Controller
 
 	streamChan      <-chan string
 	textarea        textarea.Model
@@ -32,21 +31,9 @@ type Model struct {
 	chatLayout      components.RenderedChatLayout
 	layout          viewLayout
 	copyToClipboard func(string) error
-
-	mu *sync.Mutex
 }
 
-const resumeSummaryPrefix = "[RESUME_SUMMARY]"
-
-func NewModel(client services.ChatClient, historyTurns int, configPath, workspaceRoot string) Model {
-	stats, _ := client.GetMemoryStats(context.Background())
-	if stats == nil {
-		stats = &services.MemoryStats{}
-	}
-	if historyTurns <= 0 {
-		historyTurns = 6
-	}
-
+func NewModel(controller services.Controller, workspaceRoot string) Model {
 	input := textarea.New()
 	focusedStyle, blurredStyle := textarea.DefaultStyles()
 	focusedStyle.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color("#61AFEF"))
@@ -55,7 +42,7 @@ func NewModel(client services.ChatClient, historyTurns int, configPath, workspac
 	blurredStyle.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("#AAB2C0"))
 	input.FocusedStyle = focusedStyle
 	input.BlurredStyle = blurredStyle
-	input.Placeholder = "Type a message..."
+	input.Placeholder = "输入消息..."
 	input.Focus()
 	input.ShowLineNumbers = false
 	input.SetHeight(3)
@@ -63,7 +50,7 @@ func NewModel(client services.ChatClient, historyTurns int, configPath, workspac
 	input.CharLimit = 0
 	input.KeyMap.InsertNewline = key.NewBinding(
 		key.WithKeys("alt+enter"),
-		key.WithHelp("alt+enter", "insert newline"),
+		key.WithHelp("alt+enter", "换行"),
 	)
 	input.Cursor.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#61AFEF"))
 	input.Cursor.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#E6EAF2"))
@@ -73,52 +60,27 @@ func NewModel(client services.ChatClient, historyTurns int, configPath, workspac
 	vp.SetContent("")
 	sideVP := viewport.New(0, 0)
 	sideVP.SetContent("")
-	snapshot := services.ReadUISnapshot(context.Background(), client)
-	startedAt := time.Now()
 
-	model := Model{
+	return Model{
 		ui: state.UIState{
-			Mode:            state.ModeChat,
-			Focus:           state.FocusInput,
-			AutoScroll:      true,
-			StatusMessage:   "Tab切换焦点，h切换侧栏，]展开系统消息",
-			HelpCollapsed:   false,
-			FirstGuideShown: true,
+			Mode:           state.ModeChat,
+			Focus:          state.FocusInput,
+			AutoScroll:     true,
+			StatusMessage:  "Tab 切换焦点  h 切换侧栏  ] 展开系统消息",
+			CommandHistory: make([]string, 0),
+			CmdHistIndex:   -1,
 		},
 		chat: state.ChatState{
 			Messages:         make([]state.Message, 0),
-			HistoryTurns:     historyTurns,
-			SessionStartedAt: startedAt,
-			ProviderName:     snapshot.ProviderName,
-			ActiveModel:      firstNonEmpty(snapshot.CurrentModel, client.DefaultModel()),
-			DefaultModel:     snapshot.DefaultModel,
-			WorkspaceSummary: snapshot.WorkspaceSummary,
-			MemoryStats:      *stats,
-			CommandHistory:   make([]string, 0),
-			CmdHistIndex:     -1,
+			SessionStartedAt: time.Now(),
 			WorkspaceRoot:    workspaceRoot,
-			APIKeyReady:      services.RuntimeAPIKeyReady(),
-			ConfigPath:       configPath,
 		},
-		client:          client,
+		controller:      controller,
 		textarea:        input,
 		viewport:        vp,
 		sideViewport:    sideVP,
 		copyToClipboard: clipboard.WriteAll,
-		mu:              &sync.Mutex{},
 	}
-
-	if provider, ok := client.(services.WorkingSessionSummaryProvider); ok {
-		if summary, err := provider.GetWorkingSessionSummary(context.Background()); err == nil && strings.TrimSpace(summary) != "" {
-			model.chat.Messages = append(model.chat.Messages, state.Message{
-				Role:      "system",
-				Content:   resumeSummaryPrefix + "\n" + summary,
-				Timestamp: time.Now(),
-			})
-		}
-	}
-
-	return model
 }
 
 func firstNonEmpty(values ...string) string {
@@ -130,15 +92,68 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func (m *Model) mutex() *sync.Mutex {
-	if m.mu == nil {
-		m.mu = &sync.Mutex{}
-	}
-	return m.mu
+func (m Model) Init() tea.Cmd {
+	return tea.Batch(
+		m.textarea.Focus(),
+		m.loadBootstrapCmd(),
+	)
 }
 
-func (m Model) Init() tea.Cmd {
-	return m.textarea.Focus()
+func (m *Model) loadBootstrapCmd() tea.Cmd {
+	controller := m.controller
+	return func() tea.Msg {
+		if controller == nil {
+			return BootstrapLoadedMsg{}
+		}
+		return BootstrapLoadedMsg{Data: controller.Bootstrap(context.Background())}
+	}
+}
+
+func (m *Model) conversationRequest() services.ConversationRequest {
+	return services.ConversationRequest{
+		Messages:    m.sessionMessages(),
+		ActiveModel: m.chat.ActiveModel,
+	}
+}
+
+func (m *Model) sessionMessages() []services.SessionMessage {
+	result := make([]services.SessionMessage, 0, len(m.chat.Messages))
+	for _, msg := range m.chat.Messages {
+		result = append(result, services.SessionMessage{
+			Role:      msg.Role,
+			Content:   msg.Content,
+			Kind:      msg.Kind,
+			Transient: msg.Transient,
+		})
+	}
+	return result
+}
+
+func (m *Model) applyBootstrap(data services.BootstrapData) {
+	m.chat.MemoryStats = data.MemoryStats
+	m.chat.APIKeyReady = data.APIKeyReady
+	m.applySnapshot(data.Snapshot)
+	if strings.TrimSpace(data.ResumeSummary.Content) != "" {
+		m.chat.Messages = append(m.chat.Messages, state.Message{
+			Role:      data.ResumeSummary.Role,
+			Content:   data.ResumeSummary.Content,
+			Kind:      data.ResumeSummary.Kind,
+			Timestamp: time.Now(),
+			Transient: true,
+		})
+	}
+}
+
+func (m *Model) applyServiceMessages(messages []services.SessionMessage) {
+	for _, msg := range messages {
+		m.chat.Messages = append(m.chat.Messages, state.Message{
+			Role:      msg.Role,
+			Content:   msg.Content,
+			Kind:      msg.Kind,
+			Timestamp: time.Now(),
+			Transient: msg.Transient,
+		})
+	}
 }
 
 func (m *Model) SetWidth(w int) {
@@ -150,78 +165,45 @@ func (m *Model) SetHeight(h int) {
 }
 
 func (m *Model) AddMessage(role, content string) {
-	mu := m.mutex()
-	mu.Lock()
-	defer mu.Unlock()
-
 	m.chat.Messages = append(m.chat.Messages, state.Message{
 		Role:      role,
 		Content:   content,
+		Kind:      services.MessageKindPlain,
 		Timestamp: time.Now(),
+	})
+}
+
+func (m *Model) AddTransientMessage(role, content string) {
+	m.chat.Messages = append(m.chat.Messages, state.Message{
+		Role:      role,
+		Content:   content,
+		Kind:      services.MessageKindPlain,
+		Timestamp: time.Now(),
+		Transient: true,
 	})
 }
 
 func (m *Model) AddErrorMessage(content string) {
-	mu := m.mutex()
-	mu.Lock()
-	defer mu.Unlock()
-
 	m.chat.Messages = append(m.chat.Messages, state.Message{
 		Role:      "assistant",
 		Content:   content,
+		Kind:      services.MessageKindPlain,
 		Timestamp: time.Now(),
 		Error:     true,
+		Transient: true,
 	})
 }
 
 func (m *Model) AppendLastMessage(content string) {
-	mu := m.mutex()
-	mu.Lock()
-	defer mu.Unlock()
-
 	if len(m.chat.Messages) > 0 {
 		m.chat.Messages[len(m.chat.Messages)-1].Content += content
 	}
 }
 
 func (m *Model) FinishLastMessage() {
-	mu := m.mutex()
-	mu.Lock()
-	defer mu.Unlock()
-
 	if len(m.chat.Messages) > 0 {
 		m.chat.Messages[len(m.chat.Messages)-1].Streaming = false
 	}
-}
-
-func (m *Model) TrimHistory(maxTurns int) {
-	mu := m.mutex()
-	mu.Lock()
-	defer mu.Unlock()
-
-	if len(m.chat.Messages) <= maxTurns*2 {
-		return
-	}
-
-	var system []state.Message
-	var others []state.Message
-	for _, msg := range m.chat.Messages {
-		if msg.Role == "system" {
-			system = append(system, msg)
-			continue
-		}
-		others = append(others, msg)
-	}
-
-	if len(others) > maxTurns*2 {
-		others = others[len(others)-maxTurns*2:]
-	}
-
-	m.chat.Messages = append(system, others...)
-}
-
-func isResumeSummaryMessage(content string) bool {
-	return strings.HasPrefix(strings.TrimSpace(content), resumeSummaryPrefix)
 }
 
 func (m *Model) setStatusMessage(message string) {
@@ -233,24 +215,4 @@ func (m *Model) setLastError(err error) {
 		return
 	}
 	m.ui.LastError = err.Error()
-}
-
-func (m *Model) rememberTouchedFiles(paths ...string) {
-	for _, path := range paths {
-		trimmed := strings.TrimSpace(path)
-		if trimmed == "" {
-			continue
-		}
-		exists := false
-		for _, existing := range m.chat.TouchedFiles {
-			if strings.EqualFold(existing, trimmed) {
-				exists = true
-				break
-			}
-		}
-		if exists {
-			continue
-		}
-		m.chat.TouchedFiles = append(m.chat.TouchedFiles, trimmed)
-	}
 }
