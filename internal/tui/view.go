@@ -35,7 +35,7 @@ func (a App) View() string {
 	spacerHeight := max(0, docHeight-usedHeight)
 	parts := []string{header, body}
 	if spacerHeight > 0 {
-		parts = append(parts, lipgloss.NewStyle().Height(spacerHeight).Background(lipgloss.Color(colorBg)).Render(""))
+		parts = append(parts, lipgloss.NewStyle().Height(spacerHeight).Render(""))
 	}
 	parts = append(parts, helpView)
 	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
@@ -62,17 +62,24 @@ func (a App) renderHeader(width int) string {
 	)
 
 	spacerWidth := lipgloss.Width(a.styles.headerSpacer.Render(""))
-	workdirWidth := max(12, width-lipgloss.Width(brand)-lipgloss.Width(meta)-(spacerWidth*2)-lipgloss.Width("Workdir "))
+	workdirLabel := a.styles.headerLabel.Render("Workdir")
+	workdirWidth := max(12, width-lipgloss.Width(brand)-lipgloss.Width(meta)-(spacerWidth*2)-lipgloss.Width(workdirLabel)-1)
+	workdir := lipgloss.JoinHorizontal(
+		lipgloss.Center,
+		workdirLabel,
+		" ",
+		a.styles.headerPath.Render(trimMiddle(a.state.CurrentWorkdir, workdirWidth)),
+	)
 
 	header := lipgloss.JoinHorizontal(
 		lipgloss.Center,
 		brand,
 		a.styles.headerSpacer.Render(""),
-		a.styles.headerMeta.Render("Workdir "+trimMiddle(a.state.CurrentWorkdir, workdirWidth)),
+		workdir,
 		a.styles.headerSpacer.Render(""),
 		meta,
 	)
-	return lipgloss.Place(width, 1, lipgloss.Left, lipgloss.Top, header)
+	return a.styles.headerBar.Width(width).Render(lipgloss.Place(width, 1, lipgloss.Left, lipgloss.Top, header))
 }
 
 func (a App) renderBody(lay layout) string {
@@ -84,7 +91,7 @@ func (a App) renderBody(lay layout) string {
 	return lipgloss.JoinHorizontal(
 		lipgloss.Top,
 		sidebar,
-		lipgloss.NewStyle().Width(lay.bodyGap).Background(lipgloss.Color(colorBg)).Render(""),
+		lipgloss.NewStyle().Width(lay.bodyGap).Render(""),
 		stream,
 	)
 }

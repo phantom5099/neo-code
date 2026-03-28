@@ -108,19 +108,22 @@ func (d sessionDelegate) Render(w io.Writer, m list.Model, index int, item list.
 		prefix = ">"
 	}
 
-	content := lipgloss.JoinVertical(
-		lipgloss.Left,
-		fmt.Sprintf("%s %s", prefix, title),
-		d.styles.sessionMeta.Render("  "+meta),
-	)
-
 	style := d.styles.sessionRow
+	metaStyle := d.styles.sessionMeta
 	if session.Active {
 		style = d.styles.sessionRowActive
+		metaStyle = d.styles.sessionMetaActive
 	}
 	if index == m.Index() {
 		style = d.styles.sessionRowFocused
+		metaStyle = d.styles.sessionMetaFocus
 	}
+
+	content := lipgloss.JoinVertical(
+		lipgloss.Left,
+		fmt.Sprintf("%s %s", prefix, title),
+		metaStyle.Render("  "+meta),
+	)
 
 	fmt.Fprint(w, style.Width(width).Render(content))
 }

@@ -33,12 +33,6 @@ func (r *Registry) Descriptors() []ProviderDescriptor {
 	return r.filteredDescriptors(func(ProviderDescriptor) bool { return true })
 }
 
-func (r *Registry) MVPDescriptors() []ProviderDescriptor {
-	return r.filteredDescriptors(func(desc ProviderDescriptor) bool {
-		return desc.SupportLevel == SupportLevelMVP && desc.MVPVisible
-	})
-}
-
 func (r *Registry) AvailableDescriptors() []ProviderDescriptor {
 	return r.filteredDescriptors(func(desc ProviderDescriptor) bool {
 		return desc.Available
