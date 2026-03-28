@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dust/neo-code/internal/config"
-	"github.com/dust/neo-code/internal/provider"
-	"github.com/dust/neo-code/internal/tools"
+	"neo-code/internal/config"
+	"neo-code/internal/provider"
+	"neo-code/internal/tools"
 )
 
 const maxContextTurns = 10
@@ -94,7 +94,7 @@ func (s *Service) Run(ctx context.Context, input UserInput) error {
 
 		resolvedProvider, err := s.configManager.ResolvedSelectedProvider()
 		if err != nil {
-			s.emit(EventError, session.ID, err.Error())
+			s.emit(EventError, input.RunID, session.ID, err.Error())
 			return err
 		}
 

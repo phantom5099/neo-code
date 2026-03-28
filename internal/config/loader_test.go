@@ -111,6 +111,9 @@ providers:
     type: openai
     base_url: https://example.com/v1
     model: gpt-5.4
+    models:
+      - gpt-4.1
+      - gpt-5.4
     api_key_env: OPENAI_API_KEY
 `
 	if err := os.WriteFile(loader.ConfigPath(), []byte(strings.TrimSpace(legacy)+"\n"), 0o644); err != nil {
@@ -125,8 +128,14 @@ providers:
 	if err != nil {
 		t.Fatalf("SelectedProviderConfig() error = %v", err)
 	}
-	if provider.BaseURL != "https://example.com/v1" {
-		t.Fatalf("expected migrated provider base url, got %q", provider.BaseURL)
+	if provider.BaseURL != testBaseURL {
+		t.Fatalf("expected builtin provider base url %q, got %q", testBaseURL, provider.BaseURL)
+	}
+	if cfg.CurrentModel != "gpt-5.4" {
+		t.Fatalf("expected current model to stay %q, got %q", "gpt-5.4", cfg.CurrentModel)
+	}
+	if len(provider.Models) != len(testDefaultProviderConfig().Models) {
+		t.Fatalf("expected builtin provider models, got %+v", provider.Models)
 	}
 
 	rewritten, err := os.ReadFile(loader.ConfigPath())
@@ -134,10 +143,13 @@ providers:
 		t.Fatalf("read rewritten config: %v", err)
 	}
 	text := string(rewritten)
-	if !strings.Contains(text, "provider_overrides:") {
-		t.Fatalf("expected rewritten config to use provider_overrides, got:\n%s", text)
+	if strings.Contains(text, "provider_overrides:") {
+		t.Fatalf("expected rewritten config to drop provider overrides, got:\n%s", text)
 	}
 	if strings.Contains(text, "\nproviders:") || strings.HasPrefix(text, "providers:") {
 		t.Fatalf("expected rewritten config to omit providers list, got:\n%s", text)
+	}
+	if strings.Contains(text, "models:") || strings.Contains(text, "base_url:") || strings.Contains(text, "api_key_env:") {
+		t.Fatalf("expected rewritten config to omit provider metadata, got:\n%s", text)
 	}
 }

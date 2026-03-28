@@ -8,11 +8,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dust/neo-code/internal/config"
-	"github.com/dust/neo-code/internal/provider"
-	"github.com/dust/neo-code/internal/provider/builtin"
-	"github.com/dust/neo-code/internal/provider/openai"
-	"github.com/dust/neo-code/internal/tools"
+	"neo-code/internal/config"
+	"neo-code/internal/provider"
+	"neo-code/internal/provider/builtin"
+	"neo-code/internal/provider/openai"
+	"neo-code/internal/tools"
 )
 
 type memoryStore struct {
@@ -86,6 +86,7 @@ func (s *memoryStore) ListSummaries(ctx context.Context) ([]SessionSummary, erro
 }
 
 type scriptedProvider struct {
+	name      string
 	responses []provider.ChatResponse
 	streams   [][]provider.StreamEvent
 	requests  []provider.ChatRequest

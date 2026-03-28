@@ -8,7 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/dust/neo-code/internal/provider"
+	"neo-code/internal/provider"
 )
 
 const (
@@ -90,17 +90,10 @@ func newSelectionPicker(items []list.Item) list.Model {
 func newProviderPicker(items []provider.ProviderCatalogItem) list.Model {
 	listItems := make([]list.Item, 0, len(items))
 	for _, item := range items {
-		description := item.Description
-		if item.APIKeyEnv != "" {
-			if description != "" {
-				description += " | "
-			}
-			description += "API key env: " + item.APIKeyEnv
-		}
 		listItems = append(listItems, providerItem{
 			id:          item.ID,
 			name:        item.Name,
-			description: description,
+			description: item.Description,
 		})
 	}
 	return newSelectionPicker(listItems)
@@ -210,9 +203,9 @@ func (a App) matchingSlashCommands(input string) []commandSuggestion {
 	return out
 }
 
-func runProviderSelection(providerSvc ProviderController, providerID string) tea.Cmd {
+func runProviderSelection(providerSvc ProviderController, providerName string) tea.Cmd {
 	return func() tea.Msg {
-		selection, err := providerSvc.SelectProvider(context.Background(), providerID)
+		selection, err := providerSvc.SelectProvider(context.Background(), providerName)
 		if err != nil {
 			return localCommandResultMsg{err: err}
 		}

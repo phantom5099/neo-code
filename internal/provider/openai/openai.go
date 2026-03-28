@@ -13,13 +13,48 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dust/neo-code/internal/config"
-	domain "github.com/dust/neo-code/internal/provider"
+	"neo-code/internal/config"
+	domain "neo-code/internal/provider"
 )
 
 type Provider struct {
 	cfg    config.ResolvedProviderConfig
 	client *http.Client
+}
+
+const (
+	Name             = "openai"
+	DriverName       = "openai"
+	DefaultBaseURL   = "https://api.openai.com/v1"
+	DefaultModel     = "gpt-4.1"
+	DefaultAPIKeyEnv = "OPENAI_API_KEY"
+)
+
+var builtinModels = []string{
+	DefaultModel,
+	"gpt-4o",
+	"gpt-5.4",
+	"gpt-5.3-codex",
+}
+
+func BuiltinConfig() config.ProviderConfig {
+	return config.ProviderConfig{
+		Name:      Name,
+		Driver:    DriverName,
+		BaseURL:   DefaultBaseURL,
+		Model:     DefaultModel,
+		Models:    append([]string(nil), builtinModels...),
+		APIKeyEnv: DefaultAPIKeyEnv,
+	}
+}
+
+func Driver() domain.DriverDefinition {
+	return domain.DriverDefinition{
+		Name: Name,
+		Build: func(ctx context.Context, cfg config.ResolvedProviderConfig) (domain.Provider, error) {
+			return New(cfg)
+		},
+	}
 }
 
 func New(cfg config.ResolvedProviderConfig) (*Provider, error) {

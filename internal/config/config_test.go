@@ -22,6 +22,7 @@ func testDefaultProviderConfig() ProviderConfig {
 		Driver:    testProviderName,
 		BaseURL:   testBaseURL,
 		Model:     testModel,
+		Models:    []string{testModel, "gpt-4o", "gpt-5.4", "gpt-5.3-codex"},
 		APIKeyEnv: testAPIKeyEnv,
 	}
 }
@@ -44,7 +45,7 @@ func TestParseConfigFormats(t *testing.T) {
 		assert func(t *testing.T, cfg *Config)
 	}{
 		{
-			name: "current format with provider overrides",
+			name: "current format ignores persisted provider metadata",
 			data: `
 selected_provider: openai
 current_model: gpt-5.4
@@ -73,8 +74,11 @@ providers:
 				if err != nil {
 					t.Fatalf("selected provider: %v", err)
 				}
-				if provider.BaseURL != "https://example.com/v1" {
-					t.Fatalf("expected custom base url, got %q", provider.BaseURL)
+				if provider.BaseURL != testBaseURL {
+					t.Fatalf("expected builtin base url %q, got %q", testBaseURL, provider.BaseURL)
+				}
+				if provider.Model != testModel {
+					t.Fatalf("expected builtin default model %q, got %q", testModel, provider.Model)
 				}
 				if cfg.Tools.WebFetch.MaxResponseBytes != 4096 {
 					t.Fatalf("expected custom max_response_bytes 4096, got %d", cfg.Tools.WebFetch.MaxResponseBytes)
@@ -85,7 +89,7 @@ providers:
 			},
 		},
 		{
-			name: "legacy persisted providers list",
+			name: "legacy persisted providers list keeps selection only",
 			data: `
 selected_provider: openai
 current_model: gpt-5.4
@@ -104,11 +108,14 @@ providers:
 				if err != nil {
 					t.Fatalf("selected provider: %v", err)
 				}
-				if provider.BaseURL != "https://example.com/v1" {
-					t.Fatalf("expected migrated base url, got %q", provider.BaseURL)
+				if provider.BaseURL != testBaseURL {
+					t.Fatalf("expected builtin base url %q, got %q", testBaseURL, provider.BaseURL)
 				}
-				if provider.Model != "gpt-5.4" {
-					t.Fatalf("expected migrated model, got %q", provider.Model)
+				if provider.Model != testModel {
+					t.Fatalf("expected builtin default model %q, got %q", testModel, provider.Model)
+				}
+				if cfg.CurrentModel != "gpt-5.4" {
+					t.Fatalf("expected selected current model to stay %q, got %q", "gpt-5.4", cfg.CurrentModel)
 				}
 			},
 		},
@@ -137,8 +144,14 @@ providers:
 				if err != nil {
 					t.Fatalf("selected provider: %v", err)
 				}
-				if provider.Model != "gpt-4o" {
-					t.Fatalf("expected provider model gpt-4o, got %q", provider.Model)
+				if provider.Model != testModel {
+					t.Fatalf("expected builtin default model %q, got %q", testModel, provider.Model)
+				}
+				if cfg.CurrentModel != "gpt-4o" {
+					t.Fatalf("expected current model %q, got %q", "gpt-4o", cfg.CurrentModel)
+				}
+				if len(provider.Models) != len(testDefaultProviderConfig().Models) {
+					t.Fatalf("expected builtin provider models, got %+v", provider.Models)
 				}
 				if cfg.Tools.WebFetch.MaxResponseBytes != DefaultWebFetchMaxResponseBytes {
 					t.Fatalf("expected default max_response_bytes %d, got %d", DefaultWebFetchMaxResponseBytes, cfg.Tools.WebFetch.MaxResponseBytes)
@@ -357,6 +370,7 @@ func TestManagerConcurrentAccess(t *testing.T) {
 					for k := range next.Providers {
 						if next.Providers[k].Name == next.SelectedProvider {
 							next.Providers[k].Model = model
+							next.Providers[k].Models = append([]string(nil), models...)
 						}
 					}
 					return nil
@@ -493,6 +507,15 @@ func TestConfigValidateFailures(t *testing.T) {
 			}(),
 			expectErr: "supported_content_types[0] is empty",
 		},
+		{
+			name: "current model unsupported by selected provider",
+			config: func() *Config {
+				cfg := validConfig.Clone()
+				cfg.CurrentModel = "unsupported-model"
+				return &cfg
+			}(),
+			expectErr: "current_model \"unsupported-model\" is not supported",
+		},
 	}
 
 	for _, tt := range tests {
@@ -554,6 +577,18 @@ func TestProviderConfigValidateFailures(t *testing.T) {
 			},
 			expectErr: "api_key_env is empty",
 		},
+		{
+			name: "default model missing from models",
+			provider: ProviderConfig{
+				Name:      testProviderName,
+				Driver:    testProviderName,
+				BaseURL:   testBaseURL,
+				Model:     testModel,
+				Models:    []string{"gpt-4o"},
+				APIKeyEnv: testAPIKeyEnv,
+			},
+			expectErr: "default model \"gpt-4.1\" is not in models",
+		},
 	}
 
 	for _, tt := range tests {
@@ -607,11 +642,8 @@ func TestLoaderLoadAndSaveRoundTrip(t *testing.T) {
 	}
 
 	cfg.CurrentModel = "gpt-5.4"
-	for i := range cfg.Providers {
-		if cfg.Providers[i].Name == cfg.SelectedProvider {
-			cfg.Providers[i].Model = "gpt-5.4"
-		}
-	}
+	cfg.Providers[0].Models = []string{"gpt-4.1", "gpt-5.4"}
+	cfg.Providers[0].BaseURL = "https://ignored.example/v1"
 	cfg.Tools.WebFetch.MaxResponseBytes = 1024
 	cfg.Tools.WebFetch.SupportedContentTypes = []string{"text/html", "application/json"}
 	if err := loader.Save(context.Background(), cfg); err != nil {
@@ -623,11 +655,14 @@ func TestLoaderLoadAndSaveRoundTrip(t *testing.T) {
 		t.Fatalf("read config file: %v", err)
 	}
 	text := string(data)
-	if !strings.Contains(text, "provider_overrides:") {
-		t.Fatalf("expected persisted provider overrides, got:\n%s", text)
-	}
 	if strings.Contains(text, "\nproviders:") || strings.HasPrefix(text, "providers:") {
-		t.Fatalf("expected persisted config to omit full providers list, got:\n%s", text)
+		t.Fatalf("expected persisted config to omit providers, got:\n%s", text)
+	}
+	if strings.Contains(text, "provider_overrides:") {
+		t.Fatalf("expected persisted config to omit provider overrides, got:\n%s", text)
+	}
+	if strings.Contains(text, "models:") || strings.Contains(text, "base_url:") || strings.Contains(text, "api_key_env:") {
+		t.Fatalf("expected persisted config to keep only selection state and common runtime settings, got:\n%s", text)
 	}
 
 	reloaded, err := loader.Load(context.Background())
@@ -636,6 +671,19 @@ func TestLoaderLoadAndSaveRoundTrip(t *testing.T) {
 	}
 	if reloaded.CurrentModel != "gpt-5.4" {
 		t.Fatalf("expected current model %q, got %q", "gpt-5.4", reloaded.CurrentModel)
+	}
+	provider, err := reloaded.SelectedProviderConfig()
+	if err != nil {
+		t.Fatalf("SelectedProviderConfig() reload error = %v", err)
+	}
+	if provider.Model != testModel {
+		t.Fatalf("expected provider default model to stay %q, got %q", testModel, provider.Model)
+	}
+	if provider.BaseURL != testBaseURL {
+		t.Fatalf("expected provider base url to come from builtin definition, got %q", provider.BaseURL)
+	}
+	if len(provider.Models) != len(testDefaultProviderConfig().Models) {
+		t.Fatalf("expected provider models to come from builtin definition, got %+v", provider.Models)
 	}
 	if reloaded.Tools.WebFetch.MaxResponseBytes != 1024 {
 		t.Fatalf("expected max_response_bytes %d, got %d", 1024, reloaded.Tools.WebFetch.MaxResponseBytes)
@@ -676,45 +724,25 @@ func TestLoaderUsesUpdatedBuiltinProviderWhenUserHasNoOverride(t *testing.T) {
 	}
 }
 
-func TestDeriveAndMergeProviderOverrides(t *testing.T) {
+func TestApplyProviderDefaultsMatchesByNameOnly(t *testing.T) {
 	defaults := []ProviderConfig{testDefaultProviderConfig()}
-	current := []ProviderConfig{
-		{
-			Name:      testProviderName,
-			Driver:    testProviderName,
-			BaseURL:   "https://override.example/v1",
-			Model:     "gpt-5.4",
-			APIKeyEnv: "AI_API_KEY",
-		},
-		{
-			Name:      "openai-alt",
-			Driver:    testProviderName,
-			BaseURL:   "https://alt.example/v1",
-			Model:     "gpt-4o",
-			APIKeyEnv: "ALT_KEY",
+	current := Config{
+		Providers: []ProviderConfig{
+			{
+				Name:   "openai-alt",
+				Driver: testProviderName,
+			},
 		},
 	}
 
-	overrides := DeriveProviderOverrides(current, defaults)
-	merged := MergeProviderOverrides(defaults, overrides)
-	if len(merged) != 2 {
-		t.Fatalf("expected 2 merged providers, got %d", len(merged))
-	}
+	current.ApplyDefaultsFrom(Config{Providers: defaults})
 
-	base, err := (&Config{Providers: merged, SelectedProvider: testProviderName}).SelectedProviderConfig()
-	if err != nil {
-		t.Fatalf("SelectedProviderConfig() error = %v", err)
-	}
-	if base.BaseURL != "https://override.example/v1" || base.Model != "gpt-5.4" || base.APIKeyEnv != "AI_API_KEY" {
-		t.Fatalf("unexpected merged builtin override: %+v", base)
-	}
-
-	alt, err := (&Config{Providers: merged}).ProviderByName("openai-alt")
+	provider, err := current.ProviderByName("openai-alt")
 	if err != nil {
 		t.Fatalf("ProviderByName(openai-alt) error = %v", err)
 	}
-	if alt.Driver != testProviderName || alt.BaseURL != "https://alt.example/v1" {
-		t.Fatalf("unexpected merged custom provider: %+v", alt)
+	if provider.BaseURL != "" || provider.Model != "" || provider.APIKeyEnv != "" || len(provider.Models) != 0 {
+		t.Fatalf("expected provider metadata to stay empty when only driver matches, got %+v", provider)
 	}
 }
 
@@ -784,9 +812,13 @@ func TestNormalizeWorkdirAndClone(t *testing.T) {
 	cfg := testDefaultConfig()
 	cloned := cfg.Clone()
 	cloned.CurrentModel = "modified"
+	cloned.Providers[0].Models[0] = "modified-model"
 	cloned.Tools.WebFetch.SupportedContentTypes[0] = "application/json"
 	if cfg.CurrentModel == cloned.CurrentModel {
 		t.Fatalf("expected clone to be independent from source")
+	}
+	if cfg.Providers[0].Models[0] == cloned.Providers[0].Models[0] {
+		t.Fatalf("expected provider models to be cloned")
 	}
 	if cfg.Tools.WebFetch.SupportedContentTypes[0] == cloned.Tools.WebFetch.SupportedContentTypes[0] {
 		t.Fatalf("expected webfetch supported content types to be cloned")

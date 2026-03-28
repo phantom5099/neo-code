@@ -11,12 +11,12 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/dust/neo-code/internal/config"
-	"github.com/dust/neo-code/internal/provider"
-	"github.com/dust/neo-code/internal/provider/builtin"
-	provideropenai "github.com/dust/neo-code/internal/provider/openai"
-	agentruntime "github.com/dust/neo-code/internal/runtime"
-	"github.com/dust/neo-code/internal/tools"
+	"neo-code/internal/config"
+	"neo-code/internal/provider"
+	"neo-code/internal/provider/builtin"
+	provideropenai "neo-code/internal/provider/openai"
+	agentruntime "neo-code/internal/runtime"
+	"neo-code/internal/tools"
 )
 
 type stubRuntime struct {
@@ -471,7 +471,7 @@ func TestTUIStandaloneHelpers(t *testing.T) {
 	}
 
 	manager := newTestConfigManager(t)
-	msg := runModelSelection(newTestProviderService(t, manager), "gpt-5.4")()
+	msg := runModelSelection(newTestProviderService(t, manager), provideropenai.DefaultModel)()
 	if result, ok := msg.(localCommandResultMsg); !ok || result.err != nil {
 		t.Fatalf("expected successful localCommandResultMsg, got %+v", msg)
 	}
@@ -706,6 +706,12 @@ func TestAppUpdateAdditionalTransitions(t *testing.T) {
 
 func TestAppUpdateModelPickerEnterAppliesSelection(t *testing.T) {
 	manager := newTestConfigManager(t)
+	if err := manager.Update(context.Background(), func(cfg *config.Config) error {
+		cfg.CurrentModel = "unsupported-current"
+		return nil
+	}); err != nil {
+		t.Fatalf("set unsupported current model: %v", err)
+	}
 	runtime := newStubRuntime()
 	app, err := New(nil, manager, runtime, newTestProviderService(t, manager))
 	if err != nil {
@@ -713,11 +719,11 @@ func TestAppUpdateModelPickerEnterAppliesSelection(t *testing.T) {
 	}
 
 	app.openModelPicker()
-	if len(app.modelPicker.Items()) < 2 {
+	if len(app.modelPicker.Items()) == 0 {
 		t.Fatalf("expected model picker catalog")
 	}
-	selected := app.modelPicker.Items()[1].(modelItem).id
-	app.modelPicker.Select(1)
+	selected := app.modelPicker.Items()[0].(modelItem).id
+	app.modelPicker.Select(0)
 
 	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	app = model.(App)
@@ -745,6 +751,7 @@ func TestAppUpdateProviderPickerEnterAppliesSelection(t *testing.T) {
 			Driver:    provideropenai.DriverName,
 			BaseURL:   provideropenai.DefaultBaseURL,
 			Model:     "gpt-4o",
+			Models:    []string{"gpt-4o"},
 			APIKeyEnv: provideropenai.DefaultAPIKeyEnv,
 		})
 		cfg.CurrentModel = "unsupported-current"

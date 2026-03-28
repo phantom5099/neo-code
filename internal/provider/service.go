@@ -5,13 +5,18 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/dust/neo-code/internal/config"
+	"neo-code/internal/config"
 )
 
 type Service struct {
 	manager  *config.Manager
 	registry *Registry
 }
+
+var (
+	errServiceManagerNil  = errors.New("provider: config manager is nil")
+	errServiceRegistryNil = errors.New("provider: registry is nil")
+)
 
 func NewService(manager *config.Manager, registry *Registry) *Service {
 	return &Service{
@@ -21,6 +26,9 @@ func NewService(manager *config.Manager, registry *Registry) *Service {
 }
 
 func (s *Service) ListProviders(ctx context.Context) ([]ProviderCatalogItem, error) {
+	if err := s.validate(); err != nil {
+		return nil, err
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -28,44 +36,37 @@ func (s *Service) ListProviders(ctx context.Context) ([]ProviderCatalogItem, err
 	cfg := s.manager.Get()
 	items := make([]ProviderCatalogItem, 0, len(cfg.Providers))
 	for _, providerCfg := range cfg.Providers {
-		item, err := s.registry.Catalog(providerCfg)
-		if errors.Is(err, ErrDriverNotFound) {
-			continue
-		}
-		if err != nil {
+		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		items = append(items, item)
+		if !s.registry.Supports(providerCfg.Driver) {
+			continue
+		}
+		items = append(items, catalogItemFromConfig(providerCfg))
 	}
 
 	return items, nil
 }
 
-func (s *Service) SelectProvider(ctx context.Context, providerID string) (ProviderSelection, error) {
+func (s *Service) SelectProvider(ctx context.Context, providerName string) (ProviderSelection, error) {
+	if err := s.validate(); err != nil {
+		return ProviderSelection{}, err
+	}
+
 	var selection ProviderSelection
 
 	err := s.manager.Update(ctx, func(cfg *config.Config) error {
-		item, providerCfg, err := s.catalogForProvider(*cfg, providerID)
+		providerCfg, err := cfg.ProviderByName(providerName)
 		if err != nil {
-			return err
+			return ErrProviderNotFound
+		}
+		if !s.registry.Supports(providerCfg.Driver) {
+			return ErrDriverNotFound
 		}
 
 		cfg.SelectedProvider = providerCfg.Name
-		if !containsModel(item.Models, cfg.CurrentModel) {
-			cfg.CurrentModel = providerCfg.Model
-		}
-
-		for i := range cfg.Providers {
-			if strings.EqualFold(strings.TrimSpace(cfg.Providers[i].Name), strings.TrimSpace(providerCfg.Name)) {
-				cfg.Providers[i].Model = cfg.CurrentModel
-				break
-			}
-		}
-
-		selection = ProviderSelection{
-			ProviderID: cfg.SelectedProvider,
-			ModelID:    cfg.CurrentModel,
-		}
+		cfg.CurrentModel = selectModel(cfg.CurrentModel, providerCfg.SupportedModels(), providerCfg.Model)
+		selection = selectionFromConfig(*cfg)
 		return nil
 	})
 	if err != nil {
@@ -76,6 +77,9 @@ func (s *Service) SelectProvider(ctx context.Context, providerID string) (Provid
 }
 
 func (s *Service) ListModels(ctx context.Context) ([]ModelDescriptor, error) {
+	if err := s.validate(); err != nil {
+		return nil, err
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -86,18 +90,14 @@ func (s *Service) ListModels(ctx context.Context) ([]ModelDescriptor, error) {
 		return nil, err
 	}
 
-	item, err := s.registry.Catalog(selected)
-	if errors.Is(err, ErrDriverNotFound) {
-		return nil, ErrProviderNotFound
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	return append([]ModelDescriptor(nil), item.Models...), nil
+	return modelDescriptors(selected.SupportedModels()), nil
 }
 
 func (s *Service) SetCurrentModel(ctx context.Context, modelID string) (ProviderSelection, error) {
+	if err := s.validate(); err != nil {
+		return ProviderSelection{}, err
+	}
+
 	modelID = strings.TrimSpace(modelID)
 	if modelID == "" {
 		return ProviderSelection{}, ErrModelNotFound
@@ -110,29 +110,12 @@ func (s *Service) SetCurrentModel(ctx context.Context, modelID string) (Provider
 			return err
 		}
 
-		item, err := s.registry.Catalog(selected)
-		if errors.Is(err, ErrDriverNotFound) {
-			return ErrProviderNotFound
-		}
-		if err != nil {
-			return err
-		}
-		if !containsModel(item.Models, modelID) {
+		if !containsModel(selected.SupportedModels(), modelID) {
 			return ErrModelNotFound
 		}
 
 		cfg.CurrentModel = modelID
-		for i := range cfg.Providers {
-			if strings.EqualFold(strings.TrimSpace(cfg.Providers[i].Name), strings.TrimSpace(selected.Name)) {
-				cfg.Providers[i].Model = modelID
-				break
-			}
-		}
-
-		selection = ProviderSelection{
-			ProviderID: cfg.SelectedProvider,
-			ModelID:    cfg.CurrentModel,
-		}
+		selection = selectionFromConfig(*cfg)
 		return nil
 	})
 	if err != nil {
@@ -142,29 +125,63 @@ func (s *Service) SetCurrentModel(ctx context.Context, modelID string) (Provider
 	return selection, nil
 }
 
-func (s *Service) catalogForProvider(cfg config.Config, providerID string) (ProviderCatalogItem, config.ProviderConfig, error) {
-	providerCfg, err := cfg.ProviderByName(providerID)
-	if err != nil {
-		return ProviderCatalogItem{}, config.ProviderConfig{}, ErrProviderNotFound
-	}
-
-	item, err := s.registry.Catalog(providerCfg)
-	if errors.Is(err, ErrDriverNotFound) {
-		return ProviderCatalogItem{}, config.ProviderConfig{}, ErrProviderNotFound
-	}
-	if err != nil {
-		return ProviderCatalogItem{}, config.ProviderConfig{}, err
-	}
-
-	return item, providerCfg, nil
-}
-
-func containsModel(models []ModelDescriptor, modelID string) bool {
-	target := strings.ToLower(strings.TrimSpace(modelID))
+func containsModel(models []string, modelID string) bool {
+	target := normalizeKey(modelID)
 	for _, model := range models {
-		if strings.ToLower(strings.TrimSpace(model.ID)) == target {
+		if normalizeKey(model) == target {
 			return true
 		}
 	}
 	return false
+}
+
+func selectionFromConfig(cfg config.Config) ProviderSelection {
+	return ProviderSelection{
+		ProviderID: cfg.SelectedProvider,
+		ModelID:    cfg.CurrentModel,
+	}
+}
+
+func selectModel(currentModel string, models []string, fallback string) string {
+	if containsModel(models, currentModel) {
+		return strings.TrimSpace(currentModel)
+	}
+	return strings.TrimSpace(fallback)
+}
+
+func catalogItemFromConfig(cfg config.ProviderConfig) ProviderCatalogItem {
+	return ProviderCatalogItem{
+		ID:     strings.TrimSpace(cfg.Name),
+		Name:   strings.TrimSpace(cfg.Name),
+		Models: modelDescriptors(cfg.SupportedModels()),
+	}
+}
+
+func modelDescriptors(models []string) []ModelDescriptor {
+	if len(models) == 0 {
+		return nil
+	}
+
+	descriptors := make([]ModelDescriptor, 0, len(models))
+	for _, modelID := range models {
+		modelID = strings.TrimSpace(modelID)
+		if modelID == "" {
+			continue
+		}
+		descriptors = append(descriptors, ModelDescriptor{
+			ID:   modelID,
+			Name: modelID,
+		})
+	}
+	return descriptors
+}
+
+func (s *Service) validate() error {
+	if s == nil || s.manager == nil {
+		return errServiceManagerNil
+	}
+	if s.registry == nil {
+		return errServiceRegistryNil
+	}
+	return nil
 }

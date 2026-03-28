@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dust/neo-code/internal/config"
-	domain "github.com/dust/neo-code/internal/provider"
+	"neo-code/internal/config"
+	domain "neo-code/internal/provider"
 )
 
 func resolvedConfig(baseURL string, model string) config.ResolvedProviderConfig {
@@ -91,25 +91,21 @@ func TestMergeToolCallDeltas(t *testing.T) {
 	}
 }
 
-func TestCatalogItemIncludesConfiguredModel(t *testing.T) {
+func TestBuiltinConfigIncludesProviderModels(t *testing.T) {
 	t.Parallel()
 
-	item, err := CatalogItem(config.ProviderConfig{
-		Name:      DriverName,
-		Driver:    DriverName,
-		BaseURL:   DefaultBaseURL,
-		Model:     "gpt-5.4",
-		APIKeyEnv: DefaultAPIKeyEnv,
-	})
-	if err != nil {
-		t.Fatalf("CatalogItem() error = %v", err)
+	cfg := BuiltinConfig()
+	if cfg.Name != DriverName {
+		t.Fatalf("expected provider name %q, got %q", DriverName, cfg.Name)
 	}
-
-	if item.Name != DriverName {
-		t.Fatalf("expected provider name %q, got %q", DriverName, item.Name)
+	if cfg.BaseURL != DefaultBaseURL {
+		t.Fatalf("expected base URL %q, got %q", DefaultBaseURL, cfg.BaseURL)
 	}
-	if len(item.Models) == 0 {
-		t.Fatalf("expected at least one model option in catalog item")
+	if len(cfg.Models) < 3 {
+		t.Fatalf("expected builtin models to be predeclared, got %+v", cfg.Models)
+	}
+	if !containsString(cfg.Models, "gpt-5.4") {
+		t.Fatalf("expected builtin models to include gpt-5.4, got %+v", cfg.Models)
 	}
 }
 
@@ -499,4 +495,13 @@ type readCloser struct {
 
 func (r *readCloser) Close() error {
 	return nil
+}
+
+func containsString(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
 }

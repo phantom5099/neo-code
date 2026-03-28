@@ -38,24 +38,17 @@ type Config struct {
 }
 
 type ProviderConfig struct {
-	Name      string `yaml:"name"`
-	Driver    string `yaml:"type"`
-	BaseURL   string `yaml:"base_url"`
-	Model     string `yaml:"model"`
-	APIKeyEnv string `yaml:"api_key_env"`
+	Name      string   `yaml:"name"`
+	Driver    string   `yaml:"type"`
+	BaseURL   string   `yaml:"base_url"`
+	Model     string   `yaml:"model"`
+	Models    []string `yaml:"models,omitempty"`
+	APIKeyEnv string   `yaml:"api_key_env"`
 }
 
 type ResolvedProviderConfig struct {
 	ProviderConfig
 	APIKey string `yaml:"-"`
-}
-
-type ProviderOverride struct {
-	Name      string `yaml:"name"`
-	Driver    string `yaml:"type,omitempty"`
-	BaseURL   string `yaml:"base_url,omitempty"`
-	Model     string `yaml:"model,omitempty"`
-	APIKeyEnv string `yaml:"api_key_env,omitempty"`
 }
 
 type ToolsConfig struct {
@@ -89,7 +82,7 @@ func (c *Config) Clone() Config {
 	}
 
 	clone := *c
-	clone.Providers = append([]ProviderConfig(nil), c.Providers...)
+	clone.Providers = cloneProviders(c.Providers)
 	clone.Tools = c.Tools.Clone()
 	return clone
 }
@@ -100,7 +93,7 @@ func (c *Config) ApplyDefaultsFrom(defaults Config) {
 	}
 
 	if len(c.Providers) == 0 {
-		c.Providers = append([]ProviderConfig(nil), defaults.Providers...)
+		c.Providers = cloneProviders(defaults.Providers)
 	} else {
 		c.Providers = applyProviderDefaults(c.Providers, defaults.Providers)
 	}
@@ -114,6 +107,9 @@ func (c *Config) ApplyDefaultsFrom(defaults Config) {
 		} else if strings.TrimSpace(defaults.CurrentModel) != "" {
 			c.CurrentModel = defaults.CurrentModel
 		}
+	}
+	if selected, err := c.SelectedProviderConfig(); err == nil && !containsModelID(selected.SupportedModels(), c.CurrentModel) {
+		c.CurrentModel = selected.Model
 	}
 	if strings.TrimSpace(c.Workdir) == "" {
 		c.Workdir = defaults.Workdir
@@ -172,6 +168,9 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(selected.Model) == "" {
 		return fmt.Errorf("config: selected provider %q has empty model", selected.Name)
 	}
+	if !containsModelID(selected.SupportedModels(), c.CurrentModel) {
+		return fmt.Errorf("config: current_model %q is not supported by provider %q", c.CurrentModel, selected.Name)
+	}
 	if err := c.Tools.Validate(); err != nil {
 		return fmt.Errorf("config: tools: %w", err)
 	}
@@ -217,7 +216,28 @@ func (p ProviderConfig) Validate() error {
 	if strings.TrimSpace(p.APIKeyEnv) == "" {
 		return fmt.Errorf("provider %q api_key_env is empty", p.Name)
 	}
+	if models := normalizeModelIDs(p.Models); len(p.Models) > 0 {
+		if len(models) == 0 {
+			return fmt.Errorf("provider %q models is empty", p.Name)
+		}
+		if !containsModelID(models, p.Model) {
+			return fmt.Errorf("provider %q default model %q is not in models", p.Name, strings.TrimSpace(p.Model))
+		}
+	}
 	return nil
+}
+
+func (p ProviderConfig) SupportedModels() []string {
+	models := normalizeModelIDs(p.Models)
+	if len(models) > 0 {
+		return models
+	}
+
+	model := strings.TrimSpace(p.Model)
+	if model == "" {
+		return nil
+	}
+	return []string{model}
 }
 
 func (p ProviderConfig) ResolveAPIKey() (string, error) {
@@ -272,6 +292,9 @@ func mergeProviderDefaults(provider ProviderConfig, defaults []ProviderConfig) P
 	if strings.TrimSpace(provider.Model) == "" {
 		provider.Model = base.Model
 	}
+	if len(provider.Models) == 0 {
+		provider.Models = cloneModelIDs(base.Models)
+	}
 	if strings.TrimSpace(provider.APIKeyEnv) == "" {
 		provider.APIKeyEnv = base.APIKeyEnv
 	}
@@ -281,131 +304,17 @@ func mergeProviderDefaults(provider ProviderConfig, defaults []ProviderConfig) P
 
 func matchDefaultProvider(provider ProviderConfig, defaults []ProviderConfig) (ProviderConfig, bool) {
 	name := strings.ToLower(strings.TrimSpace(provider.Name))
-	kind := strings.ToLower(strings.TrimSpace(provider.Driver))
+	if name == "" {
+		return ProviderConfig{}, false
+	}
 
 	for _, candidate := range defaults {
-		if name != "" && strings.ToLower(candidate.Name) == name {
-			return candidate, true
-		}
-	}
-	for _, candidate := range defaults {
-		if kind != "" && strings.ToLower(candidate.Driver) == kind {
+		if strings.ToLower(candidate.Name) == name {
 			return candidate, true
 		}
 	}
 
 	return ProviderConfig{}, false
-}
-
-func MergeProviderOverrides(defaults []ProviderConfig, overrides []ProviderOverride) []ProviderConfig {
-	merged := append([]ProviderConfig(nil), defaults...)
-	indexByName := make(map[string]int, len(merged))
-	for i, provider := range merged {
-		indexByName[strings.ToLower(strings.TrimSpace(provider.Name))] = i
-	}
-
-	for _, override := range overrides {
-		name := strings.TrimSpace(override.Name)
-		if name == "" {
-			continue
-		}
-
-		key := strings.ToLower(name)
-		if idx, ok := indexByName[key]; ok {
-			merged[idx] = applyProviderOverride(merged[idx], override)
-			continue
-		}
-
-		custom := applyProviderOverride(ProviderConfig{}, override)
-		merged = append(merged, custom)
-		indexByName[key] = len(merged) - 1
-	}
-
-	return merged
-}
-
-func DeriveProviderOverrides(providers []ProviderConfig, defaults []ProviderConfig) []ProviderOverride {
-	if len(providers) == 0 {
-		return nil
-	}
-
-	defaultByName := make(map[string]ProviderConfig, len(defaults))
-	for _, provider := range defaults {
-		defaultByName[strings.ToLower(strings.TrimSpace(provider.Name))] = provider
-	}
-
-	overrides := make([]ProviderOverride, 0, len(providers))
-	for _, provider := range providers {
-		key := strings.ToLower(strings.TrimSpace(provider.Name))
-		base, ok := defaultByName[key]
-		if !ok {
-			override := ProviderOverride{
-				Name:      strings.TrimSpace(provider.Name),
-				Driver:    strings.TrimSpace(provider.Driver),
-				BaseURL:   strings.TrimSpace(provider.BaseURL),
-				Model:     strings.TrimSpace(provider.Model),
-				APIKeyEnv: strings.TrimSpace(provider.APIKeyEnv),
-			}
-			if override.Name == "" {
-				continue
-			}
-			overrides = append(overrides, override)
-			continue
-		}
-
-		override := diffProviderOverride(base, provider)
-		if hasProviderOverrideChanges(override) {
-			overrides = append(overrides, override)
-		}
-	}
-
-	return overrides
-}
-
-func applyProviderOverride(base ProviderConfig, override ProviderOverride) ProviderConfig {
-	if name := strings.TrimSpace(override.Name); name != "" {
-		base.Name = name
-	}
-	if driver := strings.TrimSpace(override.Driver); driver != "" {
-		base.Driver = driver
-	}
-	if baseURL := strings.TrimSpace(override.BaseURL); baseURL != "" {
-		base.BaseURL = baseURL
-	}
-	if model := strings.TrimSpace(override.Model); model != "" {
-		base.Model = model
-	}
-	if apiKeyEnv := strings.TrimSpace(override.APIKeyEnv); apiKeyEnv != "" {
-		base.APIKeyEnv = apiKeyEnv
-	}
-
-	return base
-}
-
-func diffProviderOverride(base ProviderConfig, current ProviderConfig) ProviderOverride {
-	override := ProviderOverride{
-		Name: strings.TrimSpace(current.Name),
-	}
-	if strings.TrimSpace(current.Driver) != strings.TrimSpace(base.Driver) {
-		override.Driver = strings.TrimSpace(current.Driver)
-	}
-	if strings.TrimSpace(current.BaseURL) != strings.TrimSpace(base.BaseURL) {
-		override.BaseURL = strings.TrimSpace(current.BaseURL)
-	}
-	if strings.TrimSpace(current.Model) != strings.TrimSpace(base.Model) {
-		override.Model = strings.TrimSpace(current.Model)
-	}
-	if strings.TrimSpace(current.APIKeyEnv) != strings.TrimSpace(base.APIKeyEnv) {
-		override.APIKeyEnv = strings.TrimSpace(current.APIKeyEnv)
-	}
-	return override
-}
-
-func hasProviderOverrideChanges(override ProviderOverride) bool {
-	return strings.TrimSpace(override.Driver) != "" ||
-		strings.TrimSpace(override.BaseURL) != "" ||
-		strings.TrimSpace(override.Model) != "" ||
-		strings.TrimSpace(override.APIKeyEnv) != ""
 }
 
 func normalizeWorkdir(workdir string) string {
@@ -537,4 +446,75 @@ func normalizeContentType(value string) string {
 		return strings.TrimSpace(trimmed[:index])
 	}
 	return trimmed
+}
+
+func cloneProviders(providers []ProviderConfig) []ProviderConfig {
+	if len(providers) == 0 {
+		return nil
+	}
+
+	cloned := make([]ProviderConfig, 0, len(providers))
+	for _, provider := range providers {
+		next := provider
+		next.Models = cloneModelIDs(provider.Models)
+		cloned = append(cloned, next)
+	}
+	return cloned
+}
+
+func cloneModelIDs(models []string) []string {
+	normalized := normalizeModelIDs(models)
+	if len(normalized) == 0 {
+		return nil
+	}
+	return append([]string(nil), normalized...)
+}
+
+func normalizeModelIDs(models []string) []string {
+	if len(models) == 0 {
+		return nil
+	}
+
+	normalized := make([]string, 0, len(models))
+	seen := make(map[string]struct{}, len(models))
+	for _, model := range models {
+		id := strings.TrimSpace(model)
+		if id == "" {
+			continue
+		}
+		key := strings.ToLower(id)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		normalized = append(normalized, id)
+	}
+	return normalized
+}
+
+func equalModelIDs(left []string, right []string) bool {
+	left = normalizeModelIDs(left)
+	right = normalizeModelIDs(right)
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if !strings.EqualFold(left[i], right[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func containsModelID(models []string, model string) bool {
+	target := strings.ToLower(strings.TrimSpace(model))
+	if target == "" {
+		return false
+	}
+	for _, candidate := range normalizeModelIDs(models) {
+		if strings.EqualFold(candidate, target) {
+			return true
+		}
+	}
+	return false
 }

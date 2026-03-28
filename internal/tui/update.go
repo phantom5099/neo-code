@@ -11,10 +11,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/dust/neo-code/internal/config"
-	"github.com/dust/neo-code/internal/provider"
-	agentruntime "github.com/dust/neo-code/internal/runtime"
-	"github.com/dust/neo-code/internal/tools"
+	"neo-code/internal/config"
+	"neo-code/internal/provider"
+	agentruntime "neo-code/internal/runtime"
+	"neo-code/internal/tools"
 )
 
 type RuntimeMsg struct{ Event agentruntime.RuntimeEvent }
@@ -237,7 +237,7 @@ func (a App) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if !ok {
 				return a, nil
 			}
-			return a, runProviderSelection(a.providerSvc, item.id)
+			return a, runProviderSelection(a.providerSvc, item.name)
 		case pickerModel:
 			item, ok := a.modelPicker.SelectedItem().(modelItem)
 			a.closePicker()

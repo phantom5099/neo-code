@@ -2,7 +2,6 @@ package provider
 
 import (
 	"errors"
-	"strings"
 )
 
 type Message struct {
@@ -60,60 +59,10 @@ type ProviderCatalogItem struct {
 	ID          string            `json:"id"`
 	Name        string            `json:"name"`
 	Description string            `json:"description,omitempty"`
-	APIKeyEnv   string            `json:"api_key_env,omitempty"`
 	Models      []ModelDescriptor `json:"models,omitempty"`
 }
 
 type ProviderSelection struct {
 	ProviderID string `json:"provider_id"`
 	ModelID    string `json:"model_id"`
-}
-
-func normalizeCatalogItem(item ProviderCatalogItem, fallbackID string, fallbackEnv string) ProviderCatalogItem {
-	if strings.TrimSpace(item.ID) == "" {
-		item.ID = strings.TrimSpace(fallbackID)
-	}
-	if strings.TrimSpace(item.Name) == "" {
-		item.Name = item.ID
-	}
-	if strings.TrimSpace(item.APIKeyEnv) == "" {
-		item.APIKeyEnv = strings.TrimSpace(fallbackEnv)
-	}
-
-	item.Models = normalizeModels(item.Models)
-	return item
-}
-
-func normalizeModels(models []ModelDescriptor) []ModelDescriptor {
-	if len(models) == 0 {
-		return nil
-	}
-
-	deduped := make([]ModelDescriptor, 0, len(models))
-	seen := make(map[string]struct{}, len(models))
-	for _, model := range models {
-		id := strings.TrimSpace(model.ID)
-		name := strings.TrimSpace(model.Name)
-		if id == "" {
-			id = name
-		}
-		if id == "" {
-			continue
-		}
-		if name == "" {
-			name = id
-		}
-		key := strings.ToLower(id)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		deduped = append(deduped, ModelDescriptor{
-			ID:          id,
-			Name:        name,
-			Description: strings.TrimSpace(model.Description),
-		})
-	}
-
-	return deduped
 }

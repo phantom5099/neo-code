@@ -3,14 +3,14 @@ package builtin
 import (
 	"errors"
 
-	"github.com/dust/neo-code/internal/config"
-	"github.com/dust/neo-code/internal/provider"
-	"github.com/dust/neo-code/internal/provider/openai"
+	"neo-code/internal/config"
+	"neo-code/internal/provider"
+	"neo-code/internal/provider/openai"
 )
 
 func DefaultConfig() *config.Config {
 	cfg := config.Default()
-	defaultProvider := openai.DefaultConfig()
+	defaultProvider := openai.BuiltinConfig()
 	cfg.Providers = []config.ProviderConfig{defaultProvider}
 	cfg.SelectedProvider = defaultProvider.Name
 	cfg.CurrentModel = defaultProvider.Model
@@ -29,5 +29,5 @@ func Register(registry *provider.Registry) error {
 	if registry == nil {
 		return errors.New("builtin provider registry is nil")
 	}
-	return registry.Register(openai.DriverDefinition())
+	return registry.Register(openai.Driver())
 }
