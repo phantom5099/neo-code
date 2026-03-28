@@ -12,6 +12,26 @@ import (
 	domain "github.com/dust/neo-code/internal/provider"
 )
 
+func resolvedConfig(baseURL string, model string) config.ResolvedProviderConfig {
+	if strings.TrimSpace(baseURL) == "" {
+		baseURL = DefaultBaseURL
+	}
+	if strings.TrimSpace(model) == "" {
+		model = DefaultModel
+	}
+
+	return config.ResolvedProviderConfig{
+		ProviderConfig: config.ProviderConfig{
+			Name:      DriverName,
+			Driver:    DriverName,
+			BaseURL:   baseURL,
+			Model:     model,
+			APIKeyEnv: DefaultAPIKeyEnv,
+		},
+		APIKey: "test-key",
+	}
+}
+
 func TestMergeToolCallDeltas(t *testing.T) {
 	t.Parallel()
 
@@ -71,34 +91,30 @@ func TestMergeToolCallDeltas(t *testing.T) {
 	}
 }
 
-func TestProviderDescriptorMarksOpenAIAsMVPSupported(t *testing.T) {
+func TestCatalogItemIncludesConfiguredModel(t *testing.T) {
 	t.Parallel()
 
-	p, err := New(config.ProviderConfig{
-		Name:      config.ProviderOpenAI,
-		Type:      config.ProviderOpenAI,
-		BaseURL:   config.DefaultOpenAIBaseURL,
+	item, err := CatalogItem(config.ProviderConfig{
+		Name:      DriverName,
+		Driver:    DriverName,
+		BaseURL:   DefaultBaseURL,
 		Model:     "gpt-5.4",
-		APIKeyEnv: config.DefaultOpenAIAPIKeyEnv,
+		APIKeyEnv: DefaultAPIKeyEnv,
 	})
 	if err != nil {
-		t.Fatalf("New() error = %v", err)
+		t.Fatalf("CatalogItem() error = %v", err)
 	}
 
-	desc := p.Descriptor()
-	if desc.SupportLevel != domain.SupportLevelMVP || !desc.Available || !desc.MVPVisible {
-		t.Fatalf("unexpected descriptor: %+v", desc)
+	if item.Name != DriverName {
+		t.Fatalf("expected provider name %q, got %q", DriverName, item.Name)
 	}
-	if desc.DisplayName != "OpenAI-compatible" {
-		t.Fatalf("expected display name OpenAI-compatible, got %q", desc.DisplayName)
-	}
-	if len(desc.Models) == 0 {
-		t.Fatalf("expected at least one model option in descriptor")
+	if len(item.Models) == 0 {
+		t.Fatalf("expected at least one model option in catalog item")
 	}
 }
 
 func TestProviderChatConsumesSSEAndMergesToolCalls(t *testing.T) {
-	t.Setenv(config.DefaultOpenAIAPIKeyEnv, "test-key")
+	t.Setenv(DefaultAPIKeyEnv, "test-key")
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/chat/completions" {
@@ -195,13 +211,7 @@ func TestProviderChatConsumesSSEAndMergesToolCalls(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider, err := New(config.ProviderConfig{
-		Name:      config.ProviderOpenAI,
-		Type:      config.ProviderOpenAI,
-		BaseURL:   server.URL,
-		Model:     "gpt-5.4",
-		APIKeyEnv: config.DefaultOpenAIAPIKeyEnv,
-	})
+	provider, err := New(resolvedConfig(server.URL, "gpt-5.4"))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -274,7 +284,7 @@ func TestProviderChatConsumesSSEAndMergesToolCalls(t *testing.T) {
 }
 
 func TestProviderChatHTTPErrorResponses(t *testing.T) {
-	t.Setenv(config.DefaultOpenAIAPIKeyEnv, "test-key")
+	t.Setenv(DefaultAPIKeyEnv, "test-key")
 
 	tests := []struct {
 		name      string
@@ -307,20 +317,14 @@ func TestProviderChatHTTPErrorResponses(t *testing.T) {
 			}))
 			defer server.Close()
 
-			provider, err := New(config.ProviderConfig{
-				Name:      config.ProviderOpenAI,
-				Type:      config.ProviderOpenAI,
-				BaseURL:   server.URL,
-				Model:     config.DefaultOpenAIModel,
-				APIKeyEnv: config.DefaultOpenAIAPIKeyEnv,
-			})
+			provider, err := New(resolvedConfig(server.URL, DefaultModel))
 			if err != nil {
 				t.Fatalf("New() error = %v", err)
 			}
 			provider.client = server.Client()
 
 			_, err = provider.Chat(context.Background(), domain.ChatRequest{
-				Model: config.DefaultOpenAIModel,
+				Model: DefaultModel,
 			}, make(chan domain.StreamEvent, 1))
 			if err == nil || !strings.Contains(err.Error(), tt.expectErr) {
 				t.Fatalf("expected error containing %q, got %v", tt.expectErr, err)
@@ -332,13 +336,7 @@ func TestProviderChatHTTPErrorResponses(t *testing.T) {
 func TestBuildRequestIncludesSystemPromptToolsAndToolMessages(t *testing.T) {
 	t.Parallel()
 
-	provider, err := New(config.ProviderConfig{
-		Name:      config.ProviderOpenAI,
-		Type:      config.ProviderOpenAI,
-		BaseURL:   config.DefaultOpenAIBaseURL,
-		Model:     config.DefaultOpenAIModel,
-		APIKeyEnv: config.DefaultOpenAIAPIKeyEnv,
-	})
+	provider, err := New(resolvedConfig(DefaultBaseURL, DefaultModel))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -373,8 +371,8 @@ func TestBuildRequestIncludesSystemPromptToolsAndToolMessages(t *testing.T) {
 		t.Fatalf("buildRequest() error = %v", err)
 	}
 
-	if payload.Model != config.DefaultOpenAIModel {
-		t.Fatalf("expected default model %q, got %q", config.DefaultOpenAIModel, payload.Model)
+	if payload.Model != DefaultModel {
+		t.Fatalf("expected default model %q, got %q", DefaultModel, payload.Model)
 	}
 	if !payload.Stream {
 		t.Fatalf("expected stream=true")
@@ -399,13 +397,7 @@ func TestBuildRequestIncludesSystemPromptToolsAndToolMessages(t *testing.T) {
 func TestParseErrorAndEmitTextDelta(t *testing.T) {
 	t.Parallel()
 
-	provider, err := New(config.ProviderConfig{
-		Name:      config.ProviderOpenAI,
-		Type:      config.ProviderOpenAI,
-		BaseURL:   config.DefaultOpenAIBaseURL,
-		Model:     config.DefaultOpenAIModel,
-		APIKeyEnv: config.DefaultOpenAIAPIKeyEnv,
-	})
+	provider, err := New(resolvedConfig(DefaultBaseURL, DefaultModel))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -463,13 +455,7 @@ func TestParseErrorAndEmitTextDelta(t *testing.T) {
 func TestProviderConsumeStreamRejectsDirtyJSON(t *testing.T) {
 	t.Parallel()
 
-	provider, err := New(config.ProviderConfig{
-		Name:      config.ProviderOpenAI,
-		Type:      config.ProviderOpenAI,
-		BaseURL:   config.DefaultOpenAIBaseURL,
-		Model:     config.DefaultOpenAIModel,
-		APIKeyEnv: config.DefaultOpenAIAPIKeyEnv,
-	})
+	provider, err := New(resolvedConfig(DefaultBaseURL, DefaultModel))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}

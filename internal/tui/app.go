@@ -19,11 +19,13 @@ import (
 type App struct {
 	state          UIState
 	configManager  *config.Manager
+	providerSvc    ProviderController
 	runtime        agentruntime.Runtime
 	keys           keyMap
 	help           help.Model
 	spinner        spinner.Model
 	sessions       list.Model
+	providerPicker list.Model
 	modelPicker    list.Model
 	transcript     viewport.Model
 	input          textinput.Model
@@ -34,13 +36,16 @@ type App struct {
 	styles         styles
 }
 
-func New(cfg *config.Config, configManager *config.Manager, runtime agentruntime.Runtime) (App, error) {
-	if cfg == nil {
-		defaultCfg := config.Default()
-		cfg = defaultCfg
-	}
+func New(cfg *config.Config, configManager *config.Manager, runtime agentruntime.Runtime, providerSvc ProviderController) (App, error) {
 	if configManager == nil {
 		return App{}, fmt.Errorf("tui: config manager is nil")
+	}
+	if providerSvc == nil {
+		return App{}, fmt.Errorf("tui: provider service is nil")
+	}
+	if cfg == nil {
+		snapshot := configManager.Get()
+		cfg = &snapshot
 	}
 
 	uiStyles := newStyles()
@@ -55,8 +60,8 @@ func New(cfg *config.Config, configManager *config.Manager, runtime agentruntime
 	sessionList.SetShowPagination(false)
 	sessionList.SetFilteringEnabled(true)
 	sessionList.DisableQuitKeybindings()
-	sessionList.FilterInput.Prompt = "筛选："
-	sessionList.FilterInput.Placeholder = "输入关键词…"
+	sessionList.FilterInput.Prompt = "Filter: "
+	sessionList.FilterInput.Placeholder = "Type to search sessions"
 
 	input := textinput.New()
 	input.Placeholder = "Ask NeoCode to inspect, edit, or build. Type / to browse commands."
@@ -84,19 +89,21 @@ func New(cfg *config.Config, configManager *config.Manager, runtime agentruntime
 			ActiveSessionTitle: draftSessionTitle,
 			Focus:              panelInput,
 		},
-		configManager: configManager,
-		runtime:       runtime,
-		keys:          keys,
-		help:          h,
-		spinner:       spin,
-		sessions:      sessionList,
-		modelPicker:   newModelPicker(),
-		transcript:    viewport.New(0, 0),
-		input:         input,
-		focus:         panelInput,
-		width:         128,
-		height:        40,
-		styles:        uiStyles,
+		configManager:  configManager,
+		providerSvc:    providerSvc,
+		runtime:        runtime,
+		keys:           keys,
+		help:           h,
+		spinner:        spin,
+		sessions:       sessionList,
+		providerPicker: newProviderPicker(nil),
+		modelPicker:    newModelPicker(nil),
+		transcript:     viewport.New(0, 0),
+		input:          input,
+		focus:          panelInput,
+		width:          128,
+		height:         40,
+		styles:         uiStyles,
 	}
 
 	if err := app.refreshSessions(); err != nil {
@@ -110,6 +117,13 @@ func New(cfg *config.Config, configManager *config.Manager, runtime agentruntime
 	}
 	app.syncActiveSessionTitle()
 	app.syncConfigState(configManager.Get())
+	if err := app.refreshProviderPicker(); err != nil {
+		return App{}, err
+	}
+	if err := app.refreshModelPicker(); err != nil {
+		return App{}, err
+	}
+	app.selectCurrentProvider(cfg.SelectedProvider)
 	app.selectCurrentModel(cfg.CurrentModel)
 	app.resizeComponents()
 	return app, nil

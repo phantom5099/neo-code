@@ -13,6 +13,8 @@ import (
 
 	"github.com/dust/neo-code/internal/config"
 	"github.com/dust/neo-code/internal/provider"
+	"github.com/dust/neo-code/internal/provider/builtin"
+	provideropenai "github.com/dust/neo-code/internal/provider/openai"
 	agentruntime "github.com/dust/neo-code/internal/runtime"
 	"github.com/dust/neo-code/internal/tools"
 )
@@ -67,23 +69,34 @@ func TestAppUpdateComposerCommands(t *testing.T) {
 		assert func(t *testing.T, beforeRuntime *stubRuntime, manager *config.Manager, app App)
 	}{
 		{
-			name:  "slash set url updates config and does not start runtime",
-			input: "/set url https://test.com",
+			name:  "unknown slash command stays local and surfaces error",
+			input: "/unknown",
 			assert: func(t *testing.T, runtime *stubRuntime, manager *config.Manager, app App) {
 				t.Helper()
 				if len(runtime.runInputs) != 0 {
 					t.Fatalf("expected runtime not to run, got %d calls", len(runtime.runInputs))
 				}
-				cfg := manager.Get()
-				selected, err := cfg.SelectedProviderConfig()
-				if err != nil {
-					t.Fatalf("SelectedProviderConfig() error = %v", err)
-				}
-				if selected.BaseURL != "https://test.com" {
-					t.Fatalf("expected base url updated to https://test.com, got %q", selected.BaseURL)
+				if !strings.Contains(app.state.StatusText, "unknown command") {
+					t.Fatalf("expected unknown command error, got %q", app.state.StatusText)
 				}
 				if app.state.IsAgentRunning {
 					t.Fatalf("expected agent to stay idle")
+				}
+			},
+		},
+		{
+			name:  "provider command opens picker and does not start runtime",
+			input: "/provider",
+			assert: func(t *testing.T, runtime *stubRuntime, manager *config.Manager, app App) {
+				t.Helper()
+				if len(runtime.runInputs) != 0 {
+					t.Fatalf("expected runtime not to run, got %d calls", len(runtime.runInputs))
+				}
+				if app.state.ActivePicker != pickerProvider {
+					t.Fatalf("expected provider picker to open")
+				}
+				if app.state.StatusText != statusChooseProvider {
+					t.Fatalf("expected status %q, got %q", statusChooseProvider, app.state.StatusText)
 				}
 			},
 		},
@@ -95,7 +108,7 @@ func TestAppUpdateComposerCommands(t *testing.T) {
 				if len(runtime.runInputs) != 0 {
 					t.Fatalf("expected runtime not to run, got %d calls", len(runtime.runInputs))
 				}
-				if !app.state.ShowModelPicker {
+				if app.state.ActivePicker != pickerModel {
 					t.Fatalf("expected model picker to open")
 				}
 				if app.state.StatusText != statusChooseModel {
@@ -111,7 +124,7 @@ func TestAppUpdateComposerCommands(t *testing.T) {
 			manager := newTestConfigManager(t)
 			runtime := newStubRuntime()
 
-			app, err := New(nil, manager, runtime)
+			app, err := New(nil, manager, runtime, newTestProviderService(t, manager))
 			if err != nil {
 				t.Fatalf("New() error = %v", err)
 			}
@@ -142,13 +155,13 @@ func TestAppUpdateModelPickerAndRuntimeMessages(t *testing.T) {
 		{
 			name: "escape closes model picker",
 			setup: func(t *testing.T, app *App, runtime *stubRuntime) {
-				app.state.ShowModelPicker = true
+				app.state.ActivePicker = pickerModel
 				app.focus = panelInput
 			},
 			msg: tea.KeyMsg{Type: tea.KeyEsc},
 			assert: func(t *testing.T, runtime *stubRuntime, app App, msgs []tea.Msg) {
 				t.Helper()
-				if app.state.ShowModelPicker {
+				if app.state.ActivePicker != pickerNone {
 					t.Fatalf("expected model picker to close")
 				}
 				if app.state.Focus != panelInput {
@@ -236,7 +249,7 @@ func TestAppUpdateModelPickerAndRuntimeMessages(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			manager := newTestConfigManager(t)
 			runtime := newStubRuntime()
-			app, err := New(nil, manager, runtime)
+			app, err := New(nil, manager, runtime, newTestProviderService(t, manager))
 			if err != nil {
 				t.Fatalf("New() error = %v", err)
 			}
@@ -267,7 +280,7 @@ func TestAppHelpersAndRenderingSmoke(t *testing.T) {
 	}
 	runtime.loads[now.ID] = now
 
-	app, err := New(nil, manager, runtime)
+	app, err := New(nil, manager, runtime, newTestProviderService(t, manager))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -276,8 +289,8 @@ func TestAppHelpersAndRenderingSmoke(t *testing.T) {
 	}
 
 	app.openModelPicker()
-	app.closeModelPicker()
-	app.selectCurrentModel(config.DefaultOpenAIModel)
+	app.closePicker()
+	app.selectCurrentModel(provideropenai.DefaultModel)
 	app.appendAssistantChunk("hello")
 	app.appendAssistantChunk(" world")
 	if !app.lastAssistantMatches("hello world") {
@@ -314,11 +327,11 @@ func TestAppHelpersAndRenderingSmoke(t *testing.T) {
 	if app.renderHeader(app.computeLayout().contentWidth) == "" || app.renderBody(app.computeLayout()) == "" {
 		t.Fatalf("expected non-empty render output")
 	}
-	app.state.ShowModelPicker = true
-	if app.renderModelPicker(48, 12) == "" || app.renderWaterfall(80, 20) == "" {
+	app.state.ActivePicker = pickerModel
+	if app.renderPicker(48, 12) == "" || app.renderWaterfall(80, 20) == "" {
 		t.Fatalf("expected model picker rendering")
 	}
-	app.state.ShowModelPicker = false
+	app.state.ActivePicker = pickerNone
 	if app.renderCommandMenu(80) == "" {
 		app.input.SetValue("/")
 		app.state.InputText = "/"
@@ -430,7 +443,7 @@ func TestTUIStandaloneHelpers(t *testing.T) {
 		t.Fatalf("expected delegate update to return nil")
 	}
 	var buf bytes.Buffer
-	model := newModelPicker()
+	model := newModelPicker([]provider.ModelDescriptor{{ID: "gpt-4.1", Name: "gpt-4.1"}})
 	sessionList := []list.Item{sItem}
 	listModel := list.New(sessionList, delegate, 30, 10)
 	delegate.Render(&buf, listModel, 0, sItem)
@@ -458,7 +471,7 @@ func TestTUIStandaloneHelpers(t *testing.T) {
 	}
 
 	manager := newTestConfigManager(t)
-	msg := runModelSelection(manager, "gpt-5.4")()
+	msg := runModelSelection(newTestProviderService(t, manager), "gpt-5.4")()
 	if result, ok := msg.(localCommandResultMsg); !ok || result.err != nil {
 		t.Fatalf("expected successful localCommandResultMsg, got %+v", msg)
 	}
@@ -511,7 +524,7 @@ func TestAppUpdateAdditionalTransitions(t *testing.T) {
 			},
 		},
 		{
-			name: "local command success updates state",
+			name: "model selection success updates state",
 			msg:  localCommandResultMsg{notice: "[System] ok"},
 			assert: func(t *testing.T, app App, runtime *stubRuntime, manager *config.Manager, msgs []tea.Msg) {
 				t.Helper()
@@ -521,7 +534,7 @@ func TestAppUpdateAdditionalTransitions(t *testing.T) {
 			},
 		},
 		{
-			name: "local command error updates state",
+			name: "model selection error updates state",
 			msg:  localCommandResultMsg{err: context.Canceled},
 			assert: func(t *testing.T, app App, runtime *stubRuntime, manager *config.Manager, msgs []tea.Msg) {
 				t.Helper()
@@ -676,7 +689,7 @@ func TestAppUpdateAdditionalTransitions(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			manager := newTestConfigManager(t)
 			runtime := newStubRuntime()
-			app, err := New(nil, manager, runtime)
+			app, err := New(nil, manager, runtime, newTestProviderService(t, manager))
 			if err != nil {
 				t.Fatalf("New() error = %v", err)
 			}
@@ -694,7 +707,7 @@ func TestAppUpdateAdditionalTransitions(t *testing.T) {
 func TestAppUpdateModelPickerEnterAppliesSelection(t *testing.T) {
 	manager := newTestConfigManager(t)
 	runtime := newStubRuntime()
-	app, err := New(nil, manager, runtime)
+	app, err := New(nil, manager, runtime, newTestProviderService(t, manager))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -703,12 +716,12 @@ func TestAppUpdateModelPickerEnterAppliesSelection(t *testing.T) {
 	if len(app.modelPicker.Items()) < 2 {
 		t.Fatalf("expected model picker catalog")
 	}
-	selected := app.modelPicker.Items()[1].(modelItem).name
+	selected := app.modelPicker.Items()[1].(modelItem).id
 	app.modelPicker.Select(1)
 
 	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	app = model.(App)
-	if app.state.ShowModelPicker {
+	if app.state.ActivePicker != pickerNone {
 		t.Fatalf("expected picker to close after selection")
 	}
 
@@ -721,6 +734,82 @@ func TestAppUpdateModelPickerEnterAppliesSelection(t *testing.T) {
 	cfg := manager.Get()
 	if cfg.CurrentModel != selected {
 		t.Fatalf("expected current model %q, got %q", selected, cfg.CurrentModel)
+	}
+}
+
+func TestAppUpdateProviderPickerEnterAppliesSelection(t *testing.T) {
+	manager := newTestConfigManager(t)
+	if err := manager.Update(context.Background(), func(cfg *config.Config) error {
+		cfg.Providers = append(cfg.Providers, config.ProviderConfig{
+			Name:      "openai-alt",
+			Driver:    provideropenai.DriverName,
+			BaseURL:   provideropenai.DefaultBaseURL,
+			Model:     "gpt-4o",
+			APIKeyEnv: provideropenai.DefaultAPIKeyEnv,
+		})
+		cfg.CurrentModel = "unsupported-current"
+		return nil
+	}); err != nil {
+		t.Fatalf("append provider: %v", err)
+	}
+
+	runtime := newStubRuntime()
+	app, err := New(nil, manager, runtime, newTestProviderService(t, manager))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	app.openProviderPicker()
+	if len(app.providerPicker.Items()) < 2 {
+		t.Fatalf("expected provider picker catalog")
+	}
+	selected := app.providerPicker.Items()[1].(providerItem).id
+	app.providerPicker.Select(1)
+
+	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = model.(App)
+	if app.state.ActivePicker != pickerNone {
+		t.Fatalf("expected picker to close after selection")
+	}
+
+	for _, msg := range collectTeaMessages(cmd) {
+		model, follow := app.Update(msg)
+		app = model.(App)
+		_ = collectTeaMessages(follow)
+	}
+
+	cfg := manager.Get()
+	if cfg.SelectedProvider != selected {
+		t.Fatalf("expected selected provider %q, got %q", selected, cfg.SelectedProvider)
+	}
+	if cfg.CurrentModel != "gpt-4o" {
+		t.Fatalf("expected current model to follow provider default, got %q", cfg.CurrentModel)
+	}
+}
+
+func TestRefreshPickerKeepsSizeAfterRebuild(t *testing.T) {
+	manager := newTestConfigManager(t)
+	runtime := newStubRuntime()
+	app, err := New(nil, manager, runtime, newTestProviderService(t, manager))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	app.providerPicker.SetSize(32, 9)
+	app.modelPicker.SetSize(28, 7)
+
+	if err := app.refreshProviderPicker(); err != nil {
+		t.Fatalf("refreshProviderPicker() error = %v", err)
+	}
+	if err := app.refreshModelPicker(); err != nil {
+		t.Fatalf("refreshModelPicker() error = %v", err)
+	}
+
+	if app.providerPicker.Width() != 32 || app.providerPicker.Height() != 9 {
+		t.Fatalf("expected provider picker size 32x9, got %dx%d", app.providerPicker.Width(), app.providerPicker.Height())
+	}
+	if app.modelPicker.Width() != 28 || app.modelPicker.Height() != 7 {
+		t.Fatalf("expected model picker size 28x7, got %dx%d", app.modelPicker.Width(), app.modelPicker.Height())
 	}
 }
 
@@ -801,7 +890,7 @@ func TestAppHandleRuntimeEventAdditionalBranches(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			manager := newTestConfigManager(t)
 			runtime := newStubRuntime()
-			app, err := New(nil, manager, runtime)
+			app, err := New(nil, manager, runtime, newTestProviderService(t, manager))
 			if err != nil {
 				t.Fatalf("New() error = %v", err)
 			}
@@ -820,7 +909,7 @@ func TestAppRefreshErrorPaths(t *testing.T) {
 		runtime := newStubRuntime()
 		runtime.listErr = context.DeadlineExceeded
 
-		app, err := New(nil, manager, runtime)
+		app, err := New(nil, manager, runtime, newTestProviderService(t, manager))
 		if err == nil || !strings.Contains(err.Error(), context.DeadlineExceeded.Error()) {
 			t.Fatalf("expected list session error during New, got %v", err)
 		}
@@ -832,7 +921,7 @@ func TestAppRefreshErrorPaths(t *testing.T) {
 		runtime := newStubRuntime()
 		runtime.loadErr = context.Canceled
 
-		app, err := New(nil, manager, runtime)
+		app, err := New(nil, manager, runtime, newTestProviderService(t, manager))
 		if err != nil {
 			t.Fatalf("New() error = %v", err)
 		}
@@ -847,11 +936,20 @@ func TestAppRefreshErrorPaths(t *testing.T) {
 
 func newTestConfigManager(t *testing.T) *config.Manager {
 	t.Helper()
-	manager := config.NewManager(config.NewLoader(t.TempDir()))
+	manager := config.NewManager(config.NewLoader(t.TempDir(), builtin.DefaultConfig()))
 	if _, err := manager.Load(context.Background()); err != nil {
 		t.Fatalf("load config: %v", err)
 	}
 	return manager
+}
+
+func newTestProviderService(t *testing.T, manager *config.Manager) *provider.Service {
+	t.Helper()
+	registry, err := builtin.NewRegistry()
+	if err != nil {
+		t.Fatalf("register provider drivers: %v", err)
+	}
+	return provider.NewService(manager, registry)
 }
 
 func collectTeaMessages(cmd tea.Cmd) []tea.Msg {

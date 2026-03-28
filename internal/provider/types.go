@@ -1,8 +1,7 @@
 package provider
 
 import (
-	"fmt"
-	"sort"
+	"errors"
 	"strings"
 )
 
@@ -45,104 +44,76 @@ type Usage struct {
 	TotalTokens  int `json:"total_tokens"`
 }
 
-type SupportLevel string
-
-const (
-	SupportLevelMVP        SupportLevel = "mvp"
-	SupportLevelScaffolded SupportLevel = "scaffolded"
+var (
+	ErrProviderNotFound = errors.New("provider not found")
+	ErrModelNotFound    = errors.New("model not found")
+	ErrDriverNotFound   = errors.New("provider driver not found")
 )
 
-type ModelOption struct {
+type ModelDescriptor struct {
+	ID          string `json:"id"`
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
 }
 
-type ProviderDescriptor struct {
-	Name         string        `json:"name"`
-	DisplayName  string        `json:"display_name"`
-	SupportLevel SupportLevel  `json:"support_level"`
-	MVPVisible   bool          `json:"mvp_visible"`
-	Available    bool          `json:"available"`
-	Summary      string        `json:"summary"`
-	Models       []ModelOption `json:"models,omitempty"`
+type ProviderCatalogItem struct {
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Description string            `json:"description,omitempty"`
+	APIKeyEnv   string            `json:"api_key_env,omitempty"`
+	Models      []ModelDescriptor `json:"models,omitempty"`
 }
 
-type Describer interface {
-	Descriptor() ProviderDescriptor
+type ProviderSelection struct {
+	ProviderID string `json:"provider_id"`
+	ModelID    string `json:"model_id"`
 }
 
-func Describe(p Provider) ProviderDescriptor {
-	if p == nil {
-		return ProviderDescriptor{}
+func normalizeCatalogItem(item ProviderCatalogItem, fallbackID string, fallbackEnv string) ProviderCatalogItem {
+	if strings.TrimSpace(item.ID) == "" {
+		item.ID = strings.TrimSpace(fallbackID)
+	}
+	if strings.TrimSpace(item.Name) == "" {
+		item.Name = item.ID
+	}
+	if strings.TrimSpace(item.APIKeyEnv) == "" {
+		item.APIKeyEnv = strings.TrimSpace(fallbackEnv)
 	}
 
-	if describer, ok := p.(Describer); ok {
-		return normalizeDescriptor(describer.Descriptor(), p.Name())
-	}
-
-	return ProviderDescriptor{
-		Name:         strings.TrimSpace(p.Name()),
-		DisplayName:  strings.TrimSpace(p.Name()),
-		SupportLevel: SupportLevelScaffolded,
-		Summary:      "Provider metadata is not available.",
-	}
+	item.Models = normalizeModels(item.Models)
+	return item
 }
 
-func ScaffoldedProviderError(name string) error {
-	providerName := strings.TrimSpace(name)
-	if providerName == "" {
-		providerName = "unknown"
-	}
-	return fmt.Errorf(
-		"%s provider is scaffolded only and not available in this MVP; only OpenAI-compatible provider is officially supported",
-		providerName,
-	)
-}
-
-func normalizeDescriptor(desc ProviderDescriptor, fallbackName string) ProviderDescriptor {
-	name := strings.TrimSpace(desc.Name)
-	if name == "" {
-		name = strings.TrimSpace(fallbackName)
-	}
-	desc.Name = name
-
-	if strings.TrimSpace(desc.DisplayName) == "" {
-		desc.DisplayName = name
-	}
-	if strings.TrimSpace(desc.Summary) == "" {
-		desc.Summary = "Provider metadata is not available."
-	}
-
-	desc.Models = normalizedModels(desc.Models)
-	return desc
-}
-
-func normalizedModels(models []ModelOption) []ModelOption {
+func normalizeModels(models []ModelDescriptor) []ModelDescriptor {
 	if len(models) == 0 {
 		return nil
 	}
 
-	deduped := make([]ModelOption, 0, len(models))
+	deduped := make([]ModelDescriptor, 0, len(models))
 	seen := make(map[string]struct{}, len(models))
 	for _, model := range models {
+		id := strings.TrimSpace(model.ID)
 		name := strings.TrimSpace(model.Name)
-		if name == "" {
+		if id == "" {
+			id = name
+		}
+		if id == "" {
 			continue
 		}
-		key := strings.ToLower(name)
+		if name == "" {
+			name = id
+		}
+		key := strings.ToLower(id)
 		if _, ok := seen[key]; ok {
 			continue
 		}
 		seen[key] = struct{}{}
-		deduped = append(deduped, ModelOption{
+		deduped = append(deduped, ModelDescriptor{
+			ID:          id,
 			Name:        name,
 			Description: strings.TrimSpace(model.Description),
 		})
 	}
-
-	sort.Slice(deduped, func(i, j int) bool {
-		return strings.ToLower(deduped[i].Name) < strings.ToLower(deduped[j].Name)
-	})
 
 	return deduped
 }

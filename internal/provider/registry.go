@@ -1,61 +1,84 @@
 package provider
 
 import (
+	"context"
 	"errors"
-	"sort"
+	"fmt"
 	"strings"
+
+	"github.com/dust/neo-code/internal/config"
 )
 
+type Builder func(ctx context.Context, cfg config.ResolvedProviderConfig) (Provider, error)
+
+type CatalogBuilder func(cfg config.ProviderConfig) (ProviderCatalogItem, error)
+
+type DriverDefinition struct {
+	Name    string
+	Build   Builder
+	Catalog CatalogBuilder
+}
+
 type Registry struct {
-	items map[string]Provider
+	drivers map[string]DriverDefinition
 }
 
 func NewRegistry() *Registry {
-	return &Registry{items: map[string]Provider{}}
+	return &Registry{drivers: map[string]DriverDefinition{}}
 }
 
-func (r *Registry) Register(provider Provider) {
-	if provider == nil {
-		return
+func (r *Registry) Register(driver DriverDefinition) error {
+	driverType := normalizeKey(driver.Name)
+	if driverType == "" {
+		return errors.New("provider: driver name is empty")
 	}
-	r.items[strings.ToLower(provider.Name())] = provider
+	if driver.Build == nil {
+		return fmt.Errorf("provider: driver %q build func is nil", driver.Name)
+	}
+	if driver.Catalog == nil {
+		return fmt.Errorf("provider: driver %q catalog func is nil", driver.Name)
+	}
+	r.drivers[driverType] = driver
+	return nil
 }
 
-func (r *Registry) Get(name string) (Provider, error) {
-	item, ok := r.items[strings.ToLower(name)]
+func (r *Registry) Build(ctx context.Context, cfg config.ResolvedProviderConfig) (Provider, error) {
+	driver, err := r.driver(cfg.Driver)
+	if err != nil {
+		return nil, err
+	}
+	return driver.Build(ctx, cfg)
+}
+
+func (r *Registry) Catalog(cfg config.ProviderConfig) (ProviderCatalogItem, error) {
+	driver, err := r.driver(cfg.Driver)
+	if err != nil {
+		return ProviderCatalogItem{}, err
+	}
+
+	item, err := driver.Catalog(cfg)
+	if err != nil {
+		return ProviderCatalogItem{}, err
+	}
+	return normalizeCatalogItem(item, cfg.Name, cfg.APIKeyEnv), nil
+}
+
+func (r *Registry) Supports(driverType string) bool {
+	_, err := r.driver(driverType)
+	return err == nil
+}
+
+func (r *Registry) driver(driverType string) (DriverDefinition, error) {
+	if r == nil {
+		return DriverDefinition{}, ErrDriverNotFound
+	}
+	driver, ok := r.drivers[normalizeKey(driverType)]
 	if !ok {
-		return nil, errors.New("provider: not found")
+		return DriverDefinition{}, fmt.Errorf("%w: %s", ErrDriverNotFound, strings.TrimSpace(driverType))
 	}
-	return item, nil
+	return driver, nil
 }
 
-func (r *Registry) Descriptors() []ProviderDescriptor {
-	return r.filteredDescriptors(func(ProviderDescriptor) bool { return true })
-}
-
-func (r *Registry) AvailableDescriptors() []ProviderDescriptor {
-	return r.filteredDescriptors(func(desc ProviderDescriptor) bool {
-		return desc.Available
-	})
-}
-
-func (r *Registry) filteredDescriptors(keep func(ProviderDescriptor) bool) []ProviderDescriptor {
-	if r == nil || len(r.items) == 0 {
-		return nil
-	}
-
-	descriptors := make([]ProviderDescriptor, 0, len(r.items))
-	for _, item := range r.items {
-		desc := Describe(item)
-		if keep != nil && !keep(desc) {
-			continue
-		}
-		descriptors = append(descriptors, desc)
-	}
-
-	sort.Slice(descriptors, func(i, j int) bool {
-		return strings.ToLower(descriptors[i].Name) < strings.ToLower(descriptors[j].Name)
-	})
-
-	return descriptors
+func normalizeKey(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
 }

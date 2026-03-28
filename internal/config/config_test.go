@@ -9,6 +9,32 @@ import (
 	"testing"
 )
 
+const (
+	testProviderName = "openai"
+	testBaseURL      = "https://api.openai.com/v1"
+	testModel        = "gpt-4.1"
+	testAPIKeyEnv    = "OPENAI_API_KEY"
+)
+
+func testDefaultProviderConfig() ProviderConfig {
+	return ProviderConfig{
+		Name:      testProviderName,
+		Driver:    testProviderName,
+		BaseURL:   testBaseURL,
+		Model:     testModel,
+		APIKeyEnv: testAPIKeyEnv,
+	}
+}
+
+func testDefaultConfig() *Config {
+	cfg := Default()
+	defaultProvider := testDefaultProviderConfig()
+	cfg.Providers = []ProviderConfig{defaultProvider}
+	cfg.SelectedProvider = defaultProvider.Name
+	cfg.CurrentModel = defaultProvider.Model
+	return cfg
+}
+
 func TestParseConfigFormats(t *testing.T) {
 	t.Parallel()
 
@@ -18,15 +44,14 @@ func TestParseConfigFormats(t *testing.T) {
 		assert func(t *testing.T, cfg *Config)
 	}{
 		{
-			name: "current format",
+			name: "current format with provider overrides",
 			data: `
 selected_provider: openai
 current_model: gpt-5.4
 workdir: .
 shell: powershell
-providers:
+provider_overrides:
   - name: openai
-    type: openai
     base_url: https://example.com/v1
     model: gpt-5.4
     api_key_env: OPENAI_API_KEY
@@ -42,6 +67,34 @@ providers:
 				}
 				if provider.BaseURL != "https://example.com/v1" {
 					t.Fatalf("expected custom base url, got %q", provider.BaseURL)
+				}
+			},
+		},
+		{
+			name: "legacy persisted providers list",
+			data: `
+selected_provider: openai
+current_model: gpt-5.4
+workdir: .
+shell: powershell
+providers:
+  - name: openai
+    type: openai
+    base_url: https://example.com/v1
+    model: gpt-5.4
+    api_key_env: OPENAI_API_KEY
+`,
+			assert: func(t *testing.T, cfg *Config) {
+				t.Helper()
+				provider, err := cfg.SelectedProviderConfig()
+				if err != nil {
+					t.Fatalf("selected provider: %v", err)
+				}
+				if provider.BaseURL != "https://example.com/v1" {
+					t.Fatalf("expected migrated base url, got %q", provider.BaseURL)
+				}
+				if provider.Model != "gpt-5.4" {
+					t.Fatalf("expected migrated model, got %q", provider.Model)
 				}
 			},
 		},
@@ -81,11 +134,11 @@ providers:
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			cfg, err := parseConfig([]byte(tt.data))
+			cfg, err := parseConfig([]byte(tt.data), *testDefaultConfig())
 			if err != nil {
 				t.Fatalf("parseConfig() error = %v", err)
 			}
-			cfg.ApplyDefaults()
+			cfg.ApplyDefaultsFrom(*testDefaultConfig())
 			tt.assert(t, cfg)
 		})
 	}
@@ -121,10 +174,10 @@ func TestProviderConfigResolveAPIKey(t *testing.T) {
 			}
 
 			provider := ProviderConfig{
-				Name:      ProviderOpenAI,
-				Type:      ProviderOpenAI,
-				BaseURL:   DefaultOpenAIBaseURL,
-				Model:     DefaultOpenAIModel,
+				Name:      testProviderName,
+				Driver:    testProviderName,
+				BaseURL:   testBaseURL,
+				Model:     testModel,
 				APIKeyEnv: tt.envKey,
 			}
 
@@ -171,7 +224,7 @@ func TestConfigMethodErrorPaths(t *testing.T) {
 
 		_, err := (ProviderConfig{
 			Name:      "custom",
-			Type:      "custom",
+			Driver:    "custom",
 			BaseURL:   "https://example.com",
 			Model:     "custom-model",
 			APIKeyEnv: "MISSING_PROVIDER_KEY",
@@ -205,8 +258,8 @@ func TestLoaderLoadEnvironmentSources(t *testing.T) {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			tempDir := t.TempDir()
-			restoreEnv(t, DefaultOpenAIAPIKeyEnv)
-			_ = os.Unsetenv(DefaultOpenAIAPIKeyEnv)
+			restoreEnv(t, testAPIKeyEnv)
+			_ = os.Unsetenv(testAPIKeyEnv)
 
 			previousWD, err := os.Getwd()
 			if err != nil {
@@ -225,7 +278,7 @@ func TestLoaderLoadEnvironmentSources(t *testing.T) {
 				}
 			}
 
-			loader := NewLoader(filepath.Join(tempDir, ".neocode"))
+			loader := NewLoader(filepath.Join(tempDir, ".neocode"), testDefaultConfig())
 			if tt.managedDotEnv != "" {
 				if err := os.MkdirAll(loader.BaseDir(), 0o755); err != nil {
 					t.Fatalf("mkdir managed dir: %v", err)
@@ -238,11 +291,11 @@ func TestLoaderLoadEnvironmentSources(t *testing.T) {
 			loader.LoadEnvironment()
 
 			provider := ProviderConfig{
-				Name:      ProviderOpenAI,
-				Type:      ProviderOpenAI,
-				BaseURL:   DefaultOpenAIBaseURL,
-				Model:     DefaultOpenAIModel,
-				APIKeyEnv: DefaultOpenAIAPIKeyEnv,
+				Name:      testProviderName,
+				Driver:    testProviderName,
+				BaseURL:   testBaseURL,
+				Model:     testModel,
+				APIKeyEnv: testAPIKeyEnv,
 			}
 
 			key, err := provider.ResolveAPIKey()
@@ -256,36 +309,9 @@ func TestLoaderLoadEnvironmentSources(t *testing.T) {
 	}
 }
 
-func TestManagerUpsertEnvAndReload(t *testing.T) {
-	tempDir := t.TempDir()
-	loader := NewLoader(tempDir)
-	manager := NewManager(loader)
-
-	if err := manager.UpsertEnv("OPENAI_API_KEY", "first"); err != nil {
-		t.Fatalf("UpsertEnv() error = %v", err)
-	}
-	if err := manager.UpsertEnv("OPENAI_API_KEY", "second"); err != nil {
-		t.Fatalf("UpsertEnv() overwrite error = %v", err)
-	}
-	if err := loader.OverloadManagedEnvironment(); err != nil {
-		t.Fatalf("OverloadManagedEnvironment() error = %v", err)
-	}
-
-	data, err := os.ReadFile(loader.EnvPath())
-	if err != nil {
-		t.Fatalf("ReadFile() error = %v", err)
-	}
-	if strings.Count(string(data), "OPENAI_API_KEY=") != 1 {
-		t.Fatalf("expected single env assignment, got %q", string(data))
-	}
-	if got := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")); got != "second" {
-		t.Fatalf("expected env value second, got %q", got)
-	}
-}
-
 func TestManagerConcurrentAccess(t *testing.T) {
 	tempDir := t.TempDir()
-	manager := NewManager(NewLoader(tempDir))
+	manager := NewManager(NewLoader(tempDir, testDefaultConfig()))
 	if _, err := manager.Load(context.Background()); err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
@@ -324,7 +350,7 @@ func TestManagerConcurrentAccess(t *testing.T) {
 	wg.Wait()
 
 	finalConfig := manager.Get()
-	finalConfig.ApplyDefaults()
+	finalConfig.ApplyDefaultsFrom(*testDefaultConfig())
 	if err := finalConfig.Validate(); err != nil {
 		t.Fatalf("final config should validate, got %v", err)
 	}
@@ -336,28 +362,28 @@ func TestConfigApplyDefaultsFillsMissingFields(t *testing.T) {
 	cfg := &Config{
 		Providers: []ProviderConfig{
 			{
-				Name: ProviderOpenAI,
+				Name: testProviderName,
 			},
 		},
-		SelectedProvider: ProviderOpenAI,
+		SelectedProvider: testProviderName,
 		CurrentModel:     "",
 		Workdir:          ".",
 	}
 
-	cfg.ApplyDefaults()
+	cfg.ApplyDefaultsFrom(*testDefaultConfig())
 
 	provider, err := cfg.SelectedProviderConfig()
 	if err != nil {
 		t.Fatalf("SelectedProviderConfig() error = %v", err)
 	}
-	if provider.BaseURL != DefaultOpenAIBaseURL {
-		t.Fatalf("expected default base url %q, got %q", DefaultOpenAIBaseURL, provider.BaseURL)
+	if provider.BaseURL != testBaseURL {
+		t.Fatalf("expected default base url %q, got %q", testBaseURL, provider.BaseURL)
 	}
-	if provider.APIKeyEnv != DefaultOpenAIAPIKeyEnv {
-		t.Fatalf("expected default api key env %q, got %q", DefaultOpenAIAPIKeyEnv, provider.APIKeyEnv)
+	if provider.APIKeyEnv != testAPIKeyEnv {
+		t.Fatalf("expected default api key env %q, got %q", testAPIKeyEnv, provider.APIKeyEnv)
 	}
-	if cfg.CurrentModel != DefaultOpenAIModel {
-		t.Fatalf("expected current model %q, got %q", DefaultOpenAIModel, cfg.CurrentModel)
+	if cfg.CurrentModel != testModel {
+		t.Fatalf("expected current model %q, got %q", testModel, cfg.CurrentModel)
 	}
 	if !filepath.IsAbs(cfg.Workdir) {
 		t.Fatalf("expected absolute workdir, got %q", cfg.Workdir)
@@ -367,8 +393,8 @@ func TestConfigApplyDefaultsFillsMissingFields(t *testing.T) {
 func TestConfigValidateFailures(t *testing.T) {
 	t.Parallel()
 
-	validConfig := Default().Clone()
-	validConfig.ApplyDefaults()
+	validConfig := testDefaultConfig().Clone()
+	validConfig.ApplyDefaultsFrom(*testDefaultConfig())
 
 	tests := []struct {
 		name      string
@@ -383,8 +409,8 @@ func TestConfigValidateFailures(t *testing.T) {
 		{
 			name: "no providers",
 			config: &Config{
-				SelectedProvider: ProviderOpenAI,
-				CurrentModel:     DefaultOpenAIModel,
+				SelectedProvider: testProviderName,
+				CurrentModel:     testModel,
 				Workdir:          filepath.Clean(t.TempDir()),
 			},
 			expectErr: "providers is empty",
@@ -393,11 +419,11 @@ func TestConfigValidateFailures(t *testing.T) {
 			name: "duplicate providers",
 			config: &Config{
 				Providers: []ProviderConfig{
-					{Name: ProviderOpenAI, Type: ProviderOpenAI, BaseURL: DefaultOpenAIBaseURL, Model: DefaultOpenAIModel, APIKeyEnv: DefaultOpenAIAPIKeyEnv},
-					{Name: ProviderOpenAI, Type: ProviderOpenAI, BaseURL: DefaultOpenAIBaseURL, Model: DefaultOpenAIModel, APIKeyEnv: DefaultOpenAIAPIKeyEnv},
+					testDefaultProviderConfig(),
+					testDefaultProviderConfig(),
 				},
-				SelectedProvider: ProviderOpenAI,
-				CurrentModel:     DefaultOpenAIModel,
+				SelectedProvider: testProviderName,
+				CurrentModel:     testModel,
 				Workdir:          filepath.Clean(t.TempDir()),
 			},
 			expectErr: "duplicate provider name",
@@ -406,10 +432,10 @@ func TestConfigValidateFailures(t *testing.T) {
 			name: "relative workdir",
 			config: &Config{
 				Providers: []ProviderConfig{
-					{Name: ProviderOpenAI, Type: ProviderOpenAI, BaseURL: DefaultOpenAIBaseURL, Model: DefaultOpenAIModel, APIKeyEnv: DefaultOpenAIAPIKeyEnv},
+					testDefaultProviderConfig(),
 				},
-				SelectedProvider: ProviderOpenAI,
-				CurrentModel:     DefaultOpenAIModel,
+				SelectedProvider: testProviderName,
+				CurrentModel:     testModel,
 				Workdir:          ".",
 			},
 			expectErr: "workdir must be absolute",
@@ -451,36 +477,36 @@ func TestProviderConfigValidateFailures(t *testing.T) {
 			expectErr: "provider name is empty",
 		},
 		{
-			name: "missing type",
+			name: "missing driver",
 			provider: ProviderConfig{
-				Name: ProviderOpenAI,
+				Name: testProviderName,
 			},
-			expectErr: "type is empty",
+			expectErr: "driver is empty",
 		},
 		{
 			name: "missing base url",
 			provider: ProviderConfig{
-				Name: ProviderOpenAI,
-				Type: ProviderOpenAI,
+				Name:   testProviderName,
+				Driver: testProviderName,
 			},
 			expectErr: "base_url is empty",
 		},
 		{
 			name: "missing model",
 			provider: ProviderConfig{
-				Name:    ProviderOpenAI,
-				Type:    ProviderOpenAI,
-				BaseURL: DefaultOpenAIBaseURL,
+				Name:    testProviderName,
+				Driver:  testProviderName,
+				BaseURL: testBaseURL,
 			},
 			expectErr: "model is empty",
 		},
 		{
 			name: "missing api key env",
 			provider: ProviderConfig{
-				Name:    ProviderOpenAI,
-				Type:    ProviderOpenAI,
-				BaseURL: DefaultOpenAIBaseURL,
-				Model:   DefaultOpenAIModel,
+				Name:    testProviderName,
+				Driver:  testProviderName,
+				BaseURL: testBaseURL,
+				Model:   testModel,
 			},
 			expectErr: "api_key_env is empty",
 		},
@@ -499,9 +525,9 @@ func TestProviderConfigValidateFailures(t *testing.T) {
 }
 
 func TestProviderLookupAndResolveSelectedProvider(t *testing.T) {
-	t.Setenv(DefaultOpenAIAPIKeyEnv, "lookup-key")
+	t.Setenv(testAPIKeyEnv, "lookup-key")
 
-	manager := NewManager(NewLoader(t.TempDir()))
+	manager := NewManager(NewLoader(t.TempDir(), testDefaultConfig()))
 	if _, err := manager.Load(context.Background()); err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
@@ -511,8 +537,8 @@ func TestProviderLookupAndResolveSelectedProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProviderByName() error = %v", err)
 	}
-	if provider.Name != ProviderOpenAI {
-		t.Fatalf("expected provider %q, got %q", ProviderOpenAI, provider.Name)
+	if provider.Name != testProviderName {
+		t.Fatalf("expected provider %q, got %q", testProviderName, provider.Name)
 	}
 
 	resolved, err := manager.ResolvedSelectedProvider()
@@ -526,7 +552,7 @@ func TestProviderLookupAndResolveSelectedProvider(t *testing.T) {
 
 func TestLoaderLoadAndSaveRoundTrip(t *testing.T) {
 	tempDir := t.TempDir()
-	loader := NewLoader(tempDir)
+	loader := NewLoader(tempDir, testDefaultConfig())
 
 	cfg, err := loader.Load(context.Background())
 	if err != nil {
@@ -546,12 +572,97 @@ func TestLoaderLoadAndSaveRoundTrip(t *testing.T) {
 		t.Fatalf("Save() error = %v", err)
 	}
 
+	data, err := os.ReadFile(loader.ConfigPath())
+	if err != nil {
+		t.Fatalf("read config file: %v", err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "provider_overrides:") {
+		t.Fatalf("expected persisted provider overrides, got:\n%s", text)
+	}
+	if strings.Contains(text, "\nproviders:") || strings.HasPrefix(text, "providers:") {
+		t.Fatalf("expected persisted config to omit full providers list, got:\n%s", text)
+	}
+
 	reloaded, err := loader.Load(context.Background())
 	if err != nil {
 		t.Fatalf("Load() reload error = %v", err)
 	}
 	if reloaded.CurrentModel != "gpt-5.4" {
 		t.Fatalf("expected current model %q, got %q", "gpt-5.4", reloaded.CurrentModel)
+	}
+}
+
+func TestLoaderUsesUpdatedBuiltinProviderWhenUserHasNoOverride(t *testing.T) {
+	tempDir := t.TempDir()
+
+	initialDefaults := testDefaultConfig()
+	initialDefaults.Providers[0].BaseURL = "https://old.example/v1"
+	initialDefaults.CurrentModel = initialDefaults.Providers[0].Model
+
+	initialLoader := NewLoader(tempDir, initialDefaults)
+	if _, err := initialLoader.Load(context.Background()); err != nil {
+		t.Fatalf("initial Load() error = %v", err)
+	}
+
+	updatedDefaults := testDefaultConfig()
+	updatedDefaults.Providers[0].BaseURL = "https://new.example/v1"
+	updatedDefaults.CurrentModel = updatedDefaults.Providers[0].Model
+
+	updatedLoader := NewLoader(tempDir, updatedDefaults)
+	reloaded, err := updatedLoader.Load(context.Background())
+	if err != nil {
+		t.Fatalf("updated Load() error = %v", err)
+	}
+
+	provider, err := reloaded.SelectedProviderConfig()
+	if err != nil {
+		t.Fatalf("SelectedProviderConfig() error = %v", err)
+	}
+	if provider.BaseURL != "https://new.example/v1" {
+		t.Fatalf("expected latest builtin base url, got %q", provider.BaseURL)
+	}
+}
+
+func TestDeriveAndMergeProviderOverrides(t *testing.T) {
+	defaults := []ProviderConfig{testDefaultProviderConfig()}
+	current := []ProviderConfig{
+		{
+			Name:      testProviderName,
+			Driver:    testProviderName,
+			BaseURL:   "https://override.example/v1",
+			Model:     "gpt-5.4",
+			APIKeyEnv: "AI_API_KEY",
+		},
+		{
+			Name:      "openai-alt",
+			Driver:    testProviderName,
+			BaseURL:   "https://alt.example/v1",
+			Model:     "gpt-4o",
+			APIKeyEnv: "ALT_KEY",
+		},
+	}
+
+	overrides := DeriveProviderOverrides(current, defaults)
+	merged := MergeProviderOverrides(defaults, overrides)
+	if len(merged) != 2 {
+		t.Fatalf("expected 2 merged providers, got %d", len(merged))
+	}
+
+	base, err := (&Config{Providers: merged, SelectedProvider: testProviderName}).SelectedProviderConfig()
+	if err != nil {
+		t.Fatalf("SelectedProviderConfig() error = %v", err)
+	}
+	if base.BaseURL != "https://override.example/v1" || base.Model != "gpt-5.4" || base.APIKeyEnv != "AI_API_KEY" {
+		t.Fatalf("unexpected merged builtin override: %+v", base)
+	}
+
+	alt, err := (&Config{Providers: merged}).ProviderByName("openai-alt")
+	if err != nil {
+		t.Fatalf("ProviderByName(openai-alt) error = %v", err)
+	}
+	if alt.Driver != testProviderName || alt.BaseURL != "https://alt.example/v1" {
+		t.Fatalf("unexpected merged custom provider: %+v", alt)
 	}
 }
 
@@ -613,12 +724,12 @@ func TestNormalizeWorkdirAndClone(t *testing.T) {
 
 	var nilConfig *Config
 	clonedNil := nilConfig.Clone()
-	clonedNil.ApplyDefaults()
+	clonedNil.ApplyDefaultsFrom(*testDefaultConfig())
 	if err := clonedNil.Validate(); err != nil {
 		t.Fatalf("cloned nil config should validate, got %v", err)
 	}
 
-	cfg := Default()
+	cfg := testDefaultConfig()
 	cloned := cfg.Clone()
 	cloned.CurrentModel = "modified"
 	if cfg.CurrentModel == cloned.CurrentModel {
@@ -628,7 +739,7 @@ func TestNormalizeWorkdirAndClone(t *testing.T) {
 
 func TestManagerHelperMethodsAndReloads(t *testing.T) {
 	tempDir := t.TempDir()
-	manager := NewManager(NewLoader(tempDir))
+	manager := NewManager(NewLoader(tempDir, testDefaultConfig()))
 
 	if _, err := manager.Load(context.Background()); err != nil {
 		t.Fatalf("Load() error = %v", err)
@@ -642,26 +753,12 @@ func TestManagerHelperMethodsAndReloads(t *testing.T) {
 	if got := manager.ConfigPath(); got != filepath.Join(tempDir, configName) {
 		t.Fatalf("expected config path %q, got %q", filepath.Join(tempDir, configName), got)
 	}
-	if got := manager.EnvPath(); got != filepath.Join(tempDir, envName) {
-		t.Fatalf("expected env path %q, got %q", filepath.Join(tempDir, envName), got)
-	}
-
-	if err := manager.UpsertEnv(DefaultOpenAIAPIKeyEnv, "manager-key"); err != nil {
-		t.Fatalf("UpsertEnv() error = %v", err)
-	}
-	manager.ReloadEnvironment()
-	if err := manager.OverloadManagedEnvironment(); err != nil {
-		t.Fatalf("OverloadManagedEnvironment() error = %v", err)
-	}
-	if got := os.Getenv(DefaultOpenAIAPIKeyEnv); got != "manager-key" {
-		t.Fatalf("expected env value %q, got %q", "manager-key", got)
-	}
 }
 
-func TestLoaderDefaultsAndBuiltinCatalog(t *testing.T) {
+func TestLoaderDefaultsAndProviderDefaults(t *testing.T) {
 	t.Parallel()
 
-	loader := NewLoader("")
+	loader := NewLoader("", testDefaultConfig())
 	if loader.BaseDir() == "" {
 		t.Fatalf("expected default base dir to be set")
 	}
@@ -672,120 +769,33 @@ func TestLoaderDefaultsAndBuiltinCatalog(t *testing.T) {
 		t.Fatalf("expected defaultBaseDir() to return a value")
 	}
 
-	catalog := BuiltinModelCatalog()
-	if len(catalog) == 0 {
-		t.Fatalf("expected builtin model catalog to be non-empty")
+	defaultCfg := testDefaultConfig()
+	if len(defaultCfg.Providers) != 1 {
+		t.Fatalf("expected 1 default provider, got %d", len(defaultCfg.Providers))
 	}
-	if catalog[0].Name == "" || catalog[0].Description == "" {
-		t.Fatalf("expected model catalog entries to contain name and description")
-	}
-}
-
-func TestBuiltinProviderConfigs(t *testing.T) {
-	t.Parallel()
-
-	providers := BuiltinProviderConfigs()
-	if len(providers) != 3 {
-		t.Fatalf("expected 3 builtin providers, got %d", len(providers))
-	}
-
-	openai, err := BuiltinProviderConfig(ProviderOpenAI)
-	if err != nil {
-		t.Fatalf("BuiltinProviderConfig(%q) error = %v", ProviderOpenAI, err)
-	}
-	if openai.BaseURL != DefaultOpenAIBaseURL || openai.Model != DefaultOpenAIModel {
-		t.Fatalf("unexpected openai preset: %+v", openai)
-	}
-
-	anthropic, err := BuiltinProviderConfig(ProviderAnthropic)
-	if err != nil {
-		t.Fatalf("BuiltinProviderConfig(%q) error = %v", ProviderAnthropic, err)
-	}
-	if anthropic.BaseURL != DefaultAnthropicBaseURL || anthropic.Model != DefaultAnthropicModel {
-		t.Fatalf("unexpected anthropic preset: %+v", anthropic)
-	}
-
-	gemini, err := BuiltinProviderConfig(ProviderGemini)
-	if err != nil {
-		t.Fatalf("BuiltinProviderConfig(%q) error = %v", ProviderGemini, err)
-	}
-	if gemini.BaseURL != DefaultGeminiBaseURL || gemini.Model != DefaultGeminiModel {
-		t.Fatalf("unexpected gemini preset: %+v", gemini)
-	}
-
-	if _, err := BuiltinProviderConfig("unknown"); err == nil {
-		t.Fatalf("expected unknown provider lookup to fail")
+	if defaultCfg.Providers[0].Name != testProviderName {
+		t.Fatalf("expected default provider %q, got %q", testProviderName, defaultCfg.Providers[0].Name)
 	}
 }
 
-func TestProviderPresetSlices(t *testing.T) {
-	t.Parallel()
-
-	mvpProviders := MVPProviderConfigs()
-	if len(mvpProviders) != 1 {
-		t.Fatalf("expected 1 mvp provider, got %d", len(mvpProviders))
-	}
-	if got := mvpProviders[0].Name; got != ProviderOpenAI {
-		t.Fatalf("expected mvp provider %q, got %q", ProviderOpenAI, got)
-	}
-
-	scaffoldProviders := ScaffoldProviderConfigs()
-	if len(scaffoldProviders) != 2 {
-		t.Fatalf("expected 2 scaffold providers, got %d", len(scaffoldProviders))
-	}
-	if scaffoldProviders[0].Name != ProviderAnthropic || scaffoldProviders[1].Name != ProviderGemini {
-		t.Fatalf("unexpected scaffold providers: %+v", scaffoldProviders)
-	}
-}
-
-func TestBuiltinModelCatalogForProvider(t *testing.T) {
-	t.Parallel()
-
-	cases := []struct {
-		name         string
-		providerName string
-		wantCount    int
-		wantFirst    string
-	}{
-		{
-			name:         "openai",
-			providerName: ProviderOpenAI,
-			wantCount:    4,
-			wantFirst:    DefaultOpenAIModel,
-		},
-		{
-			name:         "anthropic",
-			providerName: ProviderAnthropic,
-			wantCount:    1,
-			wantFirst:    DefaultAnthropicModel,
-		},
-		{
-			name:         "gemini",
-			providerName: ProviderGemini,
-			wantCount:    1,
-			wantFirst:    DefaultGeminiModel,
-		},
-		{
-			name:         "unknown",
-			providerName: "unknown",
-			wantCount:    0,
-		},
-	}
-
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			catalog := BuiltinModelCatalogForProvider(tc.providerName)
-			if len(catalog) != tc.wantCount {
-				t.Fatalf("BuiltinModelCatalogForProvider(%q) count = %d, want %d", tc.providerName, len(catalog), tc.wantCount)
+func TestConstructorsRejectMissingDependencies(t *testing.T) {
+	t.Run("NewLoader panics on nil defaults", func(t *testing.T) {
+		defer func() {
+			if recover() == nil {
+				t.Fatalf("expected NewLoader to panic when defaults are nil")
 			}
-			if tc.wantCount > 0 && catalog[0].Name != tc.wantFirst {
-				t.Fatalf("BuiltinModelCatalogForProvider(%q) first model = %q, want %q", tc.providerName, catalog[0].Name, tc.wantFirst)
+		}()
+		_ = NewLoader(t.TempDir(), nil)
+	})
+
+	t.Run("NewManager panics on nil loader", func(t *testing.T) {
+		defer func() {
+			if recover() == nil {
+				t.Fatalf("expected NewManager to panic when loader is nil")
 			}
-		})
-	}
+		}()
+		_ = NewManager(nil)
+	})
 }
 
 func restoreEnv(t *testing.T, key string) {

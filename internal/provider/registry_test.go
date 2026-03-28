@@ -1,145 +1,218 @@
 package provider_test
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/dust/neo-code/internal/config"
 	"github.com/dust/neo-code/internal/provider"
-	"github.com/dust/neo-code/internal/provider/anthropic"
-	"github.com/dust/neo-code/internal/provider/gemini"
+	"github.com/dust/neo-code/internal/provider/builtin"
 	"github.com/dust/neo-code/internal/provider/openai"
 )
 
-func TestRegistryRegisterAndGet(t *testing.T) {
-	t.Parallel()
+type stubProvider struct{}
 
-	openAIProvider, err := openai.New(config.ProviderConfig{
-		Name:      config.ProviderOpenAI,
-		Type:      config.ProviderOpenAI,
-		BaseURL:   config.DefaultOpenAIBaseURL,
-		Model:     config.DefaultOpenAIModel,
-		APIKeyEnv: config.DefaultOpenAIAPIKeyEnv,
-	})
-	if err != nil {
-		t.Fatalf("openai.New() error = %v", err)
+func (stubProvider) Chat(ctx context.Context, req provider.ChatRequest, events chan<- provider.StreamEvent) (provider.ChatResponse, error) {
+	return provider.ChatResponse{}, nil
+}
+
+func stubDriver(driverType string, models ...string) provider.DriverDefinition {
+	return provider.DriverDefinition{
+		Name: driverType,
+		Build: func(ctx context.Context, cfg config.ResolvedProviderConfig) (provider.Provider, error) {
+			return stubProvider{}, nil
+		},
+		Catalog: func(cfg config.ProviderConfig) (provider.ProviderCatalogItem, error) {
+			items := make([]provider.ModelDescriptor, 0, len(models))
+			for _, model := range models {
+				items = append(items, provider.ModelDescriptor{
+					ID:   model,
+					Name: model,
+				})
+			}
+			return provider.ProviderCatalogItem{
+				ID:        cfg.Name,
+				Name:      strings.ToUpper(driverType),
+				APIKeyEnv: cfg.APIKeyEnv,
+				Models:    items,
+			}, nil
+		},
 	}
-	anthropicProvider := anthropic.New(config.ProviderConfig{
-		Name:      config.ProviderAnthropic,
-		Type:      config.ProviderAnthropic,
-		BaseURL:   config.DefaultAnthropicBaseURL,
-		Model:     config.DefaultAnthropicModel,
-		APIKeyEnv: config.DefaultAnthropicAPIKeyEnv,
-	})
-	geminiProvider := gemini.New(config.ProviderConfig{
-		Name:      config.ProviderGemini,
-		Type:      config.ProviderGemini,
-		BaseURL:   config.DefaultGeminiBaseURL,
-		Model:     config.DefaultGeminiModel,
-		APIKeyEnv: config.DefaultGeminiAPIKeyEnv,
-	})
+}
+
+func newTestRegistry(t *testing.T) *provider.Registry {
+	t.Helper()
 
 	registry := provider.NewRegistry()
-	registry.Register(nil)
-	registry.Register(openAIProvider)
-	registry.Register(anthropicProvider)
-	registry.Register(geminiProvider)
+	if err := registry.Register(openai.DriverDefinition()); err != nil {
+		t.Fatalf("register openai driver: %v", err)
+	}
+	return registry
+}
 
-	tests := []struct {
-		name       string
-		lookup     string
-		expectName string
-	}{
-		{
-			name:       "gets openai provider case insensitively",
-			lookup:     "OPENAI",
-			expectName: config.ProviderOpenAI,
+func newTestManager(t *testing.T) *config.Manager {
+	t.Helper()
+
+	manager := config.NewManager(config.NewLoader(t.TempDir(), builtin.DefaultConfig()))
+	if _, err := manager.Load(context.Background()); err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	return manager
+}
+
+func TestRegistryBuildsRegisteredDriverCaseInsensitively(t *testing.T) {
+	t.Parallel()
+
+	registry := newTestRegistry(t)
+	got, err := registry.Build(context.Background(), config.ResolvedProviderConfig{
+		ProviderConfig: config.ProviderConfig{
+			Name:      "openai-main",
+			Driver:    "OPENAI",
+			BaseURL:   openai.DefaultBaseURL,
+			Model:     openai.DefaultModel,
+			APIKeyEnv: openai.DefaultAPIKeyEnv,
 		},
-		{
-			name:       "gets anthropic provider case insensitively",
-			lookup:     "Anthropic",
-			expectName: config.ProviderAnthropic,
-		},
+		APIKey: "test-key",
+	})
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+	if _, ok := got.(*openai.Provider); !ok {
+		t.Fatalf("expected openai.Provider, got %T", got)
+	}
+}
+
+func TestRegistryCatalogNormalizesConfiguredProvider(t *testing.T) {
+	t.Parallel()
+
+	registry := newTestRegistry(t)
+	item, err := registry.Catalog(config.ProviderConfig{
+		Name:      "openai-main",
+		Driver:    openai.DriverName,
+		BaseURL:   openai.DefaultBaseURL,
+		Model:     "custom-model",
+		APIKeyEnv: openai.DefaultAPIKeyEnv,
+	})
+	if err != nil {
+		t.Fatalf("Catalog() error = %v", err)
+	}
+	if item.ID != "openai-main" {
+		t.Fatalf("expected catalog id %q, got %q", "openai-main", item.ID)
+	}
+	if item.APIKeyEnv != openai.DefaultAPIKeyEnv {
+		t.Fatalf("expected env key %q, got %q", openai.DefaultAPIKeyEnv, item.APIKeyEnv)
 	}
 
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	foundCustom := 0
+	for _, model := range item.Models {
+		if model.ID == "custom-model" {
+			foundCustom++
+		}
+	}
+	if foundCustom != 1 {
+		t.Fatalf("expected configured model to appear once, got %d", foundCustom)
+	}
+}
 
-			got, err := registry.Get(tt.lookup)
-			if err != nil {
-				t.Fatalf("Get(%q) error = %v", tt.lookup, err)
-			}
-			if got == nil || !strings.EqualFold(got.Name(), tt.expectName) {
-				t.Fatalf("expected provider %q, got %+v", tt.expectName, got)
-			}
+func TestRegistryUnknownDriverReturnsTypedError(t *testing.T) {
+	t.Parallel()
+
+	registry := provider.NewRegistry()
+	_, err := registry.Catalog(config.ProviderConfig{Driver: "missing"})
+	if !errors.Is(err, provider.ErrDriverNotFound) {
+		t.Fatalf("expected ErrDriverNotFound, got %v", err)
+	}
+}
+
+func TestServiceListProvidersFiltersUnsupportedDrivers(t *testing.T) {
+	t.Parallel()
+
+	manager := newTestManager(t)
+	if err := manager.Update(context.Background(), func(cfg *config.Config) error {
+		cfg.Providers = append(cfg.Providers, config.ProviderConfig{
+			Name:      "unsupported",
+			Driver:    "custom",
+			BaseURL:   "https://example.com",
+			Model:     "custom-model",
+			APIKeyEnv: "CUSTOM_API_KEY",
 		})
+		return nil
+	}); err != nil {
+		t.Fatalf("append provider: %v", err)
 	}
-}
 
-func TestRegistryGetMissingProvider(t *testing.T) {
-	t.Parallel()
-
-	registry := provider.NewRegistry()
-	_, err := registry.Get("missing")
-	if err == nil || !strings.Contains(err.Error(), "not found") {
-		t.Fatalf("expected not found error, got %v", err)
-	}
-}
-
-func TestRegistryDescriptorsFiltersSupportSurface(t *testing.T) {
-	t.Parallel()
-
-	openAIProvider, err := openai.New(config.ProviderConfig{
-		Name:      config.ProviderOpenAI,
-		Type:      config.ProviderOpenAI,
-		BaseURL:   config.DefaultOpenAIBaseURL,
-		Model:     config.DefaultOpenAIModel,
-		APIKeyEnv: config.DefaultOpenAIAPIKeyEnv,
-	})
+	service := provider.NewService(manager, newTestRegistry(t))
+	items, err := service.ListProviders(context.Background())
 	if err != nil {
-		t.Fatalf("openai.New() error = %v", err)
+		t.Fatalf("ListProviders() error = %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected only supported providers, got %d", len(items))
+	}
+	if items[0].ID != openai.DriverName {
+		t.Fatalf("expected supported provider %q, got %q", openai.DriverName, items[0].ID)
+	}
+}
+
+func TestServiceSelectProviderAndSetCurrentModel(t *testing.T) {
+	manager := newTestManager(t)
+	registry := newTestRegistry(t)
+	if err := registry.Register(stubDriver("custom", "custom-model")); err != nil {
+		t.Fatalf("register stub driver: %v", err)
 	}
 
-	registry := provider.NewRegistry()
-	registry.Register(openAIProvider)
-	registry.Register(anthropic.New(config.ProviderConfig{
-		Name:      config.ProviderAnthropic,
-		Type:      config.ProviderAnthropic,
-		BaseURL:   config.DefaultAnthropicBaseURL,
-		Model:     config.DefaultAnthropicModel,
-		APIKeyEnv: config.DefaultAnthropicAPIKeyEnv,
-	}))
-	registry.Register(gemini.New(config.ProviderConfig{
-		Name:      config.ProviderGemini,
-		Type:      config.ProviderGemini,
-		BaseURL:   config.DefaultGeminiBaseURL,
-		Model:     config.DefaultGeminiModel,
-		APIKeyEnv: config.DefaultGeminiAPIKeyEnv,
-	}))
-
-	all := registry.Descriptors()
-	if len(all) != 3 {
-		t.Fatalf("expected 3 descriptors, got %d", len(all))
+	if err := manager.Update(context.Background(), func(cfg *config.Config) error {
+		cfg.CurrentModel = "gpt-5.4"
+		cfg.Providers = append(cfg.Providers, config.ProviderConfig{
+			Name:      "custom-main",
+			Driver:    "custom",
+			BaseURL:   "https://example.com",
+			Model:     "custom-model",
+			APIKeyEnv: "CUSTOM_API_KEY",
+		})
+		return nil
+	}); err != nil {
+		t.Fatalf("append custom provider: %v", err)
 	}
 
-	mvp := registry.MVPDescriptors()
-	if len(mvp) != 1 {
-		t.Fatalf("expected 1 MVP descriptor, got %d", len(mvp))
+	service := provider.NewService(manager, registry)
+
+	selection, err := service.SelectProvider(context.Background(), "custom-main")
+	if err != nil {
+		t.Fatalf("SelectProvider() error = %v", err)
 	}
-	if mvp[0].Name != config.ProviderOpenAI {
-		t.Fatalf("expected MVP provider %q, got %q", config.ProviderOpenAI, mvp[0].Name)
-	}
-	if mvp[0].SupportLevel != provider.SupportLevelMVP || !mvp[0].Available || !mvp[0].MVPVisible {
-		t.Fatalf("unexpected MVP descriptor: %+v", mvp[0])
+	if selection.ProviderID != "custom-main" || selection.ModelID != "custom-model" {
+		t.Fatalf("unexpected selection after switch: %+v", selection)
 	}
 
-	available := registry.AvailableDescriptors()
-	if len(available) != 1 {
-		t.Fatalf("expected 1 available descriptor, got %d", len(available))
+	if _, err := service.SetCurrentModel(context.Background(), "missing-model"); !errors.Is(err, provider.ErrModelNotFound) {
+		t.Fatalf("expected ErrModelNotFound, got %v", err)
 	}
-	if available[0].Name != config.ProviderOpenAI {
-		t.Fatalf("expected available provider %q, got %q", config.ProviderOpenAI, available[0].Name)
+
+	selection, err = service.SelectProvider(context.Background(), openai.DriverName)
+	if err != nil {
+		t.Fatalf("SelectProvider(openai) error = %v", err)
+	}
+	if selection.ProviderID != openai.DriverName {
+		t.Fatalf("expected selected provider %q, got %+v", openai.DriverName, selection)
+	}
+
+	selection, err = service.SetCurrentModel(context.Background(), "gpt-4o")
+	if err != nil {
+		t.Fatalf("SetCurrentModel() error = %v", err)
+	}
+	if selection.ModelID != "gpt-4o" {
+		t.Fatalf("expected selected model %q, got %+v", "gpt-4o", selection)
+	}
+
+	cfg := manager.Get()
+	selected, err := cfg.SelectedProviderConfig()
+	if err != nil {
+		t.Fatalf("SelectedProviderConfig() error = %v", err)
+	}
+	if selected.Model != "gpt-4o" || cfg.CurrentModel != "gpt-4o" {
+		t.Fatalf("expected config model to be updated, got provider=%q current=%q", selected.Model, cfg.CurrentModel)
 	}
 }

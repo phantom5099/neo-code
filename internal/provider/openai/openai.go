@@ -18,13 +18,16 @@ import (
 )
 
 type Provider struct {
-	cfg    config.ProviderConfig
+	cfg    config.ResolvedProviderConfig
 	client *http.Client
 }
 
-func New(cfg config.ProviderConfig) (*Provider, error) {
+func New(cfg config.ResolvedProviderConfig) (*Provider, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("openai provider: %w", err)
+	}
+	if strings.TrimSpace(cfg.APIKey) == "" {
+		return nil, errors.New("openai provider: api key is empty")
 	}
 
 	return &Provider{
@@ -35,41 +38,7 @@ func New(cfg config.ProviderConfig) (*Provider, error) {
 	}, nil
 }
 
-func (p *Provider) Name() string {
-	return p.cfg.Name
-}
-
-func (p *Provider) Descriptor() domain.ProviderDescriptor {
-	models := []domain.ModelOption{
-		{Name: config.DefaultOpenAIModel, Description: "Stable OpenAI-compatible default model"},
-		{Name: "gpt-4o", Description: "Fast general-purpose OpenAI-compatible model"},
-		{Name: "gpt-5.3-codex", Description: "Code-focused OpenAI-compatible model"},
-		{Name: "gpt-5.4", Description: "Frontier reasoning and coding model"},
-	}
-	if configured := strings.TrimSpace(p.cfg.Model); configured != "" {
-		models = append(models, domain.ModelOption{
-			Name:        configured,
-			Description: "Configured default model",
-		})
-	}
-
-	return domain.ProviderDescriptor{
-		Name:         p.cfg.Name,
-		DisplayName:  "OpenAI-compatible",
-		SupportLevel: domain.SupportLevelMVP,
-		MVPVisible:   true,
-		Available:    true,
-		Summary:      "The only officially supported provider in the current MVP.",
-		Models:       models,
-	}
-}
-
 func (p *Provider) Chat(ctx context.Context, req domain.ChatRequest, events chan<- domain.StreamEvent) (domain.ChatResponse, error) {
-	apiKey, err := p.cfg.ResolveAPIKey()
-	if err != nil {
-		return domain.ChatResponse{}, fmt.Errorf("openai provider: resolve api key: %w", err)
-	}
-
 	payload, err := p.buildRequest(req)
 	if err != nil {
 		return domain.ChatResponse{}, err
@@ -85,7 +54,7 @@ func (p *Provider) Chat(ctx context.Context, req domain.ChatRequest, events chan
 	if err != nil {
 		return domain.ChatResponse{}, fmt.Errorf("openai provider: build request: %w", err)
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Authorization", "Bearer "+p.cfg.APIKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
 

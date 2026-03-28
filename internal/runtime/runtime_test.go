@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/dust/neo-code/internal/config"
 	"github.com/dust/neo-code/internal/provider"
+	"github.com/dust/neo-code/internal/provider/builtin"
+	"github.com/dust/neo-code/internal/provider/openai"
 	"github.com/dust/neo-code/internal/tools"
 )
 
@@ -61,15 +64,10 @@ func (s *memoryStore) ListSummaries(ctx context.Context) ([]SessionSummary, erro
 }
 
 type scriptedProvider struct {
-	name      string
 	responses []provider.ChatResponse
 	streams   [][]provider.StreamEvent
 	requests  []provider.ChatRequest
 	callCount int
-}
-
-func (p *scriptedProvider) Name() string {
-	return p.name
 }
 
 func (p *scriptedProvider) Chat(ctx context.Context, req provider.ChatRequest, events chan<- provider.StreamEvent) (provider.ChatResponse, error) {
@@ -100,7 +98,7 @@ type scriptedProviderFactory struct {
 	err      error
 }
 
-func (f *scriptedProviderFactory) Build(cfg config.Config) (provider.Provider, error) {
+func (f *scriptedProviderFactory) Build(ctx context.Context, cfg config.ResolvedProviderConfig) (provider.Provider, error) {
 	f.calls++
 	if f.err != nil {
 		return nil, f.err
@@ -271,7 +269,6 @@ func TestServiceRun(t *testing.T) {
 			}
 
 			scripted := &scriptedProvider{
-				name:      "scripted",
 				responses: tt.providerResponses,
 				streams:   tt.providerStreams,
 			}
@@ -313,7 +310,7 @@ func TestServiceTrimMessagesPreservesToolPairs(t *testing.T) {
 	t.Parallel()
 
 	manager := newRuntimeConfigManager(t)
-	service := NewWithFactory(manager, tools.NewRegistry(), newMemoryStore(), &scriptedProviderFactory{provider: &scriptedProvider{name: "noop"}})
+	service := NewWithFactory(manager, tools.NewRegistry(), newMemoryStore(), &scriptedProviderFactory{provider: &scriptedProvider{}})
 
 	messages := make([]provider.Message, 0, maxContextTurns+4)
 	for i := 0; i < 8; i++ {
@@ -355,7 +352,7 @@ func TestServiceTrimMessagesBoundaries(t *testing.T) {
 	t.Parallel()
 
 	manager := newRuntimeConfigManager(t)
-	service := NewWithFactory(manager, tools.NewRegistry(), newMemoryStore(), &scriptedProviderFactory{provider: &scriptedProvider{name: "noop"}})
+	service := NewWithFactory(manager, tools.NewRegistry(), newMemoryStore(), &scriptedProviderFactory{provider: &scriptedProvider{}})
 
 	tests := []struct {
 		name    string
@@ -449,7 +446,6 @@ func TestServiceRunErrorPaths(t *testing.T) {
 			input:    UserInput{Content: "loop"},
 			maxLoops: 1,
 			provider: &scriptedProvider{
-				name: "looping",
 				responses: []provider.ChatResponse{
 					{
 						Message: provider.Message{
@@ -493,7 +489,6 @@ func TestServiceRunErrorPaths(t *testing.T) {
 				Content:   "continue",
 			},
 			provider: &scriptedProvider{
-				name: "resume",
 				responses: []provider.ChatResponse{
 					{
 						Message: provider.Message{
@@ -584,7 +579,7 @@ func TestServiceConstructorsAndDelegates(t *testing.T) {
 	registry := tools.NewRegistry()
 	registry.Register(&stubTool{name: "filesystem_read_file", content: "ok"})
 
-	service := New(manager, registry, store)
+	service := NewWithFactory(manager, registry, store, nil)
 	if service == nil {
 		t.Fatalf("expected service")
 	}
@@ -617,82 +612,13 @@ func TestServiceConstructorsAndDelegates(t *testing.T) {
 	}
 }
 
-func TestDefaultProviderFactoryBuild(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name       string
-		mutate     func(*config.Config)
-		expectErr  string
-		expectName string
-	}{
-		{
-			name: "openai provider",
-			mutate: func(cfg *config.Config) {
-				cfg.SelectedProvider = config.ProviderOpenAI
-				cfg.CurrentModel = config.DefaultOpenAIModel
-			},
-			expectName: config.ProviderOpenAI,
-		},
-		{
-			name: "anthropic provider",
-			mutate: func(cfg *config.Config) {
-				cfg.SelectedProvider = config.ProviderAnthropic
-				cfg.CurrentModel = config.DefaultAnthropicModel
-			},
-			expectName: config.ProviderAnthropic,
-		},
-		{
-			name: "gemini provider",
-			mutate: func(cfg *config.Config) {
-				cfg.SelectedProvider = config.ProviderGemini
-				cfg.CurrentModel = config.DefaultGeminiModel
-			},
-			expectName: config.ProviderGemini,
-		},
-		{
-			name: "unsupported provider type",
-			mutate: func(cfg *config.Config) {
-				cfg.SelectedProvider = "custom"
-				cfg.CurrentModel = "custom-model"
-				cfg.Providers = append(cfg.Providers, config.ProviderConfig{
-					Name:      "custom",
-					Type:      "custom",
-					BaseURL:   "https://example.com",
-					Model:     "custom-model",
-					APIKeyEnv: "CUSTOM_API_KEY",
-				})
-			},
-			expectErr: `unsupported provider type "custom"`,
-		},
-	}
-
-	factory := DefaultProviderFactory{}
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := config.Default()
-			tt.mutate(cfg)
-			got, err := factory.Build(cfg.Clone())
-			if tt.expectErr != "" {
-				if err == nil || !containsError(err, tt.expectErr) {
-					t.Fatalf("expected error containing %q, got %v", tt.expectErr, err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if got == nil || got.Name() != tt.expectName {
-				t.Fatalf("expected provider %q, got %+v", tt.expectName, got)
-			}
-		})
-	}
-}
-
 func newRuntimeConfigManager(t *testing.T) *config.Manager {
 	t.Helper()
-	manager := config.NewManager(config.NewLoader(t.TempDir()))
+	restoreRuntimeEnv(t, openai.DefaultAPIKeyEnv)
+	if err := os.Setenv(openai.DefaultAPIKeyEnv, "test-key"); err != nil {
+		t.Fatalf("set env: %v", err)
+	}
+	manager := config.NewManager(config.NewLoader(t.TempDir(), builtin.DefaultConfig()))
 	if _, err := manager.Load(context.Background()); err != nil {
 		t.Fatalf("load config: %v", err)
 	}
@@ -705,6 +631,18 @@ func newRuntimeConfigManager(t *testing.T) *config.Manager {
 		t.Fatalf("update config: %v", err)
 	}
 	return manager
+}
+
+func restoreRuntimeEnv(t *testing.T, key string) {
+	t.Helper()
+	value, ok := os.LookupEnv(key)
+	t.Cleanup(func() {
+		if !ok {
+			_ = os.Unsetenv(key)
+			return
+		}
+		_ = os.Setenv(key, value)
+	})
 }
 
 func onlySession(t *testing.T, store *memoryStore) Session {

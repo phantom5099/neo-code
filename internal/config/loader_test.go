@@ -11,7 +11,7 @@ import (
 func TestLoaderLoadMissingConfigCreatesDefault(t *testing.T) {
 	t.Parallel()
 
-	loader := NewLoader(t.TempDir())
+	loader := NewLoader(t.TempDir(), testDefaultConfig())
 	if _, err := os.Stat(loader.ConfigPath()); !os.IsNotExist(err) {
 		t.Fatalf("expected config file to be missing before load, got %v", err)
 	}
@@ -31,7 +31,7 @@ func TestLoaderLoadMissingConfigCreatesDefault(t *testing.T) {
 func TestLoaderLoadMalformedYAML(t *testing.T) {
 	t.Parallel()
 
-	loader := NewLoader(t.TempDir())
+	loader := NewLoader(t.TempDir(), testDefaultConfig())
 	if err := os.MkdirAll(loader.BaseDir(), 0o755); err != nil {
 		t.Fatalf("mkdir base dir: %v", err)
 	}
@@ -47,8 +47,8 @@ func TestLoaderLoadMalformedYAML(t *testing.T) {
 
 func TestLoaderLoadEnvironmentSilentlyIgnoresDotEnvFailures(t *testing.T) {
 	tempDir := t.TempDir()
-	restoreEnv(t, DefaultOpenAIAPIKeyEnv)
-	_ = os.Unsetenv(DefaultOpenAIAPIKeyEnv)
+	restoreEnv(t, testAPIKeyEnv)
+	_ = os.Unsetenv(testAPIKeyEnv)
 
 	previousWD, err := os.Getwd()
 	if err != nil {
@@ -65,14 +65,14 @@ func TestLoaderLoadEnvironmentSilentlyIgnoresDotEnvFailures(t *testing.T) {
 		t.Fatalf("mkdir cwd .env dir: %v", err)
 	}
 
-	loader := NewLoader(filepath.Join(tempDir, ".neocode"))
+	loader := NewLoader(filepath.Join(tempDir, ".neocode"), testDefaultConfig())
 	if err := os.MkdirAll(loader.EnvPath(), 0o755); err != nil {
 		t.Fatalf("mkdir managed .env dir: %v", err)
 	}
 
 	loader.LoadEnvironment()
 
-	if got := os.Getenv(DefaultOpenAIAPIKeyEnv); got != "" {
+	if got := os.Getenv(testAPIKeyEnv); got != "" {
 		t.Fatalf("expected env to stay empty when dotenv loading fails, got %q", got)
 	}
 }
@@ -86,9 +86,58 @@ func TestLoaderLoadInvalidBaseDir(t *testing.T) {
 		t.Fatalf("write base file: %v", err)
 	}
 
-	loader := NewLoader(baseFile)
+	loader := NewLoader(baseFile, testDefaultConfig())
 	_, err := loader.Load(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "create config dir") {
 		t.Fatalf("expected invalid base dir error, got %v", err)
+	}
+}
+
+func TestLoaderRewritesLegacyProvidersFormatOnLoad(t *testing.T) {
+	t.Parallel()
+
+	loader := NewLoader(t.TempDir(), testDefaultConfig())
+	if err := os.MkdirAll(loader.BaseDir(), 0o755); err != nil {
+		t.Fatalf("mkdir base dir: %v", err)
+	}
+
+	legacy := `
+selected_provider: openai
+current_model: gpt-5.4
+workdir: .
+shell: powershell
+providers:
+  - name: openai
+    type: openai
+    base_url: https://example.com/v1
+    model: gpt-5.4
+    api_key_env: OPENAI_API_KEY
+`
+	if err := os.WriteFile(loader.ConfigPath(), []byte(strings.TrimSpace(legacy)+"\n"), 0o644); err != nil {
+		t.Fatalf("write legacy config: %v", err)
+	}
+
+	cfg, err := loader.Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	provider, err := cfg.SelectedProviderConfig()
+	if err != nil {
+		t.Fatalf("SelectedProviderConfig() error = %v", err)
+	}
+	if provider.BaseURL != "https://example.com/v1" {
+		t.Fatalf("expected migrated provider base url, got %q", provider.BaseURL)
+	}
+
+	rewritten, err := os.ReadFile(loader.ConfigPath())
+	if err != nil {
+		t.Fatalf("read rewritten config: %v", err)
+	}
+	text := string(rewritten)
+	if !strings.Contains(text, "provider_overrides:") {
+		t.Fatalf("expected rewritten config to use provider_overrides, got:\n%s", text)
+	}
+	if strings.Contains(text, "\nproviders:") || strings.HasPrefix(text, "providers:") {
+		t.Fatalf("expected rewritten config to omit providers list, got:\n%s", text)
 	}
 }

@@ -7,6 +7,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/dust/neo-code/internal/config"
+	"github.com/dust/neo-code/internal/provider"
+	"github.com/dust/neo-code/internal/provider/builtin"
 	agentruntime "github.com/dust/neo-code/internal/runtime"
 	"github.com/dust/neo-code/internal/tools"
 	"github.com/dust/neo-code/internal/tools/bash"
@@ -16,7 +18,7 @@ import (
 )
 
 func NewProgram(ctx context.Context) (*tea.Program, error) {
-	loader := config.NewLoader("")
+	loader := config.NewLoader("", builtin.DefaultConfig())
 	manager := config.NewManager(loader)
 	cfg, err := manager.Load(ctx)
 	if err != nil {
@@ -32,10 +34,16 @@ func NewProgram(ctx context.Context) (*tea.Program, error) {
 	toolRegistry.Register(bash.New(cfg.Workdir, cfg.Shell, time.Duration(cfg.ToolTimeoutSec)*time.Second))
 	toolRegistry.Register(webfetch.New(time.Duration(cfg.ToolTimeoutSec) * time.Second))
 
-	sessionStore := agentruntime.NewSessionStore(loader.BaseDir())
-	runtimeSvc := agentruntime.New(manager, toolRegistry, sessionStore)
+	providerRegistry, err := builtin.NewRegistry()
+	if err != nil {
+		return nil, err
+	}
+	providerService := provider.NewService(manager, providerRegistry)
 
-	tuiApp, err := tui.New(&cfg, manager, runtimeSvc)
+	sessionStore := agentruntime.NewSessionStore(loader.BaseDir())
+	runtimeSvc := agentruntime.NewWithFactory(manager, toolRegistry, sessionStore, providerRegistry)
+
+	tuiApp, err := tui.New(&cfg, manager, runtimeSvc, providerService)
 	if err != nil {
 		return nil, err
 	}

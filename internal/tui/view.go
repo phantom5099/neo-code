@@ -117,13 +117,13 @@ func (a App) renderSidebar(width int, height int) string {
 }
 
 func (a App) renderWaterfall(width int, height int) string {
-	if a.state.ShowModelPicker {
+	if a.state.ActivePicker != pickerNone {
 		return lipgloss.Place(
 			width,
 			height,
 			lipgloss.Center,
 			lipgloss.Center,
-			a.renderModelPicker(clamp(width-10, 36, 56), clamp(height-6, 10, 14)),
+			a.renderPicker(clamp(width-10, 36, 56), clamp(height-6, 10, 14)),
 		)
 	}
 
@@ -138,13 +138,21 @@ func (a App) renderWaterfall(width int, height int) string {
 	return lipgloss.Place(width, height, lipgloss.Left, lipgloss.Top, lipgloss.JoinVertical(lipgloss.Left, parts...))
 }
 
-func (a App) renderModelPicker(width int, height int) string {
+func (a App) renderPicker(width int, height int) string {
 	frameHeight := a.styles.panelFocused.GetVerticalFrameSize()
+	title := modelPickerTitle
+	subtitle := modelPickerSubtitle
+	body := a.modelPicker.View()
+	if a.state.ActivePicker == pickerProvider {
+		title = providerPickerTitle
+		subtitle = providerPickerSubtitle
+		body = a.providerPicker.View()
+	}
 	content := lipgloss.JoinVertical(
 		lipgloss.Left,
-		a.styles.panelTitle.Render(modelPickerTitle),
-		a.styles.panelSubtitle.Render(modelPickerSubtitle),
-		a.modelPicker.View(),
+		a.styles.panelTitle.Render(title),
+		a.styles.panelSubtitle.Render(subtitle),
+		body,
 	)
 	panel := a.styles.panelFocused.
 		Width(max(1, width-2)).
@@ -155,7 +163,7 @@ func (a App) renderModelPicker(width int, height int) string {
 
 func (a App) renderPrompt(width int) string {
 	box := a.styles.inputBox
-	if a.focus == panelInput && !a.state.ShowModelPicker {
+	if a.focus == panelInput && a.state.ActivePicker == pickerNone {
 		box = a.styles.inputBoxFocused
 	}
 

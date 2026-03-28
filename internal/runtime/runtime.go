@@ -3,15 +3,11 @@ package runtime
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
 	"github.com/dust/neo-code/internal/config"
 	"github.com/dust/neo-code/internal/provider"
-	"github.com/dust/neo-code/internal/provider/anthropic"
-	"github.com/dust/neo-code/internal/provider/gemini"
-	"github.com/dust/neo-code/internal/provider/openai"
 	"github.com/dust/neo-code/internal/tools"
 )
 
@@ -30,10 +26,8 @@ type UserInput struct {
 }
 
 type ProviderFactory interface {
-	Build(cfg config.Config) (provider.Provider, error)
+	Build(ctx context.Context, cfg config.ResolvedProviderConfig) (provider.Provider, error)
 }
-
-type DefaultProviderFactory struct{}
 
 type Service struct {
 	configManager   *config.Manager
@@ -43,13 +37,9 @@ type Service struct {
 	events          chan RuntimeEvent
 }
 
-func New(configManager *config.Manager, toolRegistry *tools.Registry, sessionStore Store) *Service {
-	return NewWithFactory(configManager, toolRegistry, sessionStore, DefaultProviderFactory{})
-}
-
 func NewWithFactory(configManager *config.Manager, toolRegistry *tools.Registry, sessionStore Store, providerFactory ProviderFactory) *Service {
 	if providerFactory == nil {
-		providerFactory = DefaultProviderFactory{}
+		providerFactory = provider.NewRegistry()
 	}
 
 	return &Service{
@@ -96,7 +86,13 @@ func (s *Service) Run(ctx context.Context, input UserInput) error {
 			return err
 		}
 
-		modelProvider, err := s.providerFactory.Build(cfg)
+		resolvedProvider, err := s.configManager.ResolvedSelectedProvider()
+		if err != nil {
+			s.emit(EventError, session.ID, err.Error())
+			return err
+		}
+
+		modelProvider, err := s.providerFactory.Build(ctx, resolvedProvider)
 		if err != nil {
 			s.emit(EventError, session.ID, err.Error())
 			return err
@@ -257,22 +253,4 @@ Be concise and accurate.
 Use tools when necessary.
 When a tool fails, inspect the error and continue safely.
 Stay within the workspace and avoid destructive behavior unless clearly requested.`
-}
-
-func (DefaultProviderFactory) Build(cfg config.Config) (provider.Provider, error) {
-	selected, err := cfg.SelectedProviderConfig()
-	if err != nil {
-		return nil, err
-	}
-
-	switch strings.ToLower(strings.TrimSpace(selected.Type)) {
-	case "openai":
-		return openai.New(selected)
-	case "anthropic":
-		return anthropic.New(selected), nil
-	case "gemini":
-		return gemini.New(selected), nil
-	default:
-		return nil, fmt.Errorf("runtime: unsupported provider type %q", selected.Type)
-	}
 }

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -75,7 +76,19 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.state.StatusText = typed.notice
 			cfg := a.configManager.Get()
 			a.syncConfigState(cfg)
-			a.selectCurrentModel(cfg.CurrentModel)
+			if err := a.refreshProviderPicker(); err != nil {
+				a.state.ExecutionError = err.Error()
+				a.state.StatusText = err.Error()
+				a.appendInlineMessage(roleError, err.Error())
+			}
+			if err := a.refreshModelPicker(); err != nil {
+				a.state.ExecutionError = err.Error()
+				a.state.StatusText = err.Error()
+				a.appendInlineMessage(roleError, err.Error())
+			} else {
+				a.selectCurrentProvider(cfg.SelectedProvider)
+				a.selectCurrentModel(cfg.CurrentModel)
+			}
 			a.appendInlineMessage(roleSystem, typed.notice)
 		}
 		a.rebuildTranscript()
@@ -90,8 +103,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.resizeComponents()
 			return a, tea.Batch(cmds...)
 		}
-		if a.state.ShowModelPicker {
-			return a.updateModelPicker(typed)
+		if a.state.ActivePicker != pickerNone {
+			return a.updatePicker(typed)
 		}
 		if key.Matches(typed, a.keys.NextPanel) {
 			a.focusNext()
@@ -161,14 +174,34 @@ func (a App) updateInputPanel(msg tea.Msg, typed tea.KeyMsg, cmds []tea.Cmd) (te
 		a.state.InputText = ""
 
 		switch strings.ToLower(input) {
+		case slashCommandProviderPick:
+			if err := a.refreshProviderPicker(); err != nil {
+				a.state.ExecutionError = err.Error()
+				a.state.StatusText = err.Error()
+				a.appendInlineMessage(roleError, err.Error())
+				a.rebuildTranscript()
+				return a, tea.Batch(cmds...)
+			}
+			a.openProviderPicker()
+			return a, tea.Batch(cmds...)
 		case slashCommandModelPicker:
+			if err := a.refreshModelPicker(); err != nil {
+				a.state.ExecutionError = err.Error()
+				a.state.StatusText = err.Error()
+				a.appendInlineMessage(roleError, err.Error())
+				a.rebuildTranscript()
+				return a, tea.Batch(cmds...)
+			}
 			a.openModelPicker()
 			return a, tea.Batch(cmds...)
 		}
 
 		if strings.HasPrefix(input, slashPrefix) {
-			a.state.StatusText = statusApplyingCommand
-			cmds = append(cmds, runLocalCommand(a.configManager, input))
+			err := fmt.Sprintf("unknown command %q", input)
+			a.state.ExecutionError = err
+			a.state.StatusText = err
+			a.appendInlineMessage(roleError, err)
+			a.rebuildTranscript()
 			return a, tea.Batch(cmds...)
 		}
 
@@ -191,22 +224,37 @@ func (a App) updateInputPanel(msg tea.Msg, typed tea.KeyMsg, cmds []tea.Cmd) (te
 	return a, tea.Batch(cmds...)
 }
 
-func (a App) updateModelPicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (a App) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, a.keys.FocusInput):
-		a.closeModelPicker()
+		a.closePicker()
 		return a, nil
 	case msg.String() == "enter":
-		item, ok := a.modelPicker.SelectedItem().(modelItem)
-		a.closeModelPicker()
-		if !ok {
-			return a, nil
+		switch a.state.ActivePicker {
+		case pickerProvider:
+			item, ok := a.providerPicker.SelectedItem().(providerItem)
+			a.closePicker()
+			if !ok {
+				return a, nil
+			}
+			return a, runProviderSelection(a.providerSvc, item.id)
+		case pickerModel:
+			item, ok := a.modelPicker.SelectedItem().(modelItem)
+			a.closePicker()
+			if !ok {
+				return a, nil
+			}
+			return a, runModelSelection(a.providerSvc, item.id)
 		}
-		return a, runModelSelection(a.configManager, item.name)
 	}
 
 	var cmd tea.Cmd
-	a.modelPicker, cmd = a.modelPicker.Update(msg)
+	switch a.state.ActivePicker {
+	case pickerProvider:
+		a.providerPicker, cmd = a.providerPicker.Update(msg)
+	case pickerModel:
+		a.modelPicker, cmd = a.modelPicker.Update(msg)
+	}
 	return a, cmd
 }
 
@@ -438,7 +486,7 @@ func (a *App) focusPrev() {
 
 func (a *App) applyFocus() {
 	a.state.Focus = a.focus
-	if a.focus == panelInput && !a.state.ShowModelPicker {
+	if a.focus == panelInput && a.state.ActivePicker == pickerNone {
 		a.input.Focus()
 		return
 	}
@@ -459,6 +507,7 @@ func (a *App) resizeComponents() {
 	a.input.Width = max(4, promptInnerWidth-lipgloss.Width("> "))
 	promptHeight := lipgloss.Height(a.renderPrompt(a.transcript.Width))
 	a.transcript.Height = max(6, lay.rightHeight-menuHeight-promptHeight)
+	a.providerPicker.SetSize(max(24, clamp(lay.rightWidth-14, 28, 52)), max(4, clamp(lay.rightHeight-10, 6, 10)))
 	a.modelPicker.SetSize(max(24, clamp(lay.rightWidth-14, 28, 52)), max(4, clamp(lay.rightHeight-10, 6, 10)))
 	a.rebuildTranscript()
 }

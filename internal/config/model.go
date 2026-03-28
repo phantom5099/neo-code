@@ -10,30 +10,13 @@ import (
 )
 
 const (
-	ProviderOpenAI    = "openai"
-	ProviderAnthropic = "anthropic"
-	ProviderGemini    = "gemini"
-
-	DefaultOpenAIBaseURL    = "https://api.openai.com/v1"
-	DefaultAnthropicBaseURL = "https://api.anthropic.com"
-	DefaultGeminiBaseURL    = "https://generativelanguage.googleapis.com"
-
-	DefaultOpenAIModel    = "gpt-4.1"
-	DefaultAnthropicModel = "claude-3-7-sonnet-latest"
-	DefaultGeminiModel    = "gemini-2.5-pro"
-
-	DefaultOpenAIAPIKeyEnv    = "OPENAI_API_KEY"
-	DefaultAnthropicAPIKeyEnv = "ANTHROPIC_API_KEY"
-	DefaultGeminiAPIKeyEnv    = "GEMINI_API_KEY"
-
-	DefaultSelectedProvider = ProviderOpenAI
-	DefaultWorkdir          = "."
-	DefaultMaxLoops         = 8
-	DefaultToolTimeoutSec   = 20
+	DefaultWorkdir        = "."
+	DefaultMaxLoops       = 8
+	DefaultToolTimeoutSec = 20
 )
 
 type Config struct {
-	Providers        []ProviderConfig `yaml:"providers"`
+	Providers        []ProviderConfig `yaml:"-"`
 	SelectedProvider string           `yaml:"selected_provider"`
 	CurrentModel     string           `yaml:"current_model"`
 	Workdir          string           `yaml:"workdir"`
@@ -44,7 +27,7 @@ type Config struct {
 
 type ProviderConfig struct {
 	Name      string `yaml:"name"`
-	Type      string `yaml:"type"`
+	Driver    string `yaml:"type"`
 	BaseURL   string `yaml:"base_url"`
 	Model     string `yaml:"model"`
 	APIKeyEnv string `yaml:"api_key_env"`
@@ -55,125 +38,20 @@ type ResolvedProviderConfig struct {
 	APIKey string `yaml:"-"`
 }
 
-type ModelOption struct {
-	Name        string
-	Description string
-}
-
-// BuiltinProviderConfigs returns all known provider presets, including scaffolded ones.
-func BuiltinProviderConfigs() []ProviderConfig {
-	return []ProviderConfig{
-		{
-			Name:      ProviderOpenAI,
-			Type:      ProviderOpenAI,
-			BaseURL:   DefaultOpenAIBaseURL,
-			Model:     DefaultOpenAIModel,
-			APIKeyEnv: DefaultOpenAIAPIKeyEnv,
-		},
-		{
-			Name:      ProviderAnthropic,
-			Type:      ProviderAnthropic,
-			BaseURL:   DefaultAnthropicBaseURL,
-			Model:     DefaultAnthropicModel,
-			APIKeyEnv: DefaultAnthropicAPIKeyEnv,
-		},
-		{
-			Name:      ProviderGemini,
-			Type:      ProviderGemini,
-			BaseURL:   DefaultGeminiBaseURL,
-			Model:     DefaultGeminiModel,
-			APIKeyEnv: DefaultGeminiAPIKeyEnv,
-		},
-	}
-}
-
-// MVPProviderConfigs returns the provider presets that should be enabled by default in the MVP.
-func MVPProviderConfigs() []ProviderConfig {
-	return []ProviderConfig{
-		{
-			Name:      ProviderOpenAI,
-			Type:      ProviderOpenAI,
-			BaseURL:   DefaultOpenAIBaseURL,
-			Model:     DefaultOpenAIModel,
-			APIKeyEnv: DefaultOpenAIAPIKeyEnv,
-		},
-	}
-}
-
-// ScaffoldProviderConfigs returns provider presets that are prepared but not officially enabled in the MVP.
-func ScaffoldProviderConfigs() []ProviderConfig {
-	return []ProviderConfig{
-		{
-			Name:      ProviderAnthropic,
-			Type:      ProviderAnthropic,
-			BaseURL:   DefaultAnthropicBaseURL,
-			Model:     DefaultAnthropicModel,
-			APIKeyEnv: DefaultAnthropicAPIKeyEnv,
-		},
-		{
-			Name:      ProviderGemini,
-			Type:      ProviderGemini,
-			BaseURL:   DefaultGeminiBaseURL,
-			Model:     DefaultGeminiModel,
-			APIKeyEnv: DefaultGeminiAPIKeyEnv,
-		},
-	}
-}
-
-// BuiltinProviderConfig returns the preset configuration for a known provider.
-func BuiltinProviderConfig(name string) (ProviderConfig, error) {
-	target := strings.ToLower(strings.TrimSpace(name))
-	for _, provider := range BuiltinProviderConfigs() {
-		if strings.ToLower(strings.TrimSpace(provider.Name)) == target {
-			return provider, nil
-		}
-	}
-	return ProviderConfig{}, fmt.Errorf("config: built-in provider %q not found", name)
+type ProviderOverride struct {
+	Name      string `yaml:"name"`
+	Driver    string `yaml:"type,omitempty"`
+	BaseURL   string `yaml:"base_url,omitempty"`
+	Model     string `yaml:"model,omitempty"`
+	APIKeyEnv string `yaml:"api_key_env,omitempty"`
 }
 
 func Default() *Config {
 	return &Config{
-		Providers:        BuiltinProviderConfigs(),
-		SelectedProvider: DefaultSelectedProvider,
-		CurrentModel:     DefaultOpenAIModel,
-		Workdir:          DefaultWorkdir,
-		Shell:            defaultShell(),
-		MaxLoops:         DefaultMaxLoops,
-		ToolTimeoutSec:   DefaultToolTimeoutSec,
-	}
-}
-
-func BuiltinModelCatalog() []ModelOption {
-	return append([]ModelOption(nil),
-		ModelOption{Name: DefaultOpenAIModel, Description: "Stable OpenAI default model"},
-		ModelOption{Name: "gpt-4o", Description: "Fast general-purpose OpenAI model"},
-		ModelOption{Name: "gpt-5.4", Description: "Frontier reasoning and coding model"},
-		ModelOption{Name: "gpt-5.3-codex", Description: "Code-focused GPT-5.3 variant"},
-		ModelOption{Name: DefaultAnthropicModel, Description: "Balanced Anthropic coding model"},
-		ModelOption{Name: DefaultGeminiModel, Description: "Default Gemini reasoning model"},
-	)
-}
-
-// BuiltinModelCatalogForProvider returns the built-in model options for the given provider.
-func BuiltinModelCatalogForProvider(providerName string) []ModelOption {
-	switch strings.ToLower(strings.TrimSpace(providerName)) {
-	case ProviderOpenAI:
-		return []ModelOption{
-			{Name: DefaultOpenAIModel, Description: "Stable OpenAI default model"},
-			{Name: "gpt-4o", Description: "Fast general-purpose OpenAI model"},
-			{Name: "gpt-5.4", Description: "Frontier reasoning and coding model"},
-			{Name: "gpt-5.3-codex", Description: "Code-focused GPT-5.3 variant"},
-		}
-	case ProviderAnthropic:
-		return []ModelOption{
-			{Name: DefaultAnthropicModel, Description: "Balanced Anthropic coding model"},
-		}
-	case ProviderGemini:
-		return []ModelOption{
-			{Name: DefaultGeminiModel, Description: "Default Gemini reasoning model"},
-		}
-	default:
-		return nil
+		Workdir:        DefaultWorkdir,
+		Shell:          defaultShell(),
+		MaxLoops:       DefaultMaxLoops,
+		ToolTimeoutSec: DefaultToolTimeoutSec,
 	}
 }
 
@@ -187,38 +65,38 @@ func (c *Config) Clone() Config {
 	return clone
 }
 
-func (c *Config) ApplyDefaults() {
+func (c *Config) ApplyDefaultsFrom(defaults Config) {
 	if c == nil {
 		return
 	}
 
-	def := Default()
-
 	if len(c.Providers) == 0 {
-		c.Providers = append([]ProviderConfig(nil), def.Providers...)
+		c.Providers = append([]ProviderConfig(nil), defaults.Providers...)
 	} else {
-		c.Providers = applyProviderDefaults(c.Providers, def.Providers)
+		c.Providers = applyProviderDefaults(c.Providers, defaults.Providers)
 	}
 
 	if strings.TrimSpace(c.SelectedProvider) == "" {
-		c.SelectedProvider = def.SelectedProvider
+		c.SelectedProvider = defaults.SelectedProvider
 	}
 	if strings.TrimSpace(c.CurrentModel) == "" {
 		if selected, err := c.SelectedProviderConfig(); err == nil {
 			c.CurrentModel = selected.Model
+		} else if strings.TrimSpace(defaults.CurrentModel) != "" {
+			c.CurrentModel = defaults.CurrentModel
 		}
 	}
 	if strings.TrimSpace(c.Workdir) == "" {
-		c.Workdir = def.Workdir
+		c.Workdir = defaults.Workdir
 	}
 	if strings.TrimSpace(c.Shell) == "" {
-		c.Shell = def.Shell
+		c.Shell = defaults.Shell
 	}
 	if c.MaxLoops <= 0 {
-		c.MaxLoops = def.MaxLoops
+		c.MaxLoops = defaults.MaxLoops
 	}
 	if c.ToolTimeoutSec <= 0 {
-		c.ToolTimeoutSec = def.ToolTimeoutSec
+		c.ToolTimeoutSec = defaults.ToolTimeoutSec
 	}
 
 	c.Workdir = normalizeWorkdir(c.Workdir)
@@ -294,8 +172,8 @@ func (p ProviderConfig) Validate() error {
 	if strings.TrimSpace(p.Name) == "" {
 		return errors.New("provider name is empty")
 	}
-	if strings.TrimSpace(p.Type) == "" {
-		return fmt.Errorf("provider %q type is empty", p.Name)
+	if strings.TrimSpace(p.Driver) == "" {
+		return fmt.Errorf("provider %q driver is empty", p.Name)
 	}
 	if strings.TrimSpace(p.BaseURL) == "" {
 		return fmt.Errorf("provider %q base_url is empty", p.Name)
@@ -352,8 +230,8 @@ func mergeProviderDefaults(provider ProviderConfig, defaults []ProviderConfig) P
 	if strings.TrimSpace(provider.Name) == "" {
 		provider.Name = base.Name
 	}
-	if strings.TrimSpace(provider.Type) == "" {
-		provider.Type = base.Type
+	if strings.TrimSpace(provider.Driver) == "" {
+		provider.Driver = base.Driver
 	}
 	if strings.TrimSpace(provider.BaseURL) == "" {
 		provider.BaseURL = base.BaseURL
@@ -370,7 +248,7 @@ func mergeProviderDefaults(provider ProviderConfig, defaults []ProviderConfig) P
 
 func matchDefaultProvider(provider ProviderConfig, defaults []ProviderConfig) (ProviderConfig, bool) {
 	name := strings.ToLower(strings.TrimSpace(provider.Name))
-	kind := strings.ToLower(strings.TrimSpace(provider.Type))
+	kind := strings.ToLower(strings.TrimSpace(provider.Driver))
 
 	for _, candidate := range defaults {
 		if name != "" && strings.ToLower(candidate.Name) == name {
@@ -378,12 +256,123 @@ func matchDefaultProvider(provider ProviderConfig, defaults []ProviderConfig) (P
 		}
 	}
 	for _, candidate := range defaults {
-		if kind != "" && strings.ToLower(candidate.Type) == kind {
+		if kind != "" && strings.ToLower(candidate.Driver) == kind {
 			return candidate, true
 		}
 	}
 
 	return ProviderConfig{}, false
+}
+
+func MergeProviderOverrides(defaults []ProviderConfig, overrides []ProviderOverride) []ProviderConfig {
+	merged := append([]ProviderConfig(nil), defaults...)
+	indexByName := make(map[string]int, len(merged))
+	for i, provider := range merged {
+		indexByName[strings.ToLower(strings.TrimSpace(provider.Name))] = i
+	}
+
+	for _, override := range overrides {
+		name := strings.TrimSpace(override.Name)
+		if name == "" {
+			continue
+		}
+
+		key := strings.ToLower(name)
+		if idx, ok := indexByName[key]; ok {
+			merged[idx] = applyProviderOverride(merged[idx], override)
+			continue
+		}
+
+		custom := applyProviderOverride(ProviderConfig{}, override)
+		merged = append(merged, custom)
+		indexByName[key] = len(merged) - 1
+	}
+
+	return merged
+}
+
+func DeriveProviderOverrides(providers []ProviderConfig, defaults []ProviderConfig) []ProviderOverride {
+	if len(providers) == 0 {
+		return nil
+	}
+
+	defaultByName := make(map[string]ProviderConfig, len(defaults))
+	for _, provider := range defaults {
+		defaultByName[strings.ToLower(strings.TrimSpace(provider.Name))] = provider
+	}
+
+	overrides := make([]ProviderOverride, 0, len(providers))
+	for _, provider := range providers {
+		key := strings.ToLower(strings.TrimSpace(provider.Name))
+		base, ok := defaultByName[key]
+		if !ok {
+			override := ProviderOverride{
+				Name:      strings.TrimSpace(provider.Name),
+				Driver:    strings.TrimSpace(provider.Driver),
+				BaseURL:   strings.TrimSpace(provider.BaseURL),
+				Model:     strings.TrimSpace(provider.Model),
+				APIKeyEnv: strings.TrimSpace(provider.APIKeyEnv),
+			}
+			if override.Name == "" {
+				continue
+			}
+			overrides = append(overrides, override)
+			continue
+		}
+
+		override := diffProviderOverride(base, provider)
+		if hasProviderOverrideChanges(override) {
+			overrides = append(overrides, override)
+		}
+	}
+
+	return overrides
+}
+
+func applyProviderOverride(base ProviderConfig, override ProviderOverride) ProviderConfig {
+	if name := strings.TrimSpace(override.Name); name != "" {
+		base.Name = name
+	}
+	if driver := strings.TrimSpace(override.Driver); driver != "" {
+		base.Driver = driver
+	}
+	if baseURL := strings.TrimSpace(override.BaseURL); baseURL != "" {
+		base.BaseURL = baseURL
+	}
+	if model := strings.TrimSpace(override.Model); model != "" {
+		base.Model = model
+	}
+	if apiKeyEnv := strings.TrimSpace(override.APIKeyEnv); apiKeyEnv != "" {
+		base.APIKeyEnv = apiKeyEnv
+	}
+
+	return base
+}
+
+func diffProviderOverride(base ProviderConfig, current ProviderConfig) ProviderOverride {
+	override := ProviderOverride{
+		Name: strings.TrimSpace(current.Name),
+	}
+	if strings.TrimSpace(current.Driver) != strings.TrimSpace(base.Driver) {
+		override.Driver = strings.TrimSpace(current.Driver)
+	}
+	if strings.TrimSpace(current.BaseURL) != strings.TrimSpace(base.BaseURL) {
+		override.BaseURL = strings.TrimSpace(current.BaseURL)
+	}
+	if strings.TrimSpace(current.Model) != strings.TrimSpace(base.Model) {
+		override.Model = strings.TrimSpace(current.Model)
+	}
+	if strings.TrimSpace(current.APIKeyEnv) != strings.TrimSpace(base.APIKeyEnv) {
+		override.APIKeyEnv = strings.TrimSpace(current.APIKeyEnv)
+	}
+	return override
+}
+
+func hasProviderOverrideChanges(override ProviderOverride) bool {
+	return strings.TrimSpace(override.Driver) != "" ||
+		strings.TrimSpace(override.BaseURL) != "" ||
+		strings.TrimSpace(override.Model) != "" ||
+		strings.TrimSpace(override.APIKeyEnv) != ""
 }
 
 func normalizeWorkdir(workdir string) string {

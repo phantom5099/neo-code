@@ -3,47 +3,47 @@ package tui
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/dust/neo-code/internal/config"
+	"github.com/dust/neo-code/internal/provider"
 )
 
 const (
-	slashPrefix             = "/"
-	slashCommandSet         = "/set"
-	slashCommandModelPicker = "/model"
+	slashPrefix              = "/"
+	slashCommandProviderPick = "/provider"
+	slashCommandModelPicker  = "/model"
 
-	slashUsageSetURL = "/set url <url>"
-	slashUsageSetKey = "/set key <key>"
-	slashUsageModel  = "/model"
+	slashUsageProvider = "/provider"
+	slashUsageModel    = "/model"
 
-	commandMenuTitle    = "Commands"
-	modelPickerTitle    = "Select Model"
-	modelPickerSubtitle = "Up/Down choose, Enter confirm, Esc cancel"
+	commandMenuTitle       = "Commands"
+	providerPickerTitle    = "Select Provider"
+	providerPickerSubtitle = "Up/Down choose, Enter confirm, Esc cancel"
+	modelPickerTitle       = "Select Model"
+	modelPickerSubtitle    = "Up/Down choose, Enter confirm, Esc cancel"
 
 	sidebarTitle      = "Sessions"
-	sidebarFilterHint = "按 \"/\" 筛选"
-	sidebarOpenHint   = "Enter 打开"
+	sidebarFilterHint = "Type / to search"
+	sidebarOpenHint   = "Enter to open"
 
 	draftSessionTitle     = "Draft"
 	emptyConversationText = "No conversation yet.\nAsk NeoCode to inspect or change code, or type / to browse local commands."
 	emptyMessageText      = "(empty)"
 
-	statusReady           = "Ready"
-	statusRuntimeClosed   = "Runtime closed"
-	statusThinking        = "Thinking"
-	statusRunningTool     = "Running tool"
-	statusToolFinished    = "Tool finished"
-	statusToolError       = "Tool error"
-	statusError           = "Error"
-	statusDraft           = "New draft"
-	statusRunning         = "Running"
-	statusApplyingCommand = "Applying local command"
-	statusChooseModel     = "Choose a model"
+	statusReady          = "Ready"
+	statusRuntimeClosed  = "Runtime closed"
+	statusThinking       = "Thinking"
+	statusRunningTool    = "Running tool"
+	statusToolFinished   = "Tool finished"
+	statusToolError      = "Tool error"
+	statusError          = "Error"
+	statusDraft          = "New draft"
+	statusRunning        = "Running"
+	statusChooseProvider = "Choose a provider"
+	statusChooseModel    = "Choose a model"
 
 	focusLabelSessions   = "Sessions"
 	focusLabelTranscript = "Transcript"
@@ -72,18 +72,11 @@ type commandSuggestion struct {
 }
 
 var builtinSlashCommands = []slashCommand{
-	{Usage: slashUsageSetURL, Description: "Set the API Base URL"},
-	{Usage: slashUsageSetKey, Description: "Update the API Key"},
+	{Usage: slashUsageProvider, Description: "Open the interactive provider picker"},
 	{Usage: slashUsageModel, Description: "Open the interactive model picker"},
 }
 
-func newModelPicker() list.Model {
-	catalog := config.BuiltinModelCatalog()
-	items := make([]list.Item, 0, len(catalog))
-	for _, option := range catalog {
-		items = append(items, modelItem{name: option.Name, description: option.Description})
-	}
-
+func newSelectionPicker(items []list.Item) list.Model {
 	delegate := list.NewDefaultDelegate()
 	picker := list.New(items, delegate, 0, 0)
 	picker.Title = ""
@@ -94,24 +87,103 @@ func newModelPicker() list.Model {
 	return picker
 }
 
+func newProviderPicker(items []provider.ProviderCatalogItem) list.Model {
+	listItems := make([]list.Item, 0, len(items))
+	for _, item := range items {
+		description := item.Description
+		if item.APIKeyEnv != "" {
+			if description != "" {
+				description += " | "
+			}
+			description += "API key env: " + item.APIKeyEnv
+		}
+		listItems = append(listItems, providerItem{
+			id:          item.ID,
+			name:        item.Name,
+			description: description,
+		})
+	}
+	return newSelectionPicker(listItems)
+}
+
+func newModelPicker(models []provider.ModelDescriptor) list.Model {
+	items := make([]list.Item, 0, len(models))
+	for _, option := range models {
+		items = append(items, modelItem{
+			id:          option.ID,
+			name:        option.Name,
+			description: option.Description,
+		})
+	}
+	return newSelectionPicker(items)
+}
+
+func replacePickerItems(current list.Model, next list.Model) list.Model {
+	next.SetSize(current.Width(), current.Height())
+	return next
+}
+
+func (a *App) refreshProviderPicker() error {
+	items, err := a.providerSvc.ListProviders(context.Background())
+	if err != nil {
+		return err
+	}
+
+	a.providerPicker = replacePickerItems(a.providerPicker, newProviderPicker(items))
+	a.selectCurrentProvider(a.state.CurrentProvider)
+	return nil
+}
+
+func (a *App) refreshModelPicker() error {
+	models, err := a.providerSvc.ListModels(context.Background())
+	if err != nil {
+		return err
+	}
+
+	a.modelPicker = replacePickerItems(a.modelPicker, newModelPicker(models))
+	a.selectCurrentModel(a.state.CurrentModel)
+	return nil
+}
+
+func (a *App) openProviderPicker() {
+	a.state.ActivePicker = pickerProvider
+	a.state.StatusText = statusChooseProvider
+	a.input.Blur()
+	a.selectCurrentProvider(a.state.CurrentProvider)
+}
+
 func (a *App) openModelPicker() {
-	a.state.ShowModelPicker = true
+	a.state.ActivePicker = pickerModel
 	a.state.StatusText = statusChooseModel
 	a.input.Blur()
 	a.selectCurrentModel(a.state.CurrentModel)
 }
 
-func (a *App) closeModelPicker() {
-	a.state.ShowModelPicker = false
+func (a *App) closePicker() {
+	a.state.ActivePicker = pickerNone
 	a.focus = panelInput
 	a.applyFocus()
 }
 
-func (a *App) selectCurrentModel(model string) {
+func (a *App) selectCurrentProvider(providerID string) {
+	items := a.providerPicker.Items()
+	for idx, item := range items {
+		candidate, ok := item.(providerItem)
+		if ok && strings.EqualFold(candidate.id, providerID) {
+			a.providerPicker.Select(idx)
+			return
+		}
+	}
+	if len(items) > 0 {
+		a.providerPicker.Select(0)
+	}
+}
+
+func (a *App) selectCurrentModel(modelID string) {
 	items := a.modelPicker.Items()
 	for idx, item := range items {
 		candidate, ok := item.(modelItem)
-		if ok && strings.EqualFold(candidate.name, model) {
+		if ok && strings.EqualFold(candidate.id, modelID) {
 			a.modelPicker.Select(idx)
 			return
 		}
@@ -138,98 +210,26 @@ func (a App) matchingSlashCommands(input string) []commandSuggestion {
 	return out
 }
 
-func runLocalCommand(configManager *config.Manager, raw string) tea.Cmd {
+func runProviderSelection(providerSvc ProviderController, providerID string) tea.Cmd {
 	return func() tea.Msg {
-		notice, err := executeLocalCommand(context.Background(), configManager, raw)
-		return localCommandResultMsg{notice: notice, err: err}
-	}
-}
-
-func runModelSelection(configManager *config.Manager, model string) tea.Cmd {
-	return func() tea.Msg {
-		notice, err := setCurrentModel(context.Background(), configManager, model)
-		return localCommandResultMsg{notice: notice, err: err}
-	}
-}
-
-func executeLocalCommand(ctx context.Context, configManager *config.Manager, raw string) (string, error) {
-	fields := strings.Fields(strings.TrimSpace(raw))
-	if len(fields) == 0 {
-		return "", fmt.Errorf("empty command")
-	}
-
-	if !strings.EqualFold(fields[0], slashCommandSet) {
-		return "", fmt.Errorf("unknown command %q", fields[0])
-	}
-	if len(fields) < 3 {
-		return "", fmt.Errorf("usage: %s | %s | %s", slashUsageSetURL, slashUsageSetKey, slashUsageModel)
-	}
-
-	value := strings.TrimSpace(strings.Join(fields[2:], " "))
-	if value == "" {
-		return "", fmt.Errorf("command value is empty")
-	}
-
-	switch strings.ToLower(fields[1]) {
-	case "url":
-		if _, err := url.ParseRequestURI(value); err != nil {
-			return "", fmt.Errorf("invalid url: %w", err)
-		}
-		if err := configManager.Update(ctx, func(cfg *config.Config) error {
-			selectedName := strings.TrimSpace(cfg.SelectedProvider)
-			for i := range cfg.Providers {
-				if strings.EqualFold(strings.TrimSpace(cfg.Providers[i].Name), selectedName) {
-					cfg.Providers[i].BaseURL = value
-					return nil
-				}
-			}
-			return fmt.Errorf("selected provider %q not found", cfg.SelectedProvider)
-		}); err != nil {
-			return "", err
-		}
-		cfg := configManager.Get()
-		return fmt.Sprintf("[System] Base URL updated for %s -> %s", cfg.SelectedProvider, value), nil
-	case "key":
-		cfg := configManager.Get()
-		selected, err := cfg.SelectedProviderConfig()
+		selection, err := providerSvc.SelectProvider(context.Background(), providerID)
 		if err != nil {
-			return "", err
+			return localCommandResultMsg{err: err}
 		}
-		if err := configManager.UpsertEnv(selected.APIKeyEnv, value); err != nil {
-			return "", fmt.Errorf("persist api key: %w", err)
+		return localCommandResultMsg{
+			notice: fmt.Sprintf("[System] Current provider switched to %s.", selection.ProviderID),
 		}
-		if err := configManager.OverloadManagedEnvironment(); err != nil {
-			return "", fmt.Errorf("reload managed env: %w", err)
-		}
-		if _, err := configManager.Reload(ctx); err != nil {
-			return "", fmt.Errorf("reload config: %w", err)
-		}
-		return fmt.Sprintf("[System] %s updated and loaded.", selected.APIKeyEnv), nil
-	case "model":
-		return setCurrentModel(ctx, configManager, value)
-	default:
-		return "", fmt.Errorf("unsupported /set field %q", fields[1])
 	}
 }
 
-func setCurrentModel(ctx context.Context, configManager *config.Manager, model string) (string, error) {
-	if err := configManager.Update(ctx, func(cfg *config.Config) error {
-		cfg.CurrentModel = model
-		selectedName := strings.TrimSpace(cfg.SelectedProvider)
-		for i := range cfg.Providers {
-			if strings.EqualFold(strings.TrimSpace(cfg.Providers[i].Name), selectedName) {
-				cfg.Providers[i].Model = model
-				return nil
-			}
+func runModelSelection(providerSvc ProviderController, modelID string) tea.Cmd {
+	return func() tea.Msg {
+		selection, err := providerSvc.SetCurrentModel(context.Background(), modelID)
+		if err != nil {
+			return localCommandResultMsg{err: err}
 		}
-		return nil
-	}); err != nil {
-		return "", err
+		return localCommandResultMsg{
+			notice: fmt.Sprintf("[System] Current model switched to %s.", selection.ModelID),
+		}
 	}
-
-	if _, err := configManager.Reload(ctx); err != nil {
-		return "", fmt.Errorf("reload config: %w", err)
-	}
-
-	return fmt.Sprintf("[System] Current model switched to %s.", model), nil
 }

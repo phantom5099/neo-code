@@ -22,6 +22,14 @@ const (
 	panelInput
 )
 
+type pickerMode int
+
+const (
+	pickerNone pickerMode = iota
+	pickerProvider
+	pickerModel
+)
+
 type UIState struct {
 	Sessions           []agentruntime.SessionSummary
 	ActiveSessionID    string
@@ -36,7 +44,7 @@ type UIState struct {
 	CurrentModel       string
 	CurrentWorkdir     string
 	ShowHelp           bool
-	ShowModelPicker    bool
+	ActivePicker       pickerMode
 	Focus              panel
 }
 
@@ -58,6 +66,7 @@ func (s sessionItem) FilterValue() string {
 }
 
 type modelItem struct {
+	id          string
 	name        string
 	description string
 }
@@ -71,7 +80,25 @@ func (m modelItem) Description() string {
 }
 
 func (m modelItem) FilterValue() string {
-	return strings.ToLower(m.name + " " + m.description)
+	return strings.ToLower(m.id + " " + m.name + " " + m.description)
+}
+
+type providerItem struct {
+	id          string
+	name        string
+	description string
+}
+
+func (p providerItem) Title() string {
+	return p.name
+}
+
+func (p providerItem) Description() string {
+	return p.description
+}
+
+func (p providerItem) FilterValue() string {
+	return strings.ToLower(p.id + " " + p.name + " " + p.description)
 }
 
 type sessionDelegate struct {

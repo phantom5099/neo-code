@@ -3,7 +3,6 @@ package provider
 import "context"
 
 type Provider interface {
-	Name() string
 	Chat(ctx context.Context, req ChatRequest, events chan<- StreamEvent) (ChatResponse, error)
 }
 
