@@ -237,8 +237,9 @@ func (a App) updateInputPanel(msg tea.Msg, typed tea.KeyMsg, cmds []tea.Cmd) (te
 		return a, tea.Batch(cmds...)
 	}
 
-	if typed.Type == tea.KeyEnter {
+	if key.Matches(typed, a.keys.Newline) {
 		a.growComposerForNewline()
+		msg = tea.KeyMsg{Type: tea.KeyEnter}
 	}
 
 	var cmd tea.Cmd

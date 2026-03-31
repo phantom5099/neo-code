@@ -137,7 +137,7 @@ func TestAppUpdateComposerCommands(t *testing.T) {
 			app.input.SetValue(tt.input)
 			app.state.InputText = tt.input
 
-			model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlJ})
+			model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
 			app = model.(App)
 
 			for _, msg := range collectTeaMessages(cmd) {
@@ -371,8 +371,20 @@ func TestAppHelpersAndRenderingSmoke(t *testing.T) {
 	if lipgloss.Width(app.renderPrompt(80)) != 80 {
 		t.Fatalf("expected prompt width 80, got %d", lipgloss.Width(app.renderPrompt(80)))
 	}
+	if got := newKeyMap().Send.Help().Key; got != "Enter" {
+		t.Fatalf("expected send shortcut help to use Enter, got %q", got)
+	}
+	if got := newKeyMap().Send.Keys(); len(got) != 1 || got[0] != "enter" {
+		t.Fatalf("expected send binding to use enter, got %+v", got)
+	}
+	if got := newKeyMap().Newline.Help().Key; got != "Ctrl+J" {
+		t.Fatalf("expected newline shortcut help to use Ctrl+J, got %q", got)
+	}
+	if got := newKeyMap().Newline.Keys(); len(got) != 1 || got[0] != "ctrl+j" {
+		t.Fatalf("expected newline binding to use ctrl+j, got %+v", got)
+	}
 	if !strings.Contains(app.renderHelp(80), "Ctrl+J") {
-		t.Fatalf("expected help to render the new send shortcut")
+		t.Fatalf("expected footer help to render newline shortcut")
 	}
 	sidebar := app.renderSidebar(26, 12)
 	if lipgloss.Width(sidebar) != 26 || lipgloss.Height(sidebar) != 12 {
@@ -381,8 +393,8 @@ func TestAppHelpersAndRenderingSmoke(t *testing.T) {
 	if !strings.Contains(app.renderSidebar(26, 12), sidebarTitle) || !strings.Contains(app.renderSidebar(26, 12), sidebarOpenHint) {
 		t.Fatalf("expected updated sidebar header text")
 	}
-	if strings.Contains(app.renderPrompt(80), "Enter/Ctrl+S") {
-		t.Fatalf("expected composer hint line to be removed")
+	if strings.Contains(app.renderPrompt(80), "Enter sends, Ctrl+J inserts a newline") {
+		t.Fatalf("expected keyboard hint to move out of placeholder text")
 	}
 	if strings.TrimSpace(app.renderPrompt(80)) == "" {
 		t.Fatalf("expected prompt to render a visible border")
@@ -724,17 +736,17 @@ func TestAppUpdateAdditionalTransitions(t *testing.T) {
 			},
 		},
 		{
-			name: "enter inserts newline without sending",
+			name: "ctrl+j inserts newline without sending",
 			setup: func(t *testing.T, app *App, runtime *stubRuntime, manager *config.Manager) {
 				app.input.SetValue("inspect repo")
 				app.state.InputText = "inspect repo"
 				app.resizeComponents()
 			},
-			msg: tea.KeyMsg{Type: tea.KeyEnter},
+			msg: tea.KeyMsg{Type: tea.KeyCtrlJ},
 			assert: func(t *testing.T, app App, runtime *stubRuntime, manager *config.Manager, msgs []tea.Msg) {
 				t.Helper()
 				if len(runtime.runInputs) != 0 {
-					t.Fatalf("expected enter not to send input, got %+v", runtime.runInputs)
+					t.Fatalf("expected ctrl+j not to send input, got %+v", runtime.runInputs)
 				}
 				if app.state.InputText != "inspect repo\n" {
 					t.Fatalf("expected newline to be inserted, got %q", app.state.InputText)
@@ -752,17 +764,17 @@ func TestAppUpdateAdditionalTransitions(t *testing.T) {
 			},
 		},
 		{
-			name: "second enter grows composer to third line",
+			name: "second ctrl+j grows composer to third line",
 			setup: func(t *testing.T, app *App, runtime *stubRuntime, manager *config.Manager) {
 				app.input.SetValue("line1\nline2")
 				app.state.InputText = app.input.Value()
 				app.resizeComponents()
 			},
-			msg: tea.KeyMsg{Type: tea.KeyEnter},
+			msg: tea.KeyMsg{Type: tea.KeyCtrlJ},
 			assert: func(t *testing.T, app App, runtime *stubRuntime, manager *config.Manager, msgs []tea.Msg) {
 				t.Helper()
 				if len(runtime.runInputs) != 0 {
-					t.Fatalf("expected second enter not to send input")
+					t.Fatalf("expected second ctrl+j not to send input")
 				}
 				if app.input.Height() != 3 {
 					t.Fatalf("expected composer height to grow to 3, got %d", app.input.Height())
@@ -777,12 +789,12 @@ func TestAppUpdateAdditionalTransitions(t *testing.T) {
 			},
 		},
 		{
-			name: "plain multiline input ctrl+j starts runtime",
+			name: "plain multiline input enter starts runtime",
 			setup: func(t *testing.T, app *App, runtime *stubRuntime, manager *config.Manager) {
 				app.input.SetValue("inspect repo\nwith details")
 				app.state.InputText = "inspect repo\nwith details"
 			},
-			msg: tea.KeyMsg{Type: tea.KeyCtrlJ},
+			msg: tea.KeyMsg{Type: tea.KeyEnter},
 			assert: func(t *testing.T, app App, runtime *stubRuntime, manager *config.Manager, msgs []tea.Msg) {
 				t.Helper()
 				if !app.state.IsAgentRunning {
@@ -806,16 +818,40 @@ func TestAppUpdateAdditionalTransitions(t *testing.T) {
 			},
 		},
 		{
-			name: "blank multiline input ctrl+j stays local",
+			name: "blank input enter stays local",
 			setup: func(t *testing.T, app *App, runtime *stubRuntime, manager *config.Manager) {
 				app.input.SetValue(" \n ")
 				app.state.InputText = " \n "
+			},
+			msg: tea.KeyMsg{Type: tea.KeyEnter},
+			assert: func(t *testing.T, app App, runtime *stubRuntime, manager *config.Manager, msgs []tea.Msg) {
+				t.Helper()
+				if len(runtime.runInputs) != 0 || app.state.IsAgentRunning {
+					t.Fatalf("expected blank input enter not to send")
+				}
+				if app.state.InputText != " \n " {
+					t.Fatalf("expected blank input to stay unchanged on enter, got %q", app.state.InputText)
+				}
+			},
+		},
+		{
+			name: "blank input ctrl+j inserts newline locally",
+			setup: func(t *testing.T, app *App, runtime *stubRuntime, manager *config.Manager) {
+				app.input.SetValue(" \n ")
+				app.state.InputText = " \n "
+				app.resizeComponents()
 			},
 			msg: tea.KeyMsg{Type: tea.KeyCtrlJ},
 			assert: func(t *testing.T, app App, runtime *stubRuntime, manager *config.Manager, msgs []tea.Msg) {
 				t.Helper()
 				if len(runtime.runInputs) != 0 || app.state.IsAgentRunning {
-					t.Fatalf("expected blank multiline input not to send")
+					t.Fatalf("expected blank input ctrl+j not to send")
+				}
+				if app.state.InputText != " \n \n" {
+					t.Fatalf("expected ctrl+j to insert newline into blank input, got %q", app.state.InputText)
+				}
+				if app.input.Height() != 3 {
+					t.Fatalf("expected composer height to grow to 3, got %d", app.input.Height())
 				}
 			},
 		},
