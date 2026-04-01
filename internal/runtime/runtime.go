@@ -87,7 +87,7 @@ func (s *Service) Run(ctx context.Context, input UserInput) error {
 	}
 
 	userMessage := provider.Message{
-		Role:    "user",
+		Role:    provider.RoleUser,
 		Content: input.Content,
 	}
 	session.Messages = append(session.Messages, userMessage)
@@ -154,7 +154,7 @@ func (s *Service) Run(ctx context.Context, input UserInput) error {
 
 		assistant := resp.Message
 		if strings.TrimSpace(assistant.Role) == "" {
-			assistant.Role = "assistant"
+			assistant.Role = provider.RoleAssistant
 		}
 
 		if strings.TrimSpace(assistant.Content) != "" || len(assistant.ToolCalls) > 0 {
@@ -205,7 +205,7 @@ func (s *Service) Run(ctx context.Context, input UserInput) error {
 			}
 
 			toolMessage := provider.Message{
-				Role:       "tool",
+				Role:       provider.RoleTool,
 				Content:    result.Content,
 				ToolCallID: call.ID,
 				IsError:    result.IsError,

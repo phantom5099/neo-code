@@ -19,8 +19,8 @@ func trimMessages(messages []provider.Message) []provider.Message {
 		start := i
 		i++
 
-		if messages[start].Role == "assistant" && len(messages[start].ToolCalls) > 0 {
-			for i < len(messages) && messages[i].Role == "tool" {
+		if messages[start].Role == provider.RoleAssistant && len(messages[start].ToolCalls) > 0 {
+			for i < len(messages) && messages[i].Role == provider.RoleTool {
 				i++
 			}
 		}
