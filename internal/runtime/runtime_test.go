@@ -192,6 +192,37 @@ func (b *stubContextBuilder) Build(ctx context.Context, input agentcontext.Build
 	}, nil
 }
 
+type stubToolManager struct {
+	specs        []provider.ToolSpec
+	result       tools.ToolResult
+	err          error
+	listErr      error
+	listCalls    int
+	executeCalls int
+	lastInput    tools.ToolCallInput
+}
+
+func (m *stubToolManager) ListAvailableSpecs(ctx context.Context, input tools.SpecListInput) ([]provider.ToolSpec, error) {
+	m.listCalls++
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
+	return append([]provider.ToolSpec(nil), m.specs...), nil
+}
+
+func (m *stubToolManager) Execute(ctx context.Context, input tools.ToolCallInput) (tools.ToolResult, error) {
+	m.executeCalls++
+	m.lastInput = input
+	result := m.result
+	if result.Name == "" {
+		result.Name = input.Name
+	}
+	return result, m.err
+}
+
 func TestServiceRun(t *testing.T) {
 	tests := []struct {
 		name                string
@@ -428,6 +459,125 @@ func TestServiceRunDelegatesToContextBuilder(t *testing.T) {
 	if len(scripted.requests[0].Messages) != 1 || scripted.requests[0].Messages[0].Content != "delegated message" {
 		t.Fatalf("expected delegated messages, got %+v", scripted.requests[0].Messages)
 	}
+}
+
+func TestServiceRunUsesToolManager(t *testing.T) {
+	t.Parallel()
+
+	manager := newRuntimeConfigManager(t)
+	store := newMemoryStore()
+	toolManager := &stubToolManager{
+		specs: []provider.ToolSpec{
+			{Name: "filesystem_edit", Description: "stub", Schema: map[string]any{"type": "object"}},
+		},
+		result: tools.ToolResult{
+			Name:    "filesystem_edit",
+			Content: "tool manager output",
+		},
+	}
+
+	scripted := &scriptedProvider{
+		responses: []provider.ChatResponse{
+			{
+				Message: provider.Message{
+					Role: "assistant",
+					ToolCalls: []provider.ToolCall{
+						{ID: "call-manager", Name: "filesystem_edit", Arguments: `{"path":"main.go"}`},
+					},
+				},
+				FinishReason: "tool_calls",
+			},
+			{
+				Message: provider.Message{
+					Role:    "assistant",
+					Content: "done",
+				},
+				FinishReason: "stop",
+			},
+		},
+	}
+
+	service := NewWithFactory(manager, toolManager, store, &scriptedProviderFactory{provider: scripted}, nil)
+	if err := service.Run(context.Background(), UserInput{RunID: "run-tool-manager", Content: "edit file"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if toolManager.listCalls != 2 {
+		t.Fatalf("expected 2 spec list calls, got %d", toolManager.listCalls)
+	}
+	if toolManager.executeCalls != 1 {
+		t.Fatalf("expected 1 execute call, got %d", toolManager.executeCalls)
+	}
+	if toolManager.lastInput.ID != "call-manager" {
+		t.Fatalf("expected forwarded tool call id, got %q", toolManager.lastInput.ID)
+	}
+	if len(scripted.requests) == 0 || len(scripted.requests[0].Tools) != 1 || scripted.requests[0].Tools[0].Name != "filesystem_edit" {
+		t.Fatalf("expected tool specs from tool manager, got %+v", scripted.requests)
+	}
+
+	session := onlySession(t, store)
+	foundToolMessage := false
+	for _, message := range session.Messages {
+		if message.Role == provider.RoleTool && message.Content == "tool manager output" {
+			foundToolMessage = true
+			break
+		}
+	}
+	if !foundToolMessage {
+		t.Fatalf("expected tool manager result in session messages, got %+v", session.Messages)
+	}
+}
+
+func TestServiceRunHandlesToolManagerSpecError(t *testing.T) {
+	manager := newRuntimeConfigManager(t)
+	store := newMemoryStore()
+	toolManager := &stubToolManager{
+		listErr: errors.New("tool specs unavailable"),
+	}
+
+	service := NewWithFactory(manager, toolManager, store, &scriptedProviderFactory{
+		provider: &scriptedProvider{},
+	}, nil)
+	input := UserInput{RunID: "run-tool-spec-error", Content: "hello"}
+	err := service.Run(context.Background(), input)
+	if err == nil || !containsError(err, "tool specs unavailable") {
+		t.Fatalf("expected tool spec error, got %v", err)
+	}
+
+	events := collectRuntimeEvents(service.Events())
+	assertEventSequence(t, events, []EventType{EventUserMessage, EventError})
+	assertNoEventType(t, events, EventAgentDone)
+	assertEventsRunID(t, events, input.RunID)
+
+	session := onlySession(t, store)
+	if len(session.Messages) != 1 || session.Messages[0].Role != provider.RoleUser {
+		t.Fatalf("expected only user message to persist, got %+v", session.Messages)
+	}
+}
+
+func TestServiceNewWithFactoryDefaultsToolManager(t *testing.T) {
+	manager := newRuntimeConfigManager(t)
+	store := newMemoryStore()
+	service := NewWithFactory(manager, nil, store, &scriptedProviderFactory{
+		provider: &scriptedProvider{
+			responses: []provider.ChatResponse{
+				{
+					Message: provider.Message{
+						Role:    provider.RoleAssistant,
+						Content: "done",
+					},
+					FinishReason: "stop",
+				},
+			},
+		},
+	}, nil)
+
+	if err := service.Run(context.Background(), UserInput{RunID: "run-default-tool-manager", Content: "hello"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	events := collectRuntimeEvents(service.Events())
+	assertEventSequence(t, events, []EventType{EventUserMessage, EventAgentDone})
 }
 
 func TestServiceRunErrorPaths(t *testing.T) {
