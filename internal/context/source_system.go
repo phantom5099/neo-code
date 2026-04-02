@@ -67,7 +67,6 @@ func renderSystemStateSection(state SystemState) promptSection {
 	}
 
 	return promptSection{
-		id:      "system-state",
 		title:   "System State",
 		content: strings.Join(lines, "\n"),
 	}

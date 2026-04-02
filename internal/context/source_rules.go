@@ -162,7 +162,6 @@ func renderProjectRulesSection(documents []ruleDocument) promptSection {
 	}
 
 	return promptSection{
-		id:      "project-rules",
 		title:   "Project Rules",
 		content: strings.TrimSpace(builder.String()),
 	}

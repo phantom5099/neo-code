@@ -51,7 +51,7 @@
 - 规则文件只支持大写文件名 `AGENTS.md`
 - 多份命中结果按“从全局到局部”的顺序注入
 - git 只注入摘要，不注入完整 `git status`
-- 各 section 统一由 `internal/context` 内部 composer 渲染，`runtime` 仍只消费最终字符串
+- 各 section 统一由 `internal/context` 内部的 `renderPromptSection` 和 `composeSystemPrompt` 渲染，`runtime` 仍只消费最终字符串
 
 ## 流式桥接
 
