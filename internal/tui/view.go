@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -217,13 +218,18 @@ func (a App) renderPanel(title string, subtitle string, body string, width int, 
 }
 
 func (a App) renderMessageBlock(message provider.Message, width int) string {
+	rendered, _ := a.renderMessageBlockWithCopy(message, width, 1)
+	return rendered
+}
+
+func (a App) renderMessageBlockWithCopy(message provider.Message, width int, startCopyID int) (string, []copyCodeButtonBinding) {
 	switch message.Role {
 	case roleEvent:
-		return a.styles.inlineNotice.Width(width).Render("  > " + wrapPlain(message.Content, max(16, width-6)))
+		return a.styles.inlineNotice.Width(width).Render("  > " + wrapPlain(message.Content, max(16, width-6))), nil
 	case roleError:
-		return a.styles.inlineError.Width(width).Render("  ! " + wrapPlain(message.Content, max(16, width-6)))
+		return a.styles.inlineError.Width(width).Render("  ! " + wrapPlain(message.Content, max(16, width-6))), nil
 	case roleSystem:
-		return a.styles.inlineSystem.Width(width).Render("  - " + wrapPlain(message.Content, max(16, width-6)))
+		return a.styles.inlineSystem.Width(width).Render("  - " + wrapPlain(message.Content, max(16, width-6))), nil
 	}
 
 	maxMessageWidth := clamp(int(float64(width)*0.84), 24, width)
@@ -258,17 +264,22 @@ func (a App) renderMessageBlock(message provider.Message, width int) string {
 	}
 
 	contentBlock := a.renderMessageContent(content, maxMessageWidth-2, bodyStyle)
+	copyButtons := collectCopyCodeButtons(content, startCopyID)
 
-	block := lipgloss.JoinVertical(
-		blockAlign,
-		tagStyle.Render(tag),
-		contentBlock,
-	)
+	parts := []string{tagStyle.Render(tag), contentBlock}
+	if len(copyButtons) > 0 {
+		buttonLines := make([]string, 0, len(copyButtons))
+		for _, button := range copyButtons {
+			buttonLines = append(buttonLines, a.styles.codeCopyButton.Render(fmt.Sprintf(copyCodeButton, button.ID)))
+		}
+		parts = append(parts, lipgloss.JoinVertical(blockAlign, buttonLines...))
+	}
+	block := lipgloss.JoinVertical(blockAlign, parts...)
 
 	if message.Role == roleUser {
-		return lipgloss.PlaceHorizontal(width, lipgloss.Right, block)
+		return lipgloss.PlaceHorizontal(width, lipgloss.Right, block), nil
 	}
-	return block
+	return block, copyButtons
 }
 
 func (a App) renderCommandMenu(width int) string {

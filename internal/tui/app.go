@@ -30,6 +30,7 @@ type App struct {
 	transcript       viewport.Model
 	input            textarea.Model
 	markdownRenderer markdownContentRenderer
+	codeCopyBlocks   map[int]string
 	activeMessages   []provider.Message
 	activities       []activityEntry
 	fileCandidates   []string
@@ -121,6 +122,7 @@ func New(cfg *config.Config, configManager *config.Manager, runtime agentruntime
 		transcript:       viewport.New(0, 0),
 		input:            input,
 		markdownRenderer: markdownRenderer,
+		codeCopyBlocks:   make(map[int]string),
 		focus:            panelInput,
 		width:            128,
 		height:           40,

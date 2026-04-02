@@ -579,6 +579,8 @@ func (a *App) handleTranscriptMouse(msg tea.MouseMsg) bool {
 	case tea.MouseButtonWheelDown:
 		a.transcript.LineDown(mouseWheelStepLines)
 		return true
+	case tea.MouseButtonLeft:
+		return a.handleTranscriptCopyClick(msg)
 	default:
 		return false
 	}
@@ -716,6 +718,7 @@ func (a *App) normalizeComposerHeight() {
 func (a *App) rebuildTranscript() {
 	width := max(24, a.transcript.Width)
 	if len(a.activeMessages) == 0 {
+		a.setCodeCopyBlocks(nil)
 		a.transcript.SetContent(a.styles.empty.Width(width).Render(emptyConversationText))
 		a.transcript.GotoTop()
 		return
@@ -723,9 +726,15 @@ func (a *App) rebuildTranscript() {
 
 	atBottom := a.transcript.AtBottom()
 	blocks := make([]string, 0, len(a.activeMessages))
+	copyButtons := make([]copyCodeButtonBinding, 0, 4)
+	nextCopyID := 1
 	for _, message := range a.activeMessages {
-		blocks = append(blocks, a.renderMessageBlock(message, width))
+		rendered, bindings := a.renderMessageBlockWithCopy(message, width, nextCopyID)
+		blocks = append(blocks, rendered)
+		copyButtons = append(copyButtons, bindings...)
+		nextCopyID += len(bindings)
 	}
+	a.setCodeCopyBlocks(copyButtons)
 
 	a.transcript.SetContent(strings.Join(blocks, "\n\n"))
 	if atBottom || a.state.IsAgentRunning {
