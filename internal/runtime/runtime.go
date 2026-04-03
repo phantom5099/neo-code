@@ -30,6 +30,13 @@ const (
 	providerRetryMaxWait = 5 * time.Second
 )
 
+var runtimeSessionWorkdirs = struct {
+	mu   sync.RWMutex
+	data map[string]string
+}{
+	data: make(map[string]string),
+}
+
 type Runtime interface {
 	Run(ctx context.Context, input UserInput) error
 	CancelActiveRun() bool
@@ -273,7 +280,12 @@ func (s *Service) ListSessions(ctx context.Context) ([]SessionSummary, error) {
 }
 
 func (s *Service) LoadSession(ctx context.Context, id string) (Session, error) {
-	return s.sessionStore.Load(ctx, id)
+	session, err := s.sessionStore.Load(ctx, id)
+	if err != nil {
+		return Session{}, err
+	}
+	session.Workdir = s.sessionWorkdir(id, session.Workdir)
+	return session, nil
 }
 
 func (s *Service) SetSessionWorkdir(ctx context.Context, sessionID string, workdir string) (Session, error) {
@@ -286,6 +298,7 @@ func (s *Service) SetSessionWorkdir(ctx context.Context, sessionID string, workd
 	if err != nil {
 		return Session{}, err
 	}
+	session.Workdir = s.sessionWorkdir(sessionID, session.Workdir)
 
 	cfg := s.configManager.Get()
 	resolved, err := resolveWorkdirForSession(cfg.Workdir, session.Workdir, workdir)
@@ -297,11 +310,30 @@ func (s *Service) SetSessionWorkdir(ctx context.Context, sessionID string, workd
 	}
 
 	session.Workdir = resolved
-	session.UpdatedAt = time.Now()
-	if err := s.sessionStore.Save(ctx, &session); err != nil {
-		return Session{}, err
-	}
+	s.setSessionWorkdir(sessionID, resolved)
 	return session, nil
+}
+
+func (s *Service) sessionWorkdir(sessionID string, fallback string) string {
+	key := s.sessionWorkdirKey(sessionID)
+	runtimeSessionWorkdirs.mu.RLock()
+	value, ok := runtimeSessionWorkdirs.data[key]
+	runtimeSessionWorkdirs.mu.RUnlock()
+	if ok {
+		return strings.TrimSpace(value)
+	}
+	return strings.TrimSpace(fallback)
+}
+
+func (s *Service) setSessionWorkdir(sessionID string, workdir string) {
+	key := s.sessionWorkdirKey(sessionID)
+	runtimeSessionWorkdirs.mu.Lock()
+	runtimeSessionWorkdirs.data[key] = strings.TrimSpace(workdir)
+	runtimeSessionWorkdirs.mu.Unlock()
+}
+
+func (s *Service) sessionWorkdirKey(sessionID string) string {
+	return fmt.Sprintf("%p:%s", s, strings.TrimSpace(sessionID))
 }
 
 func (s *Service) loadOrCreateSession(
@@ -317,6 +349,7 @@ func (s *Service) loadOrCreateSession(
 			return Session{}, err
 		}
 		session := newSessionWithWorkdir(title, sessionWorkdir)
+		s.setSessionWorkdir(session.ID, sessionWorkdir)
 		if err := s.sessionStore.Save(ctx, &session); err != nil {
 			return Session{}, err
 		}
@@ -326,6 +359,7 @@ func (s *Service) loadOrCreateSession(
 	if err != nil {
 		return Session{}, err
 	}
+	session.Workdir = s.sessionWorkdir(sessionID, session.Workdir)
 	if strings.TrimSpace(requestedWorkdir) == "" && strings.TrimSpace(session.Workdir) != "" {
 		return session, nil
 	}
@@ -338,6 +372,7 @@ func (s *Service) loadOrCreateSession(
 		return session, nil
 	}
 	session.Workdir = resolved
+	s.setSessionWorkdir(sessionID, resolved)
 	return session, nil
 }
 

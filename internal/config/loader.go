@@ -22,14 +22,14 @@ type Loader struct {
 }
 
 type persistedConfig struct {
-	SelectedProvider string      `yaml:"selected_provider"`
-	CurrentModel     string      `yaml:"current_model"`
-	DefaultWorkdir   string      `yaml:"default_workdir,omitempty"`
-	Workdir          string      `yaml:"workdir,omitempty"` // legacy key, rejected in parse
-	Shell            string      `yaml:"shell"`
-	MaxLoops         int         `yaml:"max_loops,omitempty"`
-	ToolTimeoutSec   int         `yaml:"tool_timeout_sec,omitempty"`
-	Tools            ToolsConfig `yaml:"tools,omitempty"`
+	SelectedProvider     string      `yaml:"selected_provider"`
+	CurrentModel         string      `yaml:"current_model"`
+	LegacyDefaultWorkdir *string     `yaml:"default_workdir,omitempty"`
+	LegacyWorkdir        *string     `yaml:"workdir,omitempty"`
+	Shell                string      `yaml:"shell"`
+	MaxLoops             int         `yaml:"max_loops,omitempty"`
+	ToolTimeoutSec       int         `yaml:"tool_timeout_sec,omitempty"`
+	Tools                ToolsConfig `yaml:"tools,omitempty"`
 }
 
 func NewLoader(baseDir string, defaults *Config) *Loader {
@@ -153,14 +153,16 @@ func parseCurrentConfig(data []byte) (*Config, error) {
 	if err := yaml.Unmarshal(data, &file); err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(file.Workdir) != "" {
-		return nil, fmt.Errorf("legacy config key %q is no longer supported; use %q", "workdir", "default_workdir")
+	if file.LegacyDefaultWorkdir != nil {
+		return nil, fmt.Errorf("legacy config key %q is no longer supported", "default_workdir")
+	}
+	if file.LegacyWorkdir != nil {
+		return nil, fmt.Errorf("legacy config key %q is no longer supported", "workdir")
 	}
 
 	cfg := &Config{
 		SelectedProvider: strings.TrimSpace(file.SelectedProvider),
 		CurrentModel:     strings.TrimSpace(file.CurrentModel),
-		Workdir:          strings.TrimSpace(file.DefaultWorkdir),
 		Shell:            strings.TrimSpace(file.Shell),
 		MaxLoops:         file.MaxLoops,
 		ToolTimeoutSec:   file.ToolTimeoutSec,
@@ -174,7 +176,6 @@ func marshalPersistedConfig(snapshot Config) ([]byte, error) {
 	file := persistedConfig{
 		SelectedProvider: snapshot.SelectedProvider,
 		CurrentModel:     snapshot.CurrentModel,
-		DefaultWorkdir:   snapshot.Workdir,
 		Shell:            snapshot.Shell,
 		MaxLoops:         snapshot.MaxLoops,
 		ToolTimeoutSec:   snapshot.ToolTimeoutSec,

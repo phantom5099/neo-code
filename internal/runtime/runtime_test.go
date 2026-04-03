@@ -1363,7 +1363,16 @@ func TestServiceSetSessionWorkdir(t *testing.T) {
 		t.Fatalf("LoadSession() error = %v", err)
 	}
 	if loaded.Workdir != target {
-		t.Fatalf("expected persisted workdir %q, got %q", target, loaded.Workdir)
+		t.Fatalf("expected in-memory workdir %q, got %q", target, loaded.Workdir)
+	}
+
+	another := NewWithFactory(manager, registry, store, &scriptedProviderFactory{provider: &scriptedProvider{}}, nil)
+	reloaded, err := another.LoadSession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("LoadSession() with new service error = %v", err)
+	}
+	if strings.TrimSpace(reloaded.Workdir) != "" {
+		t.Fatalf("expected session workdir not to persist across process lifetime, got %q", reloaded.Workdir)
 	}
 
 	_, err = service.SetSessionWorkdir(context.Background(), "", "sub")

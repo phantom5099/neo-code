@@ -22,7 +22,7 @@ type Session struct {
 	Title     string             `json:"title"`
 	CreatedAt time.Time          `json:"created_at"`
 	UpdatedAt time.Time          `json:"updated_at"`
-	Workdir   string             `json:"workdir,omitempty"`
+	Workdir   string             `json:"-"`
 	Messages  []provider.Message `json:"messages"`
 }
 

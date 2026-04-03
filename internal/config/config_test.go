@@ -49,7 +49,6 @@ func TestParseConfigFormats(t *testing.T) {
 			data: `
 selected_provider: openai
 current_model: gpt-5.4
-default_workdir: .
 shell: powershell
 
 provider_overrides:
@@ -89,11 +88,20 @@ providers:
 			},
 		},
 		{
-			name: "legacy workdir key is rejected",
+			name: "legacy default_workdir key is rejected",
 			data: `
 selected_provider: openai
 current_model: gpt-4.1
 default_workdir: ./from-default
+shell: powershell
+`,
+			err: "legacy config key \"default_workdir\" is no longer supported",
+		},
+		{
+			name: "legacy workdir key is rejected",
+			data: `
+selected_provider: openai
+current_model: gpt-4.1
 workdir: ./from-legacy
 shell: powershell
 `,
@@ -104,7 +112,6 @@ shell: powershell
 			data: `
 selected_provider: openai
 current_model: gpt-5.4
-default_workdir: .
 shell: powershell
 providers:
   - name: openai
@@ -590,11 +597,8 @@ func TestLoaderLoadAndSaveRoundTrip(t *testing.T) {
 		t.Fatalf("read config file: %v", err)
 	}
 	text := string(data)
-	if !strings.Contains(text, "default_workdir:") {
-		t.Fatalf("expected persisted config to use default_workdir key, got:\n%s", text)
-	}
-	if strings.Contains(text, "\nworkdir:") || strings.HasPrefix(text, "workdir:") {
-		t.Fatalf("expected persisted config to avoid legacy workdir key, got:\n%s", text)
+	if strings.Contains(text, "default_workdir:") || strings.Contains(text, "\nworkdir:") || strings.HasPrefix(text, "workdir:") {
+		t.Fatalf("expected persisted config to avoid any workdir keys, got:\n%s", text)
 	}
 	if strings.Contains(text, "\nproviders:") || strings.HasPrefix(text, "providers:") {
 		t.Fatalf("expected persisted config to omit providers, got:\n%s", text)
