@@ -285,6 +285,18 @@ func TestRunSessionWorkdirCommandBranches(t *testing.T) {
 		}
 	})
 
+	t.Run("empty workspace query with current workdir shows current directory", func(t *testing.T) {
+		current := t.TempDir()
+		msg := runSessionWorkdirCommand(newStubRuntime(), "", current, "/cwd")()
+		result := msg.(sessionWorkdirResultMsg)
+		if result.err != nil {
+			t.Fatalf("unexpected error: %v", result.err)
+		}
+		if result.workdir != current || !strings.Contains(result.notice, "Current workspace is") {
+			t.Fatalf("expected current workspace message, got %+v", result)
+		}
+	})
+
 	t.Run("session workdir change surfaces runtime error", func(t *testing.T) {
 		runtime := newStubRuntime()
 		runtime.setWorkdirErr = errors.New("set workdir failed")
@@ -308,9 +320,46 @@ func TestRunSessionWorkdirCommandBranches(t *testing.T) {
 			t.Fatalf("expected fallback workdir %q, got %q", current, result.workdir)
 		}
 	})
+
+	t.Run("session workdir change uses runtime returned workdir when available", func(t *testing.T) {
+		current := t.TempDir()
+		target := t.TempDir()
+		runtime := newStubRuntime()
+		runtime.setResult = &agentruntime.Session{ID: "session-1", Workdir: target}
+		msg := runSessionWorkdirCommand(runtime, "session-1", current, "/cwd ./subdir")()
+		result := msg.(sessionWorkdirResultMsg)
+		if result.err != nil {
+			t.Fatalf("unexpected error: %v", result.err)
+		}
+		if result.workdir != target || !strings.Contains(result.notice, "Session workspace switched") {
+			t.Fatalf("expected runtime returned workdir %q, got %+v", target, result)
+		}
+	})
+
+	t.Run("draft workspace change returns resolve error for missing path", func(t *testing.T) {
+		msg := runSessionWorkdirCommand(newStubRuntime(), "", t.TempDir(), "/cwd ./missing-path")()
+		result := msg.(sessionWorkdirResultMsg)
+		if result.err == nil || !strings.Contains(strings.ToLower(result.err.Error()), "resolve path") {
+			t.Fatalf("expected resolve path error, got %+v", result)
+		}
+	})
 }
 
 func TestResolveWorkspacePathAndSelector(t *testing.T) {
+	t.Run("resolve from empty base falls back to process cwd", func(t *testing.T) {
+		resolved, err := resolveWorkspacePath("", ".")
+		if err != nil {
+			t.Fatalf("resolveWorkspacePath() error = %v", err)
+		}
+		expected, err := filepath.Abs(".")
+		if err != nil {
+			t.Fatalf("filepath.Abs(.) error = %v", err)
+		}
+		if resolved != filepath.Clean(expected) {
+			t.Fatalf("expected %q, got %q", filepath.Clean(expected), resolved)
+		}
+	})
+
 	t.Run("resolve relative path from base", func(t *testing.T) {
 		base := t.TempDir()
 		target := filepath.Join(base, "sub")
@@ -335,6 +384,14 @@ func TestResolveWorkspacePathAndSelector(t *testing.T) {
 		_, err := resolveWorkspacePath(base, "note.txt")
 		if err == nil || !strings.Contains(err.Error(), "is not a directory") {
 			t.Fatalf("expected non-directory error, got %v", err)
+		}
+	})
+
+	t.Run("resolve workspace path returns error for missing target", func(t *testing.T) {
+		base := t.TempDir()
+		_, err := resolveWorkspacePath(base, "missing-dir")
+		if err == nil || !strings.Contains(strings.ToLower(err.Error()), "resolve path") {
+			t.Fatalf("expected missing path error, got %v", err)
 		}
 	})
 
