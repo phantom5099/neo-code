@@ -25,7 +25,7 @@ type persistedConfig struct {
 	SelectedProvider string      `yaml:"selected_provider"`
 	CurrentModel     string      `yaml:"current_model"`
 	DefaultWorkdir   string      `yaml:"default_workdir,omitempty"`
-	Workdir          string      `yaml:"workdir,omitempty"` // legacy key
+	Workdir          string      `yaml:"workdir,omitempty"` // legacy key, rejected in parse
 	Shell            string      `yaml:"shell"`
 	MaxLoops         int         `yaml:"max_loops,omitempty"`
 	ToolTimeoutSec   int         `yaml:"tool_timeout_sec,omitempty"`
@@ -153,11 +153,14 @@ func parseCurrentConfig(data []byte) (*Config, error) {
 	if err := yaml.Unmarshal(data, &file); err != nil {
 		return nil, err
 	}
+	if strings.TrimSpace(file.Workdir) != "" {
+		return nil, fmt.Errorf("legacy config key %q is no longer supported; use %q", "workdir", "default_workdir")
+	}
 
 	cfg := &Config{
 		SelectedProvider: strings.TrimSpace(file.SelectedProvider),
 		CurrentModel:     strings.TrimSpace(file.CurrentModel),
-		Workdir:          firstNonEmpty(strings.TrimSpace(file.DefaultWorkdir), strings.TrimSpace(file.Workdir)),
+		Workdir:          strings.TrimSpace(file.DefaultWorkdir),
 		Shell:            strings.TrimSpace(file.Shell),
 		MaxLoops:         file.MaxLoops,
 		ToolTimeoutSec:   file.ToolTimeoutSec,
@@ -194,13 +197,4 @@ func persistedConfigDiffers(data []byte, cfg Config) (bool, error) {
 		return false, err
 	}
 	return !bytes.Equal(bytes.TrimSpace(data), bytes.TrimSpace(canonical)), nil
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if trimmed := strings.TrimSpace(value); trimmed != "" {
-			return trimmed
-		}
-	}
-	return ""
 }
