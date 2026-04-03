@@ -12,6 +12,7 @@ type Message struct {
 	Content    string     `json:"content"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
+	ResponseID string     `json:"response_id,omitempty"`
 	IsError    bool       `json:"is_error,omitempty"`
 }
 
@@ -41,9 +42,11 @@ type ChatResponse struct {
 }
 
 type Usage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
-	TotalTokens  int `json:"total_tokens"`
+	InputTokens       int `json:"input_tokens"`
+	OutputTokens      int `json:"output_tokens"`
+	TotalTokens       int `json:"total_tokens"`
+	CachedInputTokens int `json:"cached_input_tokens,omitempty"`
+	ReasoningTokens   int `json:"reasoning_tokens,omitempty"`
 }
 
 type ModelDescriptor struct {
@@ -70,30 +73,36 @@ type ProviderSelection struct {
 type StreamEventType string
 
 const (
-	// StreamEventTextDelta 表示模型输出的文本片段。
+	// StreamEventTextDelta reports streamed assistant text.
 	StreamEventTextDelta StreamEventType = "text_delta"
-	// StreamEventToolCallStart 表示模型开始请求工具调用，TUI 可据此展示过渡提示。
+	// StreamEventToolCallStart reports that the model has started a tool call.
 	StreamEventToolCallStart StreamEventType = "tool_call_start"
-	// StreamEventToolCallDelta 表示工具调用参数的增量片段。
+	// StreamEventToolCallDelta reports incremental tool-call arguments.
 	StreamEventToolCallDelta StreamEventType = "tool_call_delta"
-	// StreamEventMessageDone 表示本轮消息完成，包含最终统计信息。
+	// StreamEventReasoningDelta reports incremental reasoning-summary text.
+	StreamEventReasoningDelta StreamEventType = "reasoning_delta"
+	// StreamEventMessageDone reports that the current assistant turn has finished.
 	StreamEventMessageDone StreamEventType = "message_done"
 )
 
-// StreamEvent 表示 provider 驱动层向 runtime 推送的流式事件。
+// StreamEvent is emitted by a provider while a chat request is streaming.
 type StreamEvent struct {
 	Type StreamEventType
 
 	// text_delta
-	Text string `json:"text,omitempty"` // 文本片段
+	Text string `json:"text,omitempty"`
 
 	// tool_call_start / tool_call_delta
-	ToolCallIndex      int    `json:"tool_call_index,omitempty"`      // 工具调用索引
-	ToolCallID         string `json:"tool_call_id,omitempty"`         // 工具调用 ID（tool_call_start 时使用）
-	ToolName           string `json:"tool_name,omitempty"`            // 工具名称（tool_call_start 时使用）
-	ToolArgumentsDelta string `json:"tool_arguments_delta,omitempty"` // 参数增量片段（tool_call_delta 时使用）
+	ToolCallIndex      int    `json:"tool_call_index,omitempty"`
+	ToolCallID         string `json:"tool_call_id,omitempty"`
+	ToolName           string `json:"tool_name,omitempty"`
+	ToolArgumentsDelta string `json:"tool_arguments_delta,omitempty"`
+
+	// reasoning_delta
+	ReasoningText string `json:"reasoning_text,omitempty"`
 
 	// message_done
-	FinishReason string `json:"finish_reason,omitempty"` // 结束原因（仅 message_done 时有效）
-	Usage        *Usage `json:"usage,omitempty"`         // 使用统计（仅 message_done 时有效）
+	FinishReason string `json:"finish_reason,omitempty"`
+	ResponseID   string `json:"response_id,omitempty"`
+	Usage        *Usage `json:"usage,omitempty"`
 }

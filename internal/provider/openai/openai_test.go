@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -31,24 +32,16 @@ func TestWithTransport(t *testing.T) {
 	t.Parallel()
 
 	customTransport := &http.Transport{}
-	cfg := resolvedConfig("", "")
-
-	provider, err := New(cfg, WithTransport(customTransport))
+	provider, err := New(resolvedConfig("", ""), WithTransport(customTransport))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	if provider.client.Transport != customTransport {
-		t.Fatal("expected custom transport to be set")
+	if provider.httpClient == nil {
+		t.Fatal("expected custom transport to force a dedicated HTTP client")
 	}
-}
-
-func TestDefaultRetryTransport(t *testing.T) {
-	t.Parallel()
-
-	transport := defaultRetryTransport()
-	if transport == nil {
-		t.Fatal("expected non-nil transport")
+	if provider.httpClient.Transport != customTransport {
+		t.Fatal("expected custom transport to be set on HTTP client")
 	}
 }
 
@@ -59,21 +52,28 @@ func TestDiscoverModels(t *testing.T) {
 		if r.URL.Path != "/models" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
+			t.Fatalf("unexpected auth header: %s", got)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"data": []map[string]any{
-				{"id": "gpt-4", "name": "GPT-4"},
-				{"id": "gpt-3.5-turbo"},
+				{
+					"id":                "gpt-5.4",
+					"name":              "GPT-5.4",
+					"context_window":    128000,
+					"max_output_tokens": 8192,
+				},
+				{"id": "gpt-4.1"},
 			},
 		})
 	}))
 	defer server.Close()
 
-	provider, err := New(resolvedConfig(server.URL, ""))
+	provider, err := New(resolvedConfig(server.URL, ""), WithHTTPClient(server.Client()))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	provider.client = server.Client()
 
 	models, err := provider.DiscoverModels(context.Background())
 	if err != nil {
@@ -82,87 +82,420 @@ func TestDiscoverModels(t *testing.T) {
 	if len(models) != 2 {
 		t.Fatalf("expected 2 models, got %d", len(models))
 	}
-	if models[0].ID != "gpt-4" || models[0].Name != "GPT-4" {
+	if models[0].ID != "gpt-5.4" || models[0].Name != "GPT-5.4" {
 		t.Fatalf("unexpected first model: %+v", models[0])
+	}
+	if models[0].ContextWindow != 128000 || models[0].MaxOutputTokens != 8192 {
+		t.Fatalf("expected model metadata to be preserved, got %+v", models[0])
 	}
 }
 
-func TestEmitToolCallDelta(t *testing.T) {
+func TestBuildRequestMapsConversationAndContinuation(t *testing.T) {
 	t.Parallel()
 
-	t.Run("nil events guard", func(t *testing.T) {
-		t.Parallel()
-		if err := emitToolCallDelta(context.Background(), nil, 0, "args"); err != nil {
-			t.Fatalf("expected nil events guard to return nil, got %v", err)
-		}
-	})
+	provider, err := New(resolvedConfig(config.OpenAIDefaultBaseURL, config.OpenAIDefaultModel))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 
-	t.Run("empty arguments guard", func(t *testing.T) {
-		t.Parallel()
-		events := make(chan domain.StreamEvent, 1)
-		if err := emitToolCallDelta(context.Background(), events, 0, ""); err != nil {
-			t.Fatalf("expected empty arguments guard to return nil, got %v", err)
-		}
-		select {
-		case <-events:
-			t.Fatal("expected no event for empty arguments")
-		default:
-		}
+	payload, err := provider.buildRequest(domain.ChatRequest{
+		SystemPrompt: "system prompt",
+		Messages: []domain.Message{
+			{Role: domain.RoleUser, Content: "older message"},
+			{Role: domain.RoleAssistant, Content: "prior answer", ResponseID: "resp_prev"},
+			{Role: domain.RoleTool, ToolCallID: "call_err", Content: "permission denied", IsError: true},
+			{Role: domain.RoleUser, Content: "please try again"},
+		},
+		Tools: []domain.ToolSpec{
+			{
+				Name:        "filesystem_edit",
+				Description: "Edit file content",
+				Schema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"path": map[string]any{"type": "string"},
+					},
+				},
+			},
+		},
 	})
+	if err != nil {
+		t.Fatalf("buildRequest() error = %v", err)
+	}
 
-	t.Run("normal send", func(t *testing.T) {
-		t.Parallel()
-		events := make(chan domain.StreamEvent, 1)
-		if err := emitToolCallDelta(context.Background(), events, 3, `{"path":"main.go"}`); err != nil {
-			t.Fatalf("emitToolCallDelta() error = %v", err)
-		}
-		got := <-events
-		if got.Type != domain.StreamEventToolCallDelta || got.ToolCallIndex != 3 || got.ToolArgumentsDelta != `{"path":"main.go"}` {
-			t.Fatalf("unexpected event: %+v", got)
-		}
-	})
+	decoded := mustMarshalAndDecode(t, payload)
 
-	t.Run("context cancellation", func(t *testing.T) {
-		t.Parallel()
-		cancelledCtx, cancel := context.WithCancel(context.Background())
-		cancel()
-		if err := emitToolCallDelta(cancelledCtx, make(chan domain.StreamEvent), 0, "args"); err == nil {
-			t.Fatal("expected cancellation error")
-		}
-	})
+	if decoded["model"] != config.OpenAIDefaultModel {
+		t.Fatalf("expected default model %q, got %#v", config.OpenAIDefaultModel, decoded["model"])
+	}
+	if decoded["instructions"] != "system prompt" {
+		t.Fatalf("expected instructions to carry system prompt, got %#v", decoded["instructions"])
+	}
+	if decoded["previous_response_id"] != "resp_prev" {
+		t.Fatalf("expected previous_response_id resp_prev, got %#v", decoded["previous_response_id"])
+	}
+
+	input, ok := decoded["input"].([]any)
+	if !ok {
+		t.Fatalf("expected input array, got %#v", decoded["input"])
+	}
+	if len(input) != 2 {
+		t.Fatalf("expected 2 tail input items, got %d", len(input))
+	}
+
+	toolOutput, ok := input[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected function_call_output map, got %#v", input[0])
+	}
+	if toolOutput["type"] != "function_call_output" {
+		t.Fatalf("expected function_call_output item, got %#v", toolOutput["type"])
+	}
+	if toolOutput["call_id"] != "call_err" {
+		t.Fatalf("expected tool output call_id call_err, got %#v", toolOutput["call_id"])
+	}
+
+	outputText, ok := toolOutput["output"].(string)
+	if !ok {
+		t.Fatalf("expected string output payload, got %#v", toolOutput["output"])
+	}
+	if !strings.Contains(outputText, `"is_error":true`) || !strings.Contains(outputText, "permission denied") {
+		t.Fatalf("expected structured tool error output, got %q", outputText)
+	}
+
+	tools, ok := decoded["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("expected one function tool, got %#v", decoded["tools"])
+	}
+	tool, ok := tools[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected tool payload map, got %#v", tools[0])
+	}
+	if tool["type"] != "function" || tool["name"] != "filesystem_edit" {
+		t.Fatalf("unexpected tool payload: %#v", tool)
+	}
 }
 
-func TestEmitMessageDone(t *testing.T) {
+func TestBuildRequestMapsAssistantToolCalls(t *testing.T) {
 	t.Parallel()
 
-	t.Run("nil events guard", func(t *testing.T) {
-		t.Parallel()
-		if err := emitMessageDone(context.Background(), nil, "stop", nil); err != nil {
-			t.Fatalf("expected nil events guard to return nil, got %v", err)
-		}
-	})
+	provider, err := New(resolvedConfig(config.OpenAIDefaultBaseURL, config.OpenAIDefaultModel))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 
-	t.Run("normal send", func(t *testing.T) {
-		t.Parallel()
-		events := make(chan domain.StreamEvent, 1)
-		usage := &domain.Usage{TotalTokens: 100}
-		if err := emitMessageDone(context.Background(), events, "stop", usage); err != nil {
-			t.Fatalf("emitMessageDone() error = %v", err)
-		}
-		got := <-events
-		if got.Type != domain.StreamEventMessageDone || got.FinishReason != "stop" || got.Usage.TotalTokens != 100 {
-			t.Fatalf("unexpected event: %+v", got)
-		}
+	payload, err := provider.buildRequest(domain.ChatRequest{
+		Messages: []domain.Message{
+			{Role: domain.RoleUser, Content: "edit main.go"},
+			{
+				Role: domain.RoleAssistant,
+				ToolCalls: []domain.ToolCall{
+					{
+						ID:        "call_1",
+						Name:      "filesystem_edit",
+						Arguments: `{"path":"main.go"}`,
+					},
+				},
+			},
+		},
 	})
+	if err != nil {
+		t.Fatalf("buildRequest() error = %v", err)
+	}
 
-	t.Run("context cancellation", func(t *testing.T) {
-		t.Parallel()
-		cancelledCtx, cancel := context.WithCancel(context.Background())
-		cancel()
-		if err := emitMessageDone(cancelledCtx, make(chan domain.StreamEvent), "stop", nil); err == nil {
-			t.Fatal("expected cancellation error")
+	decoded := mustMarshalAndDecode(t, payload)
+	input := decoded["input"].([]any)
+	if len(input) != 2 {
+		t.Fatalf("expected 2 input items, got %d", len(input))
+	}
+	functionCall := input[1].(map[string]any)
+	if functionCall["type"] != "function_call" {
+		t.Fatalf("expected function_call item, got %#v", functionCall["type"])
+	}
+	if functionCall["call_id"] != "call_1" || functionCall["name"] != "filesystem_edit" {
+		t.Fatalf("unexpected function_call payload: %#v", functionCall)
+	}
+}
+
+func TestProviderChatStreamsResponsesAPIEvents(t *testing.T) {
+	t.Setenv(config.OpenAIDefaultAPIKeyEnv, "test-key")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
-	})
+		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
+			t.Fatalf("unexpected auth header: %s", got)
+		}
+
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if payload["model"] != "gpt-5.4" {
+			t.Fatalf("expected model gpt-5.4, got %#v", payload["model"])
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeSSEChunk(t, w, map[string]any{
+			"type":            "response.output_item.added",
+			"sequence_number": 1,
+			"output_index":    0,
+			"item": map[string]any{
+				"type":      "function_call",
+				"id":        "fc_1",
+				"call_id":   "call_1",
+				"name":      "filesystem_edit",
+				"arguments": "",
+				"status":    "in_progress",
+			},
+		})
+		writeSSEChunk(t, w, map[string]any{
+			"type":            "response.function_call_arguments.delta",
+			"sequence_number": 2,
+			"output_index":    0,
+			"item_id":         "fc_1",
+			"delta":           `{"path":"main.go"}`,
+		})
+		writeSSEChunk(t, w, map[string]any{
+			"type":            "response.output_text.delta",
+			"sequence_number": 3,
+			"output_index":    1,
+			"content_index":   0,
+			"item_id":         "msg_1",
+			"delta":           "Hello ",
+			"logprobs":        []any{},
+		})
+		writeSSEChunk(t, w, map[string]any{
+			"type":            "response.output_text.delta",
+			"sequence_number": 4,
+			"output_index":    1,
+			"content_index":   0,
+			"item_id":         "msg_1",
+			"delta":           "world",
+			"logprobs":        []any{},
+		})
+		writeSSEChunk(t, w, map[string]any{
+			"type":            "response.reasoning_summary_text.delta",
+			"sequence_number": 5,
+			"output_index":    2,
+			"summary_index":   0,
+			"item_id":         "rs_1",
+			"delta":           "thinking",
+		})
+		writeSSEChunk(t, w, map[string]any{
+			"type":            "response.completed",
+			"sequence_number": 6,
+			"response": map[string]any{
+				"id": "resp_123",
+				"output": []map[string]any{
+					{
+						"type":      "function_call",
+						"id":        "fc_1",
+						"call_id":   "call_1",
+						"name":      "filesystem_edit",
+						"arguments": `{"path":"main.go"}`,
+						"status":    "completed",
+					},
+					{
+						"type":   "message",
+						"id":     "msg_1",
+						"role":   "assistant",
+						"status": "completed",
+						"content": []map[string]any{
+							{
+								"type":        "output_text",
+								"text":        "Hello world",
+								"annotations": []any{},
+							},
+						},
+					},
+				},
+				"usage": map[string]any{
+					"input_tokens":  10,
+					"output_tokens": 5,
+					"total_tokens":  15,
+					"input_tokens_details": map[string]any{
+						"cached_tokens": 2,
+					},
+					"output_tokens_details": map[string]any{
+						"reasoning_tokens": 1,
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	provider, err := New(resolvedConfig(server.URL, "gpt-5.4"), WithHTTPClient(server.Client()))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	events := make(chan domain.StreamEvent, 16)
+	response, err := provider.Chat(context.Background(), domain.ChatRequest{
+		Model: "gpt-5.4",
+		Messages: []domain.Message{
+			{Role: domain.RoleUser, Content: "please edit the file"},
+		},
+		Tools: []domain.ToolSpec{
+			{
+				Name:        "filesystem_edit",
+				Description: "Edit one matching block in a file",
+				Schema: map[string]any{
+					"type": "object",
+				},
+			},
+		},
+	}, events)
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+
+	if response.Message.Content != "Hello world" {
+		t.Fatalf("expected content %q, got %q", "Hello world", response.Message.Content)
+	}
+	if response.Message.ResponseID != "resp_123" {
+		t.Fatalf("expected response id resp_123, got %q", response.Message.ResponseID)
+	}
+	if response.FinishReason != "tool_calls" {
+		t.Fatalf("expected finish reason tool_calls, got %q", response.FinishReason)
+	}
+	if response.Usage.TotalTokens != 15 || response.Usage.CachedInputTokens != 2 || response.Usage.ReasoningTokens != 1 {
+		t.Fatalf("unexpected usage: %+v", response.Usage)
+	}
+	if len(response.Message.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(response.Message.ToolCalls))
+	}
+
+	close(events)
+
+	var (
+		text             strings.Builder
+		toolCallStart    *domain.StreamEvent
+		toolCallDelta    *domain.StreamEvent
+		reasoningDelta   *domain.StreamEvent
+		messageDoneEvent *domain.StreamEvent
+	)
+
+	for event := range events {
+		switch event.Type {
+		case domain.StreamEventTextDelta:
+			text.WriteString(event.Text)
+		case domain.StreamEventToolCallStart:
+			copied := event
+			toolCallStart = &copied
+		case domain.StreamEventToolCallDelta:
+			copied := event
+			toolCallDelta = &copied
+		case domain.StreamEventReasoningDelta:
+			copied := event
+			reasoningDelta = &copied
+		case domain.StreamEventMessageDone:
+			copied := event
+			messageDoneEvent = &copied
+		}
+	}
+
+	if text.String() != "Hello world" {
+		t.Fatalf("expected streamed chunks to form %q, got %q", "Hello world", text.String())
+	}
+	if toolCallStart == nil || toolCallStart.ToolCallID != "call_1" || toolCallStart.ToolName != "filesystem_edit" {
+		t.Fatalf("unexpected tool_call_start event: %+v", toolCallStart)
+	}
+	if toolCallDelta == nil || toolCallDelta.ToolArgumentsDelta != `{"path":"main.go"}` {
+		t.Fatalf("unexpected tool_call_delta event: %+v", toolCallDelta)
+	}
+	if reasoningDelta == nil || reasoningDelta.ReasoningText != "thinking" {
+		t.Fatalf("unexpected reasoning_delta event: %+v", reasoningDelta)
+	}
+	if messageDoneEvent == nil {
+		t.Fatal("expected message_done event")
+	}
+	if messageDoneEvent.ResponseID != "resp_123" || messageDoneEvent.FinishReason != "tool_calls" {
+		t.Fatalf("unexpected message_done event: %+v", messageDoneEvent)
+	}
+	if messageDoneEvent.Usage == nil || messageDoneEvent.Usage.CachedInputTokens != 2 || messageDoneEvent.Usage.ReasoningTokens != 1 {
+		t.Fatalf("unexpected message_done usage: %+v", messageDoneEvent.Usage)
+	}
+}
+
+func TestProviderChatHTTPErrorResponses(t *testing.T) {
+	t.Setenv(config.OpenAIDefaultAPIKeyEnv, "test-key")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"invalid api key"}}`))
+	}))
+	defer server.Close()
+
+	provider, err := New(resolvedConfig(server.URL, config.OpenAIDefaultModel), WithHTTPClient(server.Client()))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	_, err = provider.Chat(context.Background(), domain.ChatRequest{
+		Model: config.OpenAIDefaultModel,
+	}, make(chan domain.StreamEvent, 1))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+
+	var providerErr *domain.ProviderError
+	if !errors.As(err, &providerErr) {
+		t.Fatalf("expected ProviderError, got %T", err)
+	}
+	if providerErr.Code != domain.ErrorCodeAuthFailed {
+		t.Fatalf("expected auth_failed, got %s", providerErr.Code)
+	}
+	if !strings.Contains(providerErr.Message, "invalid api key") {
+		t.Fatalf("expected error message to include invalid api key, got %q", providerErr.Message)
+	}
+}
+
+func TestProviderChatResponseFailedEvent(t *testing.T) {
+	t.Setenv(config.OpenAIDefaultAPIKeyEnv, "test-key")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeSSEChunk(t, w, map[string]any{
+			"type":            "response.failed",
+			"sequence_number": 1,
+			"response": map[string]any{
+				"id": "resp_failed",
+				"error": map[string]any{
+					"code":    "rate_limit_exceeded",
+					"message": "slow down",
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	provider, err := New(resolvedConfig(server.URL, config.OpenAIDefaultModel), WithHTTPClient(server.Client()))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	_, err = provider.Chat(context.Background(), domain.ChatRequest{
+		Model: config.OpenAIDefaultModel,
+		Messages: []domain.Message{
+			{Role: domain.RoleUser, Content: "hello"},
+		},
+	}, make(chan domain.StreamEvent, 1))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+
+	var providerErr *domain.ProviderError
+	if !errors.As(err, &providerErr) {
+		t.Fatalf("expected ProviderError, got %T", err)
+	}
+	if providerErr.Code != domain.ErrorCodeRateLimit {
+		t.Fatalf("expected rate limit error, got %s", providerErr.Code)
+	}
+	if !providerErr.Retryable {
+		t.Fatalf("expected failed response rate limit error to be retryable")
+	}
 }
 
 func resolvedConfig(baseURL string, model string) config.ResolvedProviderConfig {
@@ -185,366 +518,19 @@ func resolvedConfig(baseURL string, model string) config.ResolvedProviderConfig 
 	}
 }
 
-func TestProviderChatConsumesSSEAndMergesToolCalls(t *testing.T) {
-	t.Setenv(config.OpenAIDefaultAPIKeyEnv, "test-key")
+func mustMarshalAndDecode(t *testing.T, value any) map[string]any {
+	t.Helper()
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/chat/completions" {
-			t.Fatalf("unexpected path: %s", r.URL.Path)
-		}
-		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
-			t.Fatalf("unexpected auth header: %s", got)
-		}
-
-		var payload chatCompletionRequest
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Fatalf("decode request: %v", err)
-		}
-		if payload.Model != "gpt-5.4" {
-			t.Fatalf("expected model gpt-5.4, got %q", payload.Model)
-		}
-		if !containsToolRoleMessage(payload.Messages, "call_1", "tool finished") {
-			t.Fatalf("expected tool role message with tool_call_id in payload: %+v", payload.Messages)
-		}
-
-		w.Header().Set("Content-Type", "text/event-stream")
-		writeSSEChunk(t, w, map[string]any{
-			"choices": []map[string]any{
-				{
-					"index": 0,
-					"delta": map[string]any{
-						"content": "Hello ",
-					},
-				},
-			},
-		})
-		writeSSEChunk(t, w, map[string]any{
-			"choices": []map[string]any{
-				{
-					"index": 0,
-					"delta": map[string]any{
-						"tool_calls": []map[string]any{
-							{
-								"index": 0,
-								"id":    "call_1",
-								"type":  "function",
-								"function": map[string]any{
-									"name":      "filesystem_edit",
-									"arguments": `{"path":"main.go",`,
-								},
-							},
-						},
-					},
-				},
-			},
-		})
-		writeSSEChunk(t, w, map[string]any{
-			"choices": []map[string]any{
-				{
-					"index": 0,
-					"delta": map[string]any{
-						"content": "world",
-						"tool_calls": []map[string]any{
-							{
-								"index": 0,
-								"function": map[string]any{
-									"arguments": `"search_string":"old",`,
-								},
-							},
-						},
-					},
-				},
-			},
-		})
-		writeSSEChunk(t, w, map[string]any{
-			"choices": []map[string]any{
-				{
-					"index":         0,
-					"finish_reason": "tool_calls",
-					"delta": map[string]any{
-						"tool_calls": []map[string]any{
-							{
-								"index": 0,
-								"function": map[string]any{
-									"arguments": `"replace_string":"new"}`,
-								},
-							},
-						},
-					},
-				},
-			},
-			"usage": map[string]any{
-				"prompt_tokens":     10,
-				"completion_tokens": 5,
-				"total_tokens":      15,
-			},
-		})
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
-	}))
-	defer server.Close()
-
-	provider, err := New(resolvedConfig(server.URL, "gpt-5.4"))
+	raw, err := json.Marshal(value)
 	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	provider.client = server.Client()
-
-	events := make(chan domain.StreamEvent, 8)
-	response, err := provider.Chat(context.Background(), domain.ChatRequest{
-		Model: "gpt-5.4",
-		Messages: []domain.Message{
-			{Role: "user", Content: "please edit the file"},
-			{
-				Role: "assistant",
-				ToolCalls: []domain.ToolCall{
-					{
-						ID:        "call_1",
-						Name:      "filesystem_edit",
-						Arguments: `{"path":"main.go","search_string":"old","replace_string":"new"}`,
-					},
-				},
-			},
-			{Role: "tool", ToolCallID: "call_1", Content: "tool finished"},
-		},
-		Tools: []domain.ToolSpec{
-			{
-				Name:        "filesystem_edit",
-				Description: "Edit one matching block in a file",
-				Schema: map[string]any{
-					"type": "object",
-				},
-			},
-		},
-	}, events)
-	if err != nil {
-		t.Fatalf("Chat() error = %v", err)
+		t.Fatalf("marshal payload: %v", err)
 	}
 
-	if response.Message.Content != "Hello world" {
-		t.Fatalf("expected content %q, got %q", "Hello world", response.Message.Content)
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("decode payload: %v", err)
 	}
-	if response.FinishReason != "tool_calls" {
-		t.Fatalf("expected finish reason tool_calls, got %q", response.FinishReason)
-	}
-	if response.Usage.TotalTokens != 15 {
-		t.Fatalf("expected total tokens 15, got %d", response.Usage.TotalTokens)
-	}
-	if len(response.Message.ToolCalls) != 1 {
-		t.Fatalf("expected 1 tool call, got %d", len(response.Message.ToolCalls))
-	}
-
-	call := response.Message.ToolCalls[0]
-	if call.ID != "call_1" || call.Name != "filesystem_edit" {
-		t.Fatalf("unexpected tool call: %+v", call)
-	}
-	if call.Arguments != `{"path":"main.go","search_string":"old","replace_string":"new"}` {
-		t.Fatalf("unexpected merged arguments: %q", call.Arguments)
-	}
-
-	var chunks []string
-	for {
-		select {
-		case event := <-events:
-			chunks = append(chunks, event.Text)
-		default:
-			if strings.Join(chunks, "") != "Hello world" {
-				t.Fatalf("expected streamed chunks to form %q, got %q", "Hello world", strings.Join(chunks, ""))
-			}
-			return
-		}
-	}
-}
-
-func TestProviderChatHTTPErrorResponses(t *testing.T) {
-	t.Setenv(config.OpenAIDefaultAPIKeyEnv, "test-key")
-
-	tests := []struct {
-		name      string
-		status    int
-		body      string
-		expectErr string
-	}{
-		{
-			name:      "http 401 json error",
-			status:    http.StatusUnauthorized,
-			body:      `{"error":{"message":"invalid api key"}}`,
-			expectErr: "invalid api key",
-		},
-		{
-			name:      "http 500 empty body falls back to status",
-			status:    http.StatusInternalServerError,
-			body:      ``,
-			expectErr: "500 Internal Server Error",
-		},
-	}
-
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(tt.status)
-				if tt.body != "" {
-					_, _ = w.Write([]byte(tt.body))
-				}
-			}))
-			defer server.Close()
-
-			provider, err := New(resolvedConfig(server.URL, config.OpenAIDefaultModel))
-			if err != nil {
-				t.Fatalf("New() error = %v", err)
-			}
-			provider.client = server.Client()
-
-			_, err = provider.Chat(context.Background(), domain.ChatRequest{
-				Model: config.OpenAIDefaultModel,
-			}, make(chan domain.StreamEvent, 1))
-			if err == nil || !strings.Contains(err.Error(), tt.expectErr) {
-				t.Fatalf("expected error containing %q, got %v", tt.expectErr, err)
-			}
-		})
-	}
-}
-
-func TestBuildRequestIncludesSystemPromptToolsAndToolMessages(t *testing.T) {
-	t.Parallel()
-
-	provider, err := New(resolvedConfig(config.OpenAIDefaultBaseURL, config.OpenAIDefaultModel))
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	payload, err := provider.buildRequest(domain.ChatRequest{
-		SystemPrompt: "system prompt",
-		Messages: []domain.Message{
-			{Role: "user", Content: "hello"},
-			{
-				Role: "assistant",
-				ToolCalls: []domain.ToolCall{
-					{
-						ID:        "call_1",
-						Name:      "filesystem_edit",
-						Arguments: `{"path":"main.go"}`,
-					},
-				},
-			},
-			{Role: "tool", ToolCallID: "call_1", Content: "tool finished"},
-		},
-		Tools: []domain.ToolSpec{
-			{
-				Name:        "filesystem_edit",
-				Description: "Edit file content",
-				Schema: map[string]any{
-					"type": "object",
-				},
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("buildRequest() error = %v", err)
-	}
-
-	if payload.Model != config.OpenAIDefaultModel {
-		t.Fatalf("expected default model %q, got %q", config.OpenAIDefaultModel, payload.Model)
-	}
-	if !payload.Stream {
-		t.Fatalf("expected stream=true")
-	}
-	if payload.ToolChoice != "auto" {
-		t.Fatalf("expected tool choice auto, got %q", payload.ToolChoice)
-	}
-	if len(payload.Tools) != 1 || payload.Tools[0].Function.Name != "filesystem_edit" {
-		t.Fatalf("unexpected tool payload: %+v", payload.Tools)
-	}
-	if payload.Messages[0].Role != "system" || payload.Messages[0].Content != "system prompt" {
-		t.Fatalf("unexpected system message: %+v", payload.Messages[0])
-	}
-	if !containsToolRoleMessage(payload.Messages, "call_1", "tool finished") {
-		t.Fatalf("expected tool role message, got %+v", payload.Messages)
-	}
-	if len(payload.Messages[2].ToolCalls) != 1 || payload.Messages[2].ToolCalls[0].Function.Name != "filesystem_edit" {
-		t.Fatalf("expected assistant tool call payload, got %+v", payload.Messages[2])
-	}
-}
-
-func TestParseErrorAndEmitTextDelta(t *testing.T) {
-	t.Parallel()
-
-	provider, err := New(resolvedConfig(config.OpenAIDefaultBaseURL, config.OpenAIDefaultModel))
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	tests := []struct {
-		name      string
-		status    string
-		body      string
-		expectErr string
-	}{
-		{
-			name:      "json error payload",
-			status:    "400 Bad Request",
-			body:      `{"error":{"message":"invalid request"}}`,
-			expectErr: "invalid request",
-		},
-		{
-			name:      "plain text fallback",
-			status:    "502 Bad Gateway",
-			body:      `gateway timeout`,
-			expectErr: "gateway timeout",
-		},
-	}
-
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			resp := &http.Response{
-				Status: tt.status,
-				Body:   ioNopCloser(tt.body),
-			}
-			err := provider.parseError(resp)
-			if err == nil || !strings.Contains(err.Error(), tt.expectErr) {
-				t.Fatalf("expected error containing %q, got %v", tt.expectErr, err)
-			}
-		})
-	}
-
-	eventCh := make(chan domain.StreamEvent, 1)
-	if err := emitTextDelta(context.Background(), eventCh, "chunk"); err != nil {
-		t.Fatalf("emitTextDelta() error = %v", err)
-	}
-	if got := <-eventCh; got.Text != "chunk" || got.Type != domain.StreamEventTextDelta {
-		t.Fatalf("unexpected stream event: %+v", got)
-	}
-
-	cancelledCtx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if err := emitTextDelta(cancelledCtx, make(chan domain.StreamEvent), "chunk"); err == nil {
-		t.Fatalf("expected cancellation error")
-	}
-}
-
-func TestProviderConsumeStreamRejectsDirtyJSON(t *testing.T) {
-	t.Parallel()
-
-	provider, err := New(resolvedConfig(config.OpenAIDefaultBaseURL, config.OpenAIDefaultModel))
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	_, err = provider.consumeStream(context.Background(), strings.NewReader("data: {not-json}\n\n"), make(chan domain.StreamEvent, 1))
-	if err == nil || !strings.Contains(err.Error(), "decode stream chunk") {
-		t.Fatalf("expected dirty JSON decode error, got %v", err)
-	}
-}
-
-func containsToolRoleMessage(messages []openAIMessage, toolCallID string, content string) bool {
-	for _, message := range messages {
-		if message.Role == "tool" && message.ToolCallID == toolCallID && message.Content == content {
-			return true
-		}
-	}
-	return false
+	return decoded
 }
 
 func writeSSEChunk(t *testing.T, w http.ResponseWriter, payload any) {
@@ -558,283 +544,5 @@ func writeSSEChunk(t *testing.T, w http.ResponseWriter, payload any) {
 	}
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()
-	}
-}
-
-func ioNopCloser(body string) *readCloser {
-	return &readCloser{Reader: strings.NewReader(body)}
-}
-
-type readCloser struct {
-	*strings.Reader
-}
-
-func (r *readCloser) Close() error {
-	return nil
-}
-
-// --- emitToolCallStart 边界测试 ---
-
-func TestEmitToolCallStartGuards(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-
-	// nil events 守卫
-	if err := emitToolCallStart(ctx, nil, 0, "call-1", "filesystem_edit"); err != nil {
-		t.Fatalf("expected nil events guard to return nil, got %v", err)
-	}
-
-	// 空 name 守卫
-	events := make(chan domain.StreamEvent, 1)
-	if err := emitToolCallStart(ctx, events, 0, "call-1", ""); err != nil {
-		t.Fatalf("expected empty name guard to return nil, got %v", err)
-	}
-	select {
-	case <-events:
-		t.Fatalf("expected no event for empty name")
-	default:
-	}
-
-	// 正常发送
-	if err := emitToolCallStart(ctx, events, 2, "call-1", "filesystem_edit"); err != nil {
-		t.Fatalf("emitToolCallStart() error = %v", err)
-	}
-	got := <-events
-	if got.Type != domain.StreamEventToolCallStart || got.ToolName != "filesystem_edit" || got.ToolCallID != "call-1" || got.ToolCallIndex != 2 {
-		t.Fatalf("unexpected event: %+v", got)
-	}
-
-	// context 取消
-	cancelledCtx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if err := emitToolCallStart(cancelledCtx, make(chan domain.StreamEvent), 0, "call-1", "filesystem_edit"); err == nil {
-		t.Fatalf("expected cancellation error")
-	}
-}
-
-func TestProviderChatEmitsToolCallStartEvent(t *testing.T) {
-	t.Setenv(config.OpenAIDefaultAPIKeyEnv, "test-key")
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		writeSSEChunk(t, w, map[string]any{
-			"choices": []map[string]any{
-				{
-					"index": 0,
-					"delta": map[string]any{
-						"tool_calls": []map[string]any{
-							{
-								"index": 0,
-								"id":    "call_tool",
-								"type":  "function",
-								"function": map[string]any{
-									"name":      "filesystem_edit",
-									"arguments": `{}`,
-								},
-							},
-						},
-					},
-				},
-			},
-		})
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
-	}))
-	defer server.Close()
-
-	provider, err := New(resolvedConfig(server.URL, config.OpenAIDefaultModel))
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	provider.client = server.Client()
-
-	events := make(chan domain.StreamEvent, 8)
-	_, err = provider.Chat(context.Background(), domain.ChatRequest{
-		Model:    config.OpenAIDefaultModel,
-		Messages: []domain.Message{{Role: "user", Content: "edit"}},
-		Tools: []domain.ToolSpec{
-			{Name: "filesystem_edit", Description: "edit", Schema: map[string]any{"type": "object"}},
-		},
-	}, events)
-	if err != nil {
-		t.Fatalf("Chat() error = %v", err)
-	}
-
-	close(events)
-
-	var foundToolCallStart bool
-	for evt := range events {
-		if evt.Type == domain.StreamEventToolCallStart {
-			foundToolCallStart = true
-			if evt.ToolName != "filesystem_edit" {
-				t.Fatalf("expected ToolName %q, got %q", "filesystem_edit", evt.ToolName)
-			}
-			if evt.ToolCallID != "call_tool" {
-				t.Fatalf("expected ToolCallID %q, got %q", "call_tool", evt.ToolCallID)
-			}
-		}
-	}
-	if !foundToolCallStart {
-		t.Fatalf("expected StreamEventToolCallStart event in stream")
-	}
-}
-
-// TestProviderChatEmitsFullEventStream 测试完整的事件流（包括 tool_call_delta 和 message_done）。
-func TestProviderChatEmitsFullEventStream(t *testing.T) {
-	t.Setenv(config.OpenAIDefaultAPIKeyEnv, "test-key")
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-
-		// 发送文本 delta
-		writeSSEChunk(t, w, map[string]any{
-			"choices": []map[string]any{
-				{
-					"index": 0,
-					"delta": map[string]any{
-						"content": "Hello",
-					},
-				},
-			},
-		})
-
-		// 发送 tool call start 和 delta
-		writeSSEChunk(t, w, map[string]any{
-			"choices": []map[string]any{
-				{
-					"index": 0,
-					"delta": map[string]any{
-						"tool_calls": []map[string]any{
-							{
-								"index": 0,
-								"id":    "call_tool_1",
-								"type":  "function",
-								"function": map[string]any{
-									"name":      "filesystem_edit",
-									"arguments": `{"path":"a.`,
-								},
-							},
-						},
-					},
-				},
-			},
-		})
-
-		// 发送 tool call delta（参数增量）
-		writeSSEChunk(t, w, map[string]any{
-			"choices": []map[string]any{
-				{
-					"index": 0,
-					"delta": map[string]any{
-						"tool_calls": []map[string]any{
-							{
-								"index": 0,
-								"function": map[string]any{
-									"arguments": `go"}`,
-								},
-							},
-						},
-					},
-				},
-			},
-		})
-
-		// 发送 usage 和 finish_reason
-		writeSSEChunk(t, w, map[string]any{
-			"choices": []map[string]any{
-				{
-					"index":         0,
-					"finish_reason": "tool_calls",
-				},
-			},
-			"usage": map[string]any{
-				"prompt_tokens":     100,
-				"completion_tokens": 50,
-				"total_tokens":      150,
-			},
-		})
-
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
-	}))
-	defer server.Close()
-
-	provider, err := New(resolvedConfig(server.URL, config.OpenAIDefaultModel))
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	provider.client = server.Client()
-
-	events := make(chan domain.StreamEvent, 16)
-	_, err = provider.Chat(context.Background(), domain.ChatRequest{
-		Model:    config.OpenAIDefaultModel,
-		Messages: []domain.Message{{Role: "user", Content: "test"}},
-	}, events)
-	if err != nil {
-		t.Fatalf("Chat() error = %v", err)
-	}
-
-	close(events)
-
-	var (
-		foundTextDelta       bool
-		foundToolCallStart   bool
-		foundToolCallDelta   bool
-		foundMessageDone     bool
-		toolCallDeltaContent string
-		messageDoneEvt       *domain.StreamEvent
-	)
-
-	for evt := range events {
-		switch evt.Type {
-		case domain.StreamEventTextDelta:
-			foundTextDelta = true
-		case domain.StreamEventToolCallStart:
-			foundToolCallStart = true
-			if evt.ToolName != "filesystem_edit" {
-				t.Fatalf("expected ToolName %q, got %q", "filesystem_edit", evt.ToolName)
-			}
-			if evt.ToolCallIndex != 0 {
-				t.Fatalf("expected ToolCallIndex %d for tool_call_start, got %d", 0, evt.ToolCallIndex)
-			}
-		case domain.StreamEventToolCallDelta:
-			foundToolCallDelta = true
-			toolCallDeltaContent += evt.ToolArgumentsDelta
-		case domain.StreamEventMessageDone:
-			foundMessageDone = true
-			messageDoneEvt = &evt
-		}
-	}
-
-	if !foundTextDelta {
-		t.Fatal("expected StreamEventTextDelta event")
-	}
-	if !foundToolCallStart {
-		t.Fatal("expected StreamEventToolCallStart event")
-	}
-	if !foundToolCallDelta {
-		t.Fatal("expected StreamEventToolCallDelta event")
-	}
-	if !foundMessageDone {
-		t.Fatal("expected StreamEventMessageDone event")
-	}
-
-	// 验证 tool_call_delta 内容被正确累加
-	expectedDelta := `{"path":"a.go"}`
-	if toolCallDeltaContent != expectedDelta {
-		t.Fatalf("expected tool call delta content %q, got %q", expectedDelta, toolCallDeltaContent)
-	}
-
-	// 验证 message_done 事件包含正确的字段
-	if messageDoneEvt == nil {
-		t.Fatal("message_done event is nil")
-	}
-	if messageDoneEvt.FinishReason != "tool_calls" {
-		t.Fatalf("expected FinishReason %q, got %q", "tool_calls", messageDoneEvt.FinishReason)
-	}
-	if messageDoneEvt.Usage == nil {
-		t.Fatal("expected Usage in message_done event")
-	}
-	if messageDoneEvt.Usage.TotalTokens != 150 {
-		t.Fatalf("expected TotalTokens %d, got %d", 150, messageDoneEvt.Usage.TotalTokens)
 	}
 }
