@@ -28,7 +28,7 @@ curl -fsSL https://raw.githubusercontent.com/1024XEngineer/neo-code/main/scripts
 
 
 ```PowerShell
-irm https://raw.githubusercontent.com/pionxe/neo-code/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/1024XEngineer/neo-code/main/scripts/install.ps1 | iex
 ```
 
 
