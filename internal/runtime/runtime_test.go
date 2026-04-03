@@ -1485,6 +1485,87 @@ func containsError(err error, target string) bool {
 	return err != nil && strings.Contains(err.Error(), target)
 }
 
+func TestWorkdirHelperFunctions(t *testing.T) {
+	t.Run("effectiveSessionWorkdir prefers session value", func(t *testing.T) {
+		if got := effectiveSessionWorkdir("  /session ", "/default"); got != "/session" {
+			t.Fatalf("expected session workdir, got %q", got)
+		}
+		if got := effectiveSessionWorkdir("", " /default "); got != "/default" {
+			t.Fatalf("expected default workdir, got %q", got)
+		}
+	})
+
+	t.Run("resolve workdir handles empty relative absolute and invalid cases", func(t *testing.T) {
+		defaultDir := t.TempDir()
+		currentDir := t.TempDir()
+		relativeTarget := filepath.Join(currentDir, "nested")
+		if err := os.MkdirAll(relativeTarget, 0o755); err != nil {
+			t.Fatalf("mkdir relative target: %v", err)
+		}
+		absoluteTarget := t.TempDir()
+
+		got, err := resolveWorkdirForSession(defaultDir, "", "")
+		if err != nil || got != filepath.Clean(defaultDir) {
+			t.Fatalf("expected default dir %q, got %q / %v", filepath.Clean(defaultDir), got, err)
+		}
+
+		got, err = resolveWorkdirForSession(defaultDir, currentDir, "nested")
+		if err != nil || got != filepath.Clean(relativeTarget) {
+			t.Fatalf("expected relative target %q, got %q / %v", filepath.Clean(relativeTarget), got, err)
+		}
+
+		got, err = resolveWorkdirForSession(defaultDir, currentDir, absoluteTarget)
+		if err != nil || got != filepath.Clean(absoluteTarget) {
+			t.Fatalf("expected absolute target %q, got %q / %v", filepath.Clean(absoluteTarget), got, err)
+		}
+
+		_, err = resolveWorkdirForSession("", "", "")
+		if err == nil || !containsError(err, "workdir is empty") {
+			t.Fatalf("expected empty workdir error, got %v", err)
+		}
+
+		filePath := filepath.Join(defaultDir, "note.txt")
+		if err := os.WriteFile(filePath, []byte("x"), 0o644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+		_, err = normalizeExistingWorkdir(filePath)
+		if err == nil || !containsError(err, "is not a directory") {
+			t.Fatalf("expected non-directory error, got %v", err)
+		}
+	})
+}
+
+func TestServiceSetSessionWorkdirNoopDoesNotSave(t *testing.T) {
+	manager := newRuntimeConfigManager(t)
+	defaultWorkdir := t.TempDir()
+	if err := manager.Update(context.Background(), func(cfg *config.Config) error {
+		cfg.Workdir = defaultWorkdir
+		return nil
+	}); err != nil {
+		t.Fatalf("update default workdir: %v", err)
+	}
+
+	store := newMemoryStore()
+	target := t.TempDir()
+	session := newSessionWithWorkdir("noop", target)
+	store.sessions[session.ID] = cloneSession(session)
+	registry := tools.NewRegistry()
+	registry.Register(&stubTool{name: "filesystem_read_file", content: "default"})
+	service := NewWithFactory(manager, registry, store, &scriptedProviderFactory{provider: &scriptedProvider{}}, nil)
+
+	beforeSaves := store.saves
+	updated, err := service.SetSessionWorkdir(context.Background(), session.ID, target)
+	if err != nil {
+		t.Fatalf("SetSessionWorkdir() error = %v", err)
+	}
+	if updated.Workdir != target {
+		t.Fatalf("expected unchanged workdir %q, got %q", target, updated.Workdir)
+	}
+	if store.saves != beforeSaves {
+		t.Fatalf("expected no extra save on noop update, saves before=%d after=%d", beforeSaves, store.saves)
+	}
+}
+
 func TestIsRetryableProviderError(t *testing.T) {
 	t.Parallel()
 

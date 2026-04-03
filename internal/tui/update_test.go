@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -29,6 +31,7 @@ type stubRuntime struct {
 	listErr       error
 	loadErr       error
 	setWorkdirErr error
+	setResult     *agentruntime.Session
 	setCalls      int
 	cancelCalls   int
 	cancelResult  bool
@@ -95,6 +98,9 @@ func (r *stubRuntime) SetSessionWorkdir(ctx context.Context, sessionID string, w
 	r.setCalls++
 	if r.setWorkdirErr != nil {
 		return agentruntime.Session{}, r.setWorkdirErr
+	}
+	if r.setResult != nil {
+		return *r.setResult, nil
 	}
 	session, ok := r.loads[sessionID]
 	if !ok {
@@ -257,6 +263,111 @@ func TestAppUpdateWorkspaceSlashCommands(t *testing.T) {
 			t.Fatalf("expected session workspace switch status, got %q", app.state.StatusText)
 		}
 	})
+}
+
+func TestRunSessionWorkdirCommandBranches(t *testing.T) {
+	t.Run("invalid slash command returns parser error", func(t *testing.T) {
+		msg := runSessionWorkdirCommand(newStubRuntime(), "", "", "/status")()
+		result, ok := msg.(sessionWorkdirResultMsg)
+		if !ok {
+			t.Fatalf("expected sessionWorkdirResultMsg, got %T", msg)
+		}
+		if result.err == nil || !strings.Contains(result.err.Error(), "unknown command") {
+			t.Fatalf("expected unknown command error, got %+v", result)
+		}
+	})
+
+	t.Run("empty workspace query without current workdir returns usage", func(t *testing.T) {
+		msg := runSessionWorkdirCommand(newStubRuntime(), "", "", "/workspace")()
+		result := msg.(sessionWorkdirResultMsg)
+		if result.err == nil || !strings.Contains(result.err.Error(), "usage: /workspace <path>") {
+			t.Fatalf("expected usage error, got %+v", result)
+		}
+	})
+
+	t.Run("session workdir change surfaces runtime error", func(t *testing.T) {
+		runtime := newStubRuntime()
+		runtime.setWorkdirErr = errors.New("set workdir failed")
+		msg := runSessionWorkdirCommand(runtime, "session-1", t.TempDir(), "/cwd ./subdir")()
+		result := msg.(sessionWorkdirResultMsg)
+		if result.err == nil || !strings.Contains(result.err.Error(), "set workdir failed") {
+			t.Fatalf("expected set workdir error, got %+v", result)
+		}
+	})
+
+	t.Run("session workdir fallback uses current workdir when runtime returns empty", func(t *testing.T) {
+		current := t.TempDir()
+		runtime := newStubRuntime()
+		runtime.setResult = &agentruntime.Session{ID: "session-1", Workdir: ""}
+		msg := runSessionWorkdirCommand(runtime, "session-1", current, "/workspace ./subdir")()
+		result := msg.(sessionWorkdirResultMsg)
+		if result.err != nil {
+			t.Fatalf("unexpected error: %v", result.err)
+		}
+		if result.workdir != current {
+			t.Fatalf("expected fallback workdir %q, got %q", current, result.workdir)
+		}
+	})
+}
+
+func TestResolveWorkspacePathAndSelector(t *testing.T) {
+	t.Run("resolve relative path from base", func(t *testing.T) {
+		base := t.TempDir()
+		target := filepath.Join(base, "sub")
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			t.Fatalf("mkdir target: %v", err)
+		}
+		resolved, err := resolveWorkspacePath(base, "sub")
+		if err != nil {
+			t.Fatalf("resolveWorkspacePath() error = %v", err)
+		}
+		if resolved != filepath.Clean(target) {
+			t.Fatalf("expected %q, got %q", filepath.Clean(target), resolved)
+		}
+	})
+
+	t.Run("resolve workspace path rejects non-directory", func(t *testing.T) {
+		base := t.TempDir()
+		file := filepath.Join(base, "note.txt")
+		if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+		_, err := resolveWorkspacePath(base, "note.txt")
+		if err == nil || !strings.Contains(err.Error(), "is not a directory") {
+			t.Fatalf("expected non-directory error, got %v", err)
+		}
+	})
+
+	t.Run("select session workdir prefers session value", func(t *testing.T) {
+		if got := selectSessionWorkdir("  /session  ", "/default"); got != "/session" {
+			t.Fatalf("expected trimmed session workdir, got %q", got)
+		}
+		if got := selectSessionWorkdir("", " /default "); got != "/default" {
+			t.Fatalf("expected fallback default workdir, got %q", got)
+		}
+	})
+}
+
+func TestAppUpdateSessionWorkdirResultMessage(t *testing.T) {
+	manager := newTestConfigManager(t)
+	runtime := newStubRuntime()
+	app, err := New(nil, manager, runtime, newTestProviderService(t, manager))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	model, cmd := app.Update(sessionWorkdirResultMsg{
+		notice:  "ok",
+		workdir: filepath.Join(t.TempDir(), "missing-dir"),
+	})
+	app = model.(App)
+	_ = collectTeaMessages(cmd)
+	if app.state.ExecutionError == "" || !strings.Contains(strings.ToLower(app.state.ExecutionError), "missing-dir") {
+		t.Fatalf("expected refresh workspace file error, got %q", app.state.ExecutionError)
+	}
+	if app.state.StatusText == "ok" {
+		t.Fatalf("expected status text to switch to refresh error, got %q", app.state.StatusText)
+	}
 }
 
 func TestRunAgentWorkdirForwarding(t *testing.T) {

@@ -194,6 +194,9 @@ func TestCommandHelperFunctions(t *testing.T) {
 		if !isWorkspaceSlashCommand("/cwd ./tmp") {
 			t.Fatalf("expected /cwd to be recognized")
 		}
+		if isWorkspaceSlashCommand("/status") {
+			t.Fatalf("expected non-workspace slash command to be ignored")
+		}
 		args, err := parseWorkspaceSlashCommand("/workspace ./tmp")
 		if err != nil || args != "./tmp" {
 			t.Fatalf("expected ./tmp, got %q / %v", args, err)
@@ -201,6 +204,9 @@ func TestCommandHelperFunctions(t *testing.T) {
 		args, err = parseWorkspaceSlashCommand("/cwd")
 		if err != nil || args != "" {
 			t.Fatalf("expected empty args for /cwd, got %q / %v", args, err)
+		}
+		if _, err := parseWorkspaceSlashCommand("/status"); err == nil {
+			t.Fatalf("expected unknown slash command to return error")
 		}
 	})
 
