@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,6 +33,14 @@ func TestResolveWorkspaceTarget(t *testing.T) {
 					t.Fatalf("expected target inside root, got %q", target)
 				}
 			},
+		},
+		{
+			name: "fallback resolver error bubbles up",
+			setup: func(t *testing.T) (ToolCallInput, string, string) {
+				t.Helper()
+				return ToolCallInput{}, t.TempDir(), "a.txt"
+			},
+			wantErr: "resolver failed",
 		},
 		{
 			name: "uses validated workspace plan target",
@@ -96,6 +105,36 @@ func TestResolveWorkspaceTarget(t *testing.T) {
 			},
 			wantErr: "target type",
 		},
+		{
+			name: "allows type mismatch when expected type is empty",
+			setup: func(t *testing.T) (ToolCallInput, string, string) {
+				t.Helper()
+				root := t.TempDir()
+				if err := os.MkdirAll(filepath.Join(root, "scripts"), 0o755); err != nil {
+					t.Fatalf("mkdir scripts: %v", err)
+				}
+				plan := mustBuildWorkspacePlan(t, root, "scripts", security.TargetTypeDirectory, security.ActionTypeBash)
+				return ToolCallInput{WorkspacePlan: plan}, root, "scripts"
+			},
+			assertion: func(t *testing.T, root string, target string) {
+				t.Helper()
+				if !strings.HasSuffix(target, filepath.Join(root, "scripts")) {
+					t.Fatalf("expected planned scripts target, got %q", target)
+				}
+			},
+		},
+		{
+			name: "invalid plan root is rejected from validate",
+			setup: func(t *testing.T) (ToolCallInput, string, string) {
+				t.Helper()
+				return ToolCallInput{
+					WorkspacePlan: &security.WorkspaceExecutionPlan{
+						Target: "a.txt",
+					},
+				}, t.TempDir(), "a.txt"
+			},
+			wantErr: "workspace plan root is empty",
+		},
 	}
 
 	for _, tt := range tests {
@@ -104,12 +143,22 @@ func TestResolveWorkspaceTarget(t *testing.T) {
 			t.Parallel()
 
 			call, root, requested := tt.setup(t)
+			expectedType := security.TargetTypePath
+			if tt.name == "allows type mismatch when expected type is empty" {
+				expectedType = ""
+			}
+
 			resolvedRoot, target, err := ResolveWorkspaceTarget(
 				call,
-				security.TargetTypePath,
+				expectedType,
 				root,
 				requested,
-				testPathResolver,
+				func(resolveRoot string, resolveRequested string) (string, error) {
+					if tt.name == "fallback resolver error bubbles up" {
+						return "", errors.New("resolver failed")
+					}
+					return testPathResolver(resolveRoot, resolveRequested)
+				},
 			)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
