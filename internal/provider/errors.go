@@ -8,9 +8,9 @@ import (
 
 // 通用领域错误。
 var (
-	ErrProviderNotFound        = errors.New("provider not found")
-	ErrModelNotFound           = errors.New("model not found")
-	ErrDriverNotFound          = errors.New("provider driver not found")
+	// ErrDriverNotFound is raised when a requested driver type is not registered in the registry.
+	ErrDriverNotFound = errors.New("provider driver not found")
+	// ErrDriverAlreadyRegistered is raised when attempting to register a duplicate driver.
 	ErrDriverAlreadyRegistered = errors.New("provider: driver already registered")
 )
 

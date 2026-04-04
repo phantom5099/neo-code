@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"neo-code/internal/config"
-	"neo-code/internal/provider"
 )
 
 const SchemaVersion = 1
@@ -22,11 +21,11 @@ var ErrCatalogNotFound = errors.New("provider: model catalog not found")
 
 // ModelCatalog stores discovered models for a concrete provider endpoint.
 type ModelCatalog struct {
-	SchemaVersion int                        `json:"schema_version"`
-	Identity      config.ProviderIdentity    `json:"identity"`
-	FetchedAt     time.Time                  `json:"fetched_at"`
-	ExpiresAt     time.Time                  `json:"expires_at"`
-	Models        []provider.ModelDescriptor `json:"models"`
+	SchemaVersion int                      `json:"schema_version"`
+	Identity      config.ProviderIdentity  `json:"identity"`
+	FetchedAt     time.Time                `json:"fetched_at"`
+	ExpiresAt     time.Time                `json:"expires_at"`
+	Models        []config.ModelDescriptor `json:"models"`
 }
 
 func (c ModelCatalog) Expired(now time.Time) bool {
@@ -111,7 +110,7 @@ func normalizeCatalog(modelCatalog ModelCatalog) ModelCatalog {
 	if modelCatalog.SchemaVersion == 0 {
 		modelCatalog.SchemaVersion = SchemaVersion
 	}
-	modelCatalog.Models = provider.MergeModelDescriptors(modelCatalog.Models)
+	modelCatalog.Models = config.MergeModelDescriptors(modelCatalog.Models)
 	return modelCatalog
 }
 

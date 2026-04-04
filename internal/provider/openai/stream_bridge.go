@@ -5,101 +5,138 @@ import (
 	"fmt"
 	"strings"
 
+	sdk "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/packages/ssestream"
-	"github.com/openai/openai-go/v3/responses"
 
 	domain "neo-code/internal/provider"
 )
 
+// consumeStream reads SSE chunks from a Chat Completions streaming connection and
+// emits domain.StreamEvents to the caller's channel.
+//
+// Chat Completions streaming event format (per chunk):
+//   - choices[0].delta.content       → text_delta
+//   - choices[0].delta.tool_calls[i] → tool_call_start (new index) / tool_call_delta (existing index)
+//   - final chunk: choices[0].finish_reason + .usage → message_done
 func (p *Provider) consumeStream(
 	ctx context.Context,
-	stream *ssestream.Stream[responses.ResponseStreamEventUnion],
+	stream *ssestream.Stream[sdk.ChatCompletionChunk],
 	events chan<- domain.StreamEvent,
 ) (domain.ChatResponse, error) {
-	var finalResponse *responses.Response
+	seenToolCallIndex := make(map[int]bool)
+
+	var (
+		finalChunk *sdk.ChatCompletionChunk
+		textBuf    strings.Builder
+		toolCalls  []partialToolCall
+	)
 
 	for stream.Next() {
-		event := stream.Current()
+		chunk := stream.Current()
 
-		switch event.Type {
-		case "response.output_text.delta":
-			delta := event.AsResponseOutputTextDelta()
-			if err := emitTextDelta(ctx, events, delta.Delta); err != nil {
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+		delta := chunk.Choices[0].Delta
+
+		// Text delta
+		if delta.Content != "" {
+			if err := emitTextDelta(ctx, events, delta.Content); err != nil {
 				return domain.ChatResponse{}, err
 			}
+			textBuf.WriteString(delta.Content)
+		}
 
-		case "response.output_item.added":
-			added := event.AsResponseOutputItemAdded()
-			if added.Item.Type != "function_call" {
-				continue
-			}
-			call := added.Item.AsFunctionCall()
-			if err := emitToolCallStart(
-				ctx,
-				events,
-				int(added.OutputIndex),
-				call.CallID,
-				call.Name,
-			); err != nil {
-				return domain.ChatResponse{}, err
-			}
-
-		case "response.function_call_arguments.delta":
-			delta := event.AsResponseFunctionCallArgumentsDelta()
-			if err := emitToolCallDelta(ctx, events, int(delta.OutputIndex), delta.Delta); err != nil {
-				return domain.ChatResponse{}, err
+		// Tool call deltas — each chunk may contain incremental data for multiple indices
+		for _, tc := range delta.ToolCalls {
+			idx := int(tc.Index)
+			if !seenToolCallIndex[idx] {
+				seenToolCallIndex[idx] = true
+				// New tool_call → emit start event
+				if err := emitToolCallStart(ctx, events, idx, tc.ID, tc.Function.Name); err != nil {
+					return domain.ChatResponse{}, err
+				}
+				toolCalls = append(toolCalls, partialToolCall{
+					Index: idx,
+					ID:    tc.ID,
+					Name:  tc.Function.Name,
+				})
 			}
 
-		case "response.reasoning_summary_text.delta":
-			delta := event.AsResponseReasoningSummaryTextDelta()
-			if err := emitReasoningDelta(ctx, events, delta.Delta); err != nil {
-				return domain.ChatResponse{}, err
+			// Arguments delta (may arrive across multiple chunks for the same index)
+			if tc.Function.Arguments != "" {
+				if err := emitToolCallDelta(ctx, events, idx, tc.Function.Arguments); err != nil {
+					return domain.ChatResponse{}, err
+				}
+				// Accumulate arguments for the final response assembly
+				for i := range toolCalls {
+					if toolCalls[i].Index == idx {
+						toolCalls[i].Arguments += tc.Function.Arguments
+						break
+					}
+				}
 			}
+		}
 
-		case "response.completed":
-			response := event.AsResponseCompleted().Response
-			finalResponse = &response
-
-		case "response.incomplete":
-			response := event.AsResponseIncomplete().Response
-			finalResponse = &response
-
-		case "response.failed":
-			response := event.AsResponseFailed().Response
-			return domain.ChatResponse{}, mapResponseFailure(response)
-
-		case "error":
-			streamErr := event.AsError()
-			return domain.ChatResponse{}, &domain.ProviderError{
-				Code:      domain.ErrorCodeUnknown,
-				Message:   strings.TrimSpace(streamErr.Message),
-				Retryable: false,
-			}
+		// Capture the last non-empty chunk for its finish_reason / usage
+		if string(chunk.Choices[0].FinishReason) != "" || chunk.JSON.Usage.Valid() {
+			copied := chunk
+			finalChunk = &copied
 		}
 	}
 
 	if err := stream.Err(); err != nil {
 		return domain.ChatResponse{}, mapProviderError(err)
 	}
-	if finalResponse == nil {
-		return domain.ChatResponse{}, fmt.Errorf("openai provider: stream ended without final response")
+
+	if finalChunk == nil {
+		return domain.ChatResponse{}, fmt.Errorf("openai provider: stream ended without final chunk")
 	}
 
-	resp, err := mapResponseToChatResponse(*finalResponse)
-	if err != nil {
+	// Assemble the final ChatResponse from accumulated state
+	finishReason := string(finalChunk.Choices[0].FinishReason)
+	if finishReason == "" || finishReason == "null" {
+		finishReason = "stop"
+	}
+	if len(toolCalls) > 0 && finishReason != "tool_calls" {
+		finishReason = "tool_calls"
+	}
+
+	response := domain.ChatResponse{
+		Message: domain.Message{
+			Role:    domain.RoleAssistant,
+			Content: textBuf.String(),
+		},
+		FinishReason: finishReason,
+	}
+	if finalChunk.JSON.Usage.Valid() {
+		response.Usage = mapUsageCC(finalChunk.Usage)
+	}
+	for _, tc := range toolCalls {
+		response.Message.ToolCalls = append(response.Message.ToolCalls, domain.ToolCall{
+			ID:        tc.ID,
+			Name:      tc.Name,
+			Arguments: tc.Arguments,
+		})
+	}
+
+	if err := emitMessageDone(ctx, events, finishReason, &response.Usage); err != nil {
 		return domain.ChatResponse{}, err
 	}
-	if err := emitMessageDone(ctx, events, resp.FinishReason, resp.Message.ResponseID, &resp.Usage); err != nil {
-		return domain.ChatResponse{}, err
-	}
-	return resp, nil
+	return response, nil
+}
+
+type partialToolCall struct {
+	Index     int
+	ID        string
+	Name      string
+	Arguments string
 }
 
 func emitTextDelta(ctx context.Context, events chan<- domain.StreamEvent, text string) error {
-	if events == nil || text == "" {
+	if text == "" {
 		return nil
 	}
-
 	select {
 	case events <- domain.StreamEvent{
 		Type: domain.StreamEventTextDelta,
@@ -112,16 +149,15 @@ func emitTextDelta(ctx context.Context, events chan<- domain.StreamEvent, text s
 }
 
 func emitToolCallStart(ctx context.Context, events chan<- domain.StreamEvent, index int, id, name string) error {
-	if events == nil || strings.TrimSpace(name) == "" {
+	if name == "" {
 		return nil
 	}
-
 	select {
 	case events <- domain.StreamEvent{
 		Type:          domain.StreamEventToolCallStart,
+		ToolCallIndex: index,
 		ToolCallID:    id,
 		ToolName:      name,
-		ToolCallIndex: index,
 	}:
 		return nil
 	case <-ctx.Done():
@@ -130,10 +166,6 @@ func emitToolCallStart(ctx context.Context, events chan<- domain.StreamEvent, in
 }
 
 func emitToolCallDelta(ctx context.Context, events chan<- domain.StreamEvent, index int, argumentsDelta string) error {
-	if events == nil || argumentsDelta == "" {
-		return nil
-	}
-
 	select {
 	case events <- domain.StreamEvent{
 		Type:               domain.StreamEventToolCallDelta,
@@ -146,38 +178,16 @@ func emitToolCallDelta(ctx context.Context, events chan<- domain.StreamEvent, in
 	}
 }
 
-func emitReasoningDelta(ctx context.Context, events chan<- domain.StreamEvent, text string) error {
-	if events == nil || text == "" {
-		return nil
-	}
-
-	select {
-	case events <- domain.StreamEvent{
-		Type:          domain.StreamEventReasoningDelta,
-		ReasoningText: text,
-	}:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
 func emitMessageDone(
 	ctx context.Context,
 	events chan<- domain.StreamEvent,
 	finishReason string,
-	responseID string,
 	usage *domain.Usage,
 ) error {
-	if events == nil {
-		return nil
-	}
-
 	select {
 	case events <- domain.StreamEvent{
 		Type:         domain.StreamEventMessageDone,
 		FinishReason: finishReason,
-		ResponseID:   responseID,
 		Usage:        usage,
 	}:
 		return nil

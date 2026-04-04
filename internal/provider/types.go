@@ -12,8 +12,10 @@ type Message struct {
 	Content    string     `json:"content"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
-	ResponseID string     `json:"response_id,omitempty"`
-	IsError    bool       `json:"is_error,omitempty"`
+	// IsError indicates that this tool-result message carries an error.
+	// The provider layer may encode it in an API-specific way when sending,
+	// and upper layers (runtime / tui) use it to render error states.
+	IsError bool `json:"is_error,omitempty"`
 }
 
 type ToolCall struct {
@@ -49,26 +51,8 @@ type Usage struct {
 	ReasoningTokens   int `json:"reasoning_tokens,omitempty"`
 }
 
-type ModelDescriptor struct {
-	ID              string          `json:"id"`
-	Name            string          `json:"name"`
-	Description     string          `json:"description,omitempty"`
-	ContextWindow   int             `json:"context_window,omitempty"`
-	MaxOutputTokens int             `json:"max_output_tokens,omitempty"`
-	Capabilities    map[string]bool `json:"capabilities,omitempty"`
-}
-
-type ProviderCatalogItem struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name"`
-	Description string            `json:"description,omitempty"`
-	Models      []ModelDescriptor `json:"models,omitempty"`
-}
-
-type ProviderSelection struct {
-	ProviderID string `json:"provider_id"`
-	ModelID    string `json:"model_id"`
-}
+// NOTE: Selection-related types and errors are defined in the config package.
+// Use config.ModelDescriptor, config.ProviderCatalogItem, etc. directly.
 
 type StreamEventType string
 
@@ -79,8 +63,6 @@ const (
 	StreamEventToolCallStart StreamEventType = "tool_call_start"
 	// StreamEventToolCallDelta reports incremental tool-call arguments.
 	StreamEventToolCallDelta StreamEventType = "tool_call_delta"
-	// StreamEventReasoningDelta reports incremental reasoning-summary text.
-	StreamEventReasoningDelta StreamEventType = "reasoning_delta"
 	// StreamEventMessageDone reports that the current assistant turn has finished.
 	StreamEventMessageDone StreamEventType = "message_done"
 )
@@ -98,11 +80,7 @@ type StreamEvent struct {
 	ToolName           string `json:"tool_name,omitempty"`
 	ToolArgumentsDelta string `json:"tool_arguments_delta,omitempty"`
 
-	// reasoning_delta
-	ReasoningText string `json:"reasoning_text,omitempty"`
-
 	// message_done
 	FinishReason string `json:"finish_reason,omitempty"`
-	ResponseID   string `json:"response_id,omitempty"`
 	Usage        *Usage `json:"usage,omitempty"`
 }

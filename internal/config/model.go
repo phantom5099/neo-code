@@ -10,6 +10,12 @@ import (
 	"strings"
 )
 
+// Selection errors (defined alongside model descriptors in model_desc.go).
+// Re-declared here for backward compatibility; canonical definitions are in model_desc.go.
+var (
+	ErrDriverNotSupported = errors.New("config: driver not supported")
+)
+
 const (
 	DefaultWorkdir                        = "."
 	DefaultMaxLoops                       = 8

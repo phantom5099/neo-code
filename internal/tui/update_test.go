@@ -18,7 +18,6 @@ import (
 	"neo-code/internal/config"
 	"neo-code/internal/provider"
 	providercatalog "neo-code/internal/provider/catalog"
-	providerselection "neo-code/internal/provider/selection"
 	agentruntime "neo-code/internal/runtime"
 	"neo-code/internal/tools"
 )
@@ -858,7 +857,7 @@ func TestTUIStandaloneHelpers(t *testing.T) {
 		t.Fatalf("expected delegate update to return nil")
 	}
 	var buf bytes.Buffer
-	model := newModelPicker([]provider.ModelDescriptor{{ID: "gpt-4.1", Name: "gpt-4.1"}})
+	model := newModelPicker([]config.ModelDescriptor{{ID: "gpt-4.1", Name: "gpt-4.1"}})
 	sessionList := []list.Item{sItem}
 	listModel := list.New(sessionList, delegate, 30, 10)
 	delegate.Render(&buf, listModel, 0, sItem)
@@ -2342,7 +2341,7 @@ func newTestConfigManager(t *testing.T) *config.Manager {
 	return manager
 }
 
-func newTestProviderService(t *testing.T, manager *config.Manager) *providerselection.Service {
+func newTestProviderService(t *testing.T, manager *config.Manager) *config.SelectionOrchestrator {
 	t.Helper()
 
 	registry := provider.NewRegistry()
@@ -2356,7 +2355,7 @@ func newTestProviderService(t *testing.T, manager *config.Manager) *providersele
 		t.Fatalf("register provider drivers: %v", err)
 	}
 	modelCatalogs := providercatalog.NewService("", registry, newTUITestCatalogStore())
-	return providerselection.NewService(manager, registry, modelCatalogs)
+	return config.NewSelectionOrchestrator(manager, registry, modelCatalogs)
 }
 
 type tuiTestProvider struct{}

@@ -6,181 +6,201 @@ import (
 	"fmt"
 	"strings"
 
+	sdk "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/packages/param"
-	"github.com/openai/openai-go/v3/responses"
 	"github.com/openai/openai-go/v3/shared"
 
+	"neo-code/internal/config"
 	domain "neo-code/internal/provider"
 )
 
-func (p *Provider) buildRequest(req domain.ChatRequest) (responses.ResponseNewParams, error) {
+// buildRequest maps a domain.ChatRequest to the OpenAI Chat Completions API request.
+func (p *Provider) buildRequest(req domain.ChatRequest) (sdk.ChatCompletionNewParams, error) {
 	model := strings.TrimSpace(req.Model)
 	if model == "" {
 		model = strings.TrimSpace(p.cfg.Model)
 	}
 	if model == "" {
-		return responses.ResponseNewParams{}, errors.New("openai provider: model is empty")
+		return sdk.ChatCompletionNewParams{}, errors.New("openai provider: model is empty")
 	}
 
-	params := responses.ResponseNewParams{
-		Model: shared.ResponsesModel(model),
+	params := sdk.ChatCompletionNewParams{
+		Model: shared.ChatModel(model),
 	}
 
-	if instructions := strings.TrimSpace(req.SystemPrompt); instructions != "" {
-		params.Instructions = param.NewOpt(instructions)
-	}
-
-	previousResponseID, tail := splitMessagesForContinuation(req.Messages)
-	if previousResponseID != "" {
-		params.PreviousResponseID = param.NewOpt(previousResponseID)
-	}
-
-	inputItems, err := mapMessagesToInputItems(tail)
+	messages, err := mapMessagesToCC(req.SystemPrompt, req.Messages)
 	if err != nil {
-		return responses.ResponseNewParams{}, err
+		return sdk.ChatCompletionNewParams{}, err
 	}
-	if len(inputItems) > 0 {
-		params.Input = responses.ResponseNewParamsInputUnion{
-			OfInputItemList: responses.ResponseInputParam(inputItems),
-		}
+	if len(messages) > 0 {
+		params.Messages = messages
 	}
 
-	tools, err := mapTools(req.Tools)
-	if err != nil {
-		return responses.ResponseNewParams{}, err
-	}
-	if len(tools) > 0 {
+	if tools, err := mapTools(req.Tools); err != nil {
+		return sdk.ChatCompletionNewParams{}, err
+	} else if len(tools) > 0 {
 		params.Tools = tools
+	}
+
+	params.StreamOptions = sdk.ChatCompletionStreamOptionsParam{
+		IncludeUsage: param.NewOpt(true),
 	}
 
 	return params, nil
 }
 
-func splitMessagesForContinuation(messages []domain.Message) (string, []domain.Message) {
-	for i := len(messages) - 1; i >= 0; i-- {
-		message := messages[i]
-		if message.Role != domain.RoleAssistant {
-			continue
-		}
+// mapMessagesToCC builds the Chat Completions messages slice from a system prompt
+// and conversation history.
+func mapMessagesToCC(systemPrompt string, messages []domain.Message) ([]sdk.ChatCompletionMessageParamUnion, error) {
+	var ccMessages []sdk.ChatCompletionMessageParamUnion
 
-		responseID := strings.TrimSpace(message.ResponseID)
-		if responseID == "" {
-			continue
-		}
-		return responseID, messages[i+1:]
+	if strings.TrimSpace(systemPrompt) != "" {
+		ccMessages = append(ccMessages,
+			sdk.ChatCompletionMessageParamUnion{
+				OfSystem: &sdk.ChatCompletionSystemMessageParam{
+					Content: sdk.ChatCompletionSystemMessageParamContentUnion{
+						OfString: param.NewOpt(systemPrompt),
+					},
+				},
+			},
+		)
 	}
-	return "", messages
-}
 
-func mapMessagesToInputItems(messages []domain.Message) ([]responses.ResponseInputItemUnionParam, error) {
-	items := make([]responses.ResponseInputItemUnionParam, 0, len(messages))
-	for i, message := range messages {
-		mapped, err := mapMessageToInputItems(message)
+	for i, msg := range messages {
+		mapped, err := mapMessageToCC(msg)
 		if err != nil {
 			return nil, fmt.Errorf("openai provider: map message[%d]: %w", i, err)
 		}
-		items = append(items, mapped...)
+		ccMessages = append(ccMessages, mapped...)
 	}
-	return items, nil
+	return ccMessages, nil
 }
 
-func mapMessageToInputItems(message domain.Message) ([]responses.ResponseInputItemUnionParam, error) {
+// mapMessageToCC converts a single domain.Message into one or more Chat Completions message params.
+func mapMessageToCC(message domain.Message) ([]sdk.ChatCompletionMessageParamUnion, error) {
 	role := strings.TrimSpace(message.Role)
 	switch role {
 	case domain.RoleUser:
-		if strings.TrimSpace(message.Content) == "" {
+		content := strings.TrimSpace(message.Content)
+		if content == "" {
 			return nil, nil
 		}
-		return []responses.ResponseInputItemUnionParam{
-			responses.ResponseInputItemParamOfMessage(
-				message.Content,
-				responses.EasyInputMessageRoleUser,
-			),
+		return []sdk.ChatCompletionMessageParamUnion{
+			{
+				OfUser: &sdk.ChatCompletionUserMessageParam{
+					Content: sdk.ChatCompletionUserMessageParamContentUnion{
+						OfString: param.NewOpt(content),
+					},
+				},
+			},
 		}, nil
 
 	case domain.RoleSystem:
-		if strings.TrimSpace(message.Content) == "" {
+		content := strings.TrimSpace(message.Content)
+		if content == "" {
 			return nil, nil
 		}
-		return []responses.ResponseInputItemUnionParam{
-			responses.ResponseInputItemParamOfMessage(
-				message.Content,
-				responses.EasyInputMessageRoleSystem,
-			),
+		return []sdk.ChatCompletionMessageParamUnion{
+			{
+				OfSystem: &sdk.ChatCompletionSystemMessageParam{
+					Content: sdk.ChatCompletionSystemMessageParamContentUnion{
+						OfString: param.NewOpt(content),
+					},
+				},
+			},
 		}, nil
 
 	case domain.RoleAssistant:
-		items := make([]responses.ResponseInputItemUnionParam, 0, len(message.ToolCalls)+1)
-		if strings.TrimSpace(message.Content) != "" {
-			items = append(items, responses.ResponseInputItemParamOfMessage(
-				message.Content,
-				responses.EasyInputMessageRoleAssistant,
-			))
+		asstMsg := sdk.ChatCompletionAssistantMessageParam{}
+		if content := strings.TrimSpace(message.Content); content != "" {
+			asstMsg.Content = sdk.ChatCompletionAssistantMessageParamContentUnion{
+				OfString: param.NewOpt(content),
+			}
 		}
-		for i, call := range message.ToolCalls {
+		for _, call := range message.ToolCalls {
 			callID := strings.TrimSpace(call.ID)
 			name := strings.TrimSpace(call.Name)
-			if callID == "" {
-				return nil, fmt.Errorf("assistant tool_call[%d]: id is empty", i)
+			args := strings.TrimSpace(call.Arguments)
+			if callID == "" || name == "" {
+				continue
 			}
-			if name == "" {
-				return nil, fmt.Errorf("assistant tool_call[%d]: name is empty", i)
-			}
-			items = append(items, responses.ResponseInputItemParamOfFunctionCall(
-				call.Arguments,
-				callID,
-				name,
-			))
+			asstMsg.ToolCalls = append(asstMsg.ToolCalls,
+				sdk.ChatCompletionMessageToolCallUnionParam{
+					OfFunction: &sdk.ChatCompletionMessageFunctionToolCallParam{
+						ID:   callID,
+						Type: "function",
+						Function: sdk.ChatCompletionMessageFunctionToolCallFunctionParam{
+							Name:      name,
+							Arguments: args,
+						},
+					},
+				},
+			)
 		}
-		return items, nil
+		return []sdk.ChatCompletionMessageParamUnion{
+			{OfAssistant: &asstMsg},
+		}, nil
 
 	case domain.RoleTool:
 		callID := strings.TrimSpace(message.ToolCallID)
 		if callID == "" {
 			return nil, errors.New("tool message: tool_call_id is empty")
 		}
-		output, err := encodeToolOutput(message)
+		content, err := encodeToolOutput(message)
 		if err != nil {
 			return nil, err
 		}
-		return []responses.ResponseInputItemUnionParam{
-			responses.ResponseInputItemParamOfFunctionCallOutput(callID, output),
+		return []sdk.ChatCompletionMessageParamUnion{
+			{
+				OfTool: &sdk.ChatCompletionToolMessageParam{
+					Role:       domain.RoleTool,
+					ToolCallID: callID,
+					Content: sdk.ChatCompletionToolMessageParamContentUnion{
+						OfString: param.NewOpt(content),
+					},
+				},
+			},
 		}, nil
 	}
 
 	return nil, fmt.Errorf("unsupported message role %q", role)
 }
 
-func mapTools(specs []domain.ToolSpec) ([]responses.ToolUnionParam, error) {
+// mapTools converts domain tool specs into OpenAI function-calling tool definitions.
+func mapTools(specs []domain.ToolSpec) ([]sdk.ChatCompletionToolUnionParam, error) {
 	if len(specs) == 0 {
 		return nil, nil
 	}
-
-	tools := make([]responses.ToolUnionParam, 0, len(specs))
+	tools := make([]sdk.ChatCompletionToolUnionParam, 0, len(specs))
 	for i, spec := range specs {
 		name := strings.TrimSpace(spec.Name)
 		if name == "" {
 			return nil, fmt.Errorf("tool[%d]: name is empty", i)
 		}
-
-		tool := responses.FunctionToolParam{
+		fn := shared.FunctionDefinitionParam{
 			Name:       name,
-			Parameters: cloneMap(spec.Schema),
+			Parameters: spec.Schema,
 		}
-		if description := strings.TrimSpace(spec.Description); description != "" {
-			tool.Description = param.NewOpt(description)
+		if desc := strings.TrimSpace(spec.Description); desc != "" {
+			fn.Description = param.NewOpt(desc)
 		}
-		tools = append(tools, responses.ToolUnionParam{OfFunction: &tool})
+		tools = append(tools, sdk.ChatCompletionToolUnionParam{
+			OfFunction: &sdk.ChatCompletionFunctionToolParam{
+				Type:     "function",
+				Function: fn,
+			},
+		})
 	}
-
 	return tools, nil
 }
 
+// encodeToolOutput serializes a tool-result message's content for the API.
+// When IsError is set, wraps the payload in the structured error format expected
+// by the OpenAI function-calling convention (used by both Responses and CC APIs).
 func encodeToolOutput(message domain.Message) (string, error) {
 	if !message.IsError {
 		return message.Content, nil
 	}
-
 	payload := struct {
 		IsError bool   `json:"is_error"`
 		Content string `json:"content,omitempty"`
@@ -188,7 +208,6 @@ func encodeToolOutput(message domain.Message) (string, error) {
 		IsError: true,
 		Content: message.Content,
 	}
-
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("openai provider: marshal tool error output: %w", err)
@@ -196,14 +215,17 @@ func encodeToolOutput(message domain.Message) (string, error) {
 	return string(data), nil
 }
 
-func cloneMap(source map[string]any) map[string]any {
-	if len(source) == 0 {
-		return nil
+// descriptorFromSDKModel extracts model metadata from an SDK Model object.
+func descriptorFromSDKModel(model sdk.Model) (config.ModelDescriptor, bool) {
+	rawJSON := strings.TrimSpace(model.RawJSON())
+	if rawJSON == "" {
+		return config.ModelDescriptor{}, false
 	}
 
-	cloned := make(map[string]any, len(source))
-	for key, value := range source {
-		cloned[key] = value
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(rawJSON), &raw); err != nil {
+		return config.ModelDescriptor{}, false
 	}
-	return cloned
+
+	return config.DescriptorFromRawModel(raw)
 }

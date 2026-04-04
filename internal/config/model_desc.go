@@ -1,9 +1,38 @@
-package provider
+package config
 
 import (
+	"errors"
 	"strings"
+)
 
-	"neo-code/internal/config"
+// ModelDescriptor describes a single model offered by a provider.
+type ModelDescriptor struct {
+	ID              string          `json:"id"`
+	Name            string          `json:"name"`
+	Description     string          `json:"description,omitempty"`
+	ContextWindow   int             `json:"context_window,omitempty"`
+	MaxOutputTokens int             `json:"max_output_tokens,omitempty"`
+	Capabilities    map[string]bool `json:"capabilities,omitempty"`
+}
+
+// ProviderCatalogItem describes a single provider entry in the catalog listing.
+type ProviderCatalogItem struct {
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Description string            `json:"description,omitempty"`
+	Models      []ModelDescriptor `json:"models,omitempty"`
+}
+
+// ProviderSelection represents the current provider and model selection.
+type ProviderSelection struct {
+	ProviderID string `json:"provider_id"`
+	ModelID    string `json:"model_id"`
+}
+
+// Selection errors.
+var (
+	ErrProviderNotFound = errors.New("config: provider not found")
+	ErrModelNotFound    = errors.New("config: model not found")
 )
 
 // DescriptorFromRawModel normalizes a raw provider model object into a ModelDescriptor.
@@ -21,14 +50,15 @@ func DescriptorFromRawModel(raw map[string]any) (ModelDescriptor, bool) {
 		ID:              id,
 		Name:            firstNonEmptyString(stringValue(raw["name"]), stringValue(raw["display_name"]), id),
 		Description:     stringValue(raw["description"]),
-		ContextWindow:   firstPositiveInt(raw["context_window"], raw["contextLength"], raw["input_token_limit"], raw["max_context_tokens"]),
-		MaxOutputTokens: firstPositiveInt(raw["max_output_tokens"], raw["output_token_limit"], raw["max_tokens"]),
+		ContextWindow:   FirstPositiveInt(raw["context_window"], raw["contextLength"], raw["input_token_limit"], raw["max_context_tokens"]),
+		MaxOutputTokens: FirstPositiveInt(raw["max_output_tokens"], raw["output_token_limit"], raw["max_tokens"]),
 		Capabilities:    boolMapValue(raw["capabilities"]),
 	}
 	return normalizeModelDescriptor(descriptor), true
 }
 
-func modelDescriptorsFromIDs(modelIDs []string) []ModelDescriptor {
+// ModelDescriptorsFromIDs creates minimal ModelDescriptor list from plain model ID strings.
+func ModelDescriptorsFromIDs(modelIDs []string) []ModelDescriptor {
 	if len(modelIDs) == 0 {
 		return nil
 	}
@@ -50,6 +80,7 @@ func modelDescriptorsFromIDs(modelIDs []string) []ModelDescriptor {
 	return descriptors
 }
 
+// MergeModelDescriptors merges multiple ModelDescriptor lists, deduplicating by normalized ID.
 func MergeModelDescriptors(sources ...[]ModelDescriptor) []ModelDescriptor {
 	if len(sources) == 0 {
 		return nil
@@ -61,7 +92,7 @@ func MergeModelDescriptors(sources ...[]ModelDescriptor) []ModelDescriptor {
 	for _, source := range sources {
 		for _, candidate := range source {
 			normalized := normalizeModelDescriptor(candidate)
-			key := normalizeModelID(normalized.ID)
+			key := NormalizeKey(normalized.ID)
 			if key == "" {
 				continue
 			}
@@ -166,7 +197,7 @@ func firstNonEmptyString(values ...string) string {
 	return ""
 }
 
-func firstPositiveInt(values ...any) int {
+func FirstPositiveInt(values ...any) int {
 	for _, value := range values {
 		switch typed := value.(type) {
 		case int:
@@ -203,8 +234,4 @@ func cloneStringBoolMap(source map[string]bool) map[string]bool {
 		cloned[key] = value
 	}
 	return cloned
-}
-
-func normalizeModelID(id string) string {
-	return config.NormalizeKey(id)
 }

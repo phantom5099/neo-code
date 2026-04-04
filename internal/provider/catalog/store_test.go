@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"neo-code/internal/config"
-	"neo-code/internal/provider"
 )
 
 func TestJSONStoreRoundTrip(t *testing.T) {
@@ -24,7 +23,7 @@ func TestJSONStoreRoundTrip(t *testing.T) {
 		Identity:      identity,
 		FetchedAt:     time.Date(2026, 4, 2, 10, 0, 0, 0, time.UTC),
 		ExpiresAt:     time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC),
-		Models: []provider.ModelDescriptor{
+		Models: []config.ModelDescriptor{
 			{
 				ID:              "gpt-4.1",
 				Name:            "GPT-4.1",

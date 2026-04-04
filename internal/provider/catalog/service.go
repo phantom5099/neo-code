@@ -42,7 +42,7 @@ func NewService(baseDir string, registry *provider.Registry, store Store) *Servi
 	}
 }
 
-func (s *Service) ListProviderModels(ctx context.Context, providerCfg config.ProviderConfig) ([]provider.ModelDescriptor, error) {
+func (s *Service) ListProviderModels(ctx context.Context, providerCfg config.ProviderConfig) ([]config.ModelDescriptor, error) {
 	if err := s.validate(); err != nil {
 		return nil, err
 	}
@@ -56,7 +56,7 @@ func (s *Service) ListProviderModels(ctx context.Context, providerCfg config.Pro
 	}), nil
 }
 
-func (s *Service) ListProviderModelsSnapshot(ctx context.Context, providerCfg config.ProviderConfig) ([]provider.ModelDescriptor, error) {
+func (s *Service) ListProviderModelsSnapshot(ctx context.Context, providerCfg config.ProviderConfig) ([]config.ModelDescriptor, error) {
 	if err := s.validate(); err != nil {
 		return nil, err
 	}
@@ -69,7 +69,7 @@ func (s *Service) ListProviderModelsSnapshot(ctx context.Context, providerCfg co
 	}), nil
 }
 
-func (s *Service) ListProviderModelsCached(ctx context.Context, providerCfg config.ProviderConfig) ([]provider.ModelDescriptor, error) {
+func (s *Service) ListProviderModelsCached(ctx context.Context, providerCfg config.ProviderConfig) ([]config.ModelDescriptor, error) {
 	if err := s.validate(); err != nil {
 		return nil, err
 	}
@@ -95,39 +95,36 @@ type queryOptions struct {
 	queueRefresh     bool
 }
 
-func (s *Service) modelsForProvider(ctx context.Context, providerCfg config.ProviderConfig, options queryOptions) []provider.ModelDescriptor {
+func (s *Service) modelsForProvider(ctx context.Context, providerCfg config.ProviderConfig, options queryOptions) []config.ModelDescriptor {
 	defaultModels := descriptorsFromIDs([]string{providerCfg.Model})
 
-	cached, cachedOK := s.loadCatalogModels(ctx, providerCfg)
+	cached, expired := s.loadCatalogState(ctx, providerCfg)
+	cachedOK := len(cached) > 0
+
 	if !cachedOK && options.allowSyncRefresh {
 		discovered, ok := s.discoverAndPersist(ctx, providerCfg)
 		if ok {
 			cached = discovered
 			cachedOK = true
+			expired = false // just refreshed, not expired
 		}
 	}
 
-	if options.queueRefresh && (!cachedOK || s.catalogExpired(ctx, providerCfg)) {
+	if options.queueRefresh && (!cachedOK || expired) {
 		s.queueRefresh(providerCfg)
 	}
 
-	return provider.MergeModelDescriptors(cached, defaultModels)
+	return config.MergeModelDescriptors(cached, defaultModels)
 }
 
-func (s *Service) catalogExpired(ctx context.Context, providerCfg config.ProviderConfig) bool {
-	modelCatalog, err := s.loadCatalog(ctx, providerCfg)
-	if err != nil {
-		return false
-	}
-	return modelCatalog.Expired(s.now())
-}
-
-func (s *Service) loadCatalogModels(ctx context.Context, providerCfg config.ProviderConfig) ([]provider.ModelDescriptor, bool) {
+// loadCatalogState returns the cached models and whether the cache is expired,
+// loading from the store exactly once.
+func (s *Service) loadCatalogState(ctx context.Context, providerCfg config.ProviderConfig) ([]config.ModelDescriptor, bool) {
 	modelCatalog, err := s.loadCatalog(ctx, providerCfg)
 	if err != nil {
 		return nil, false
 	}
-	return modelCatalog.Models, true
+	return modelCatalog.Models, modelCatalog.Expired(s.now())
 }
 
 func (s *Service) loadCatalog(ctx context.Context, providerCfg config.ProviderConfig) (ModelCatalog, error) {
@@ -142,7 +139,7 @@ func (s *Service) loadCatalog(ctx context.Context, providerCfg config.ProviderCo
 	return s.store.Load(ctx, identity)
 }
 
-func (s *Service) discoverAndPersist(ctx context.Context, providerCfg config.ProviderConfig) ([]provider.ModelDescriptor, bool) {
+func (s *Service) discoverAndPersist(ctx context.Context, providerCfg config.ProviderConfig) ([]config.ModelDescriptor, bool) {
 	if !s.registry.Supports(providerCfg.Driver) {
 		return nil, false
 	}
@@ -157,7 +154,7 @@ func (s *Service) discoverAndPersist(ctx context.Context, providerCfg config.Pro
 		return nil, false
 	}
 
-	discovered = provider.MergeModelDescriptors(discovered)
+	discovered = config.MergeModelDescriptors(discovered)
 	if s.store == nil {
 		return discovered, true
 	}
@@ -210,18 +207,18 @@ func (s *Service) queueRefresh(providerCfg config.ProviderConfig) {
 	}()
 }
 
-func descriptorsFromIDs(modelIDs []string) []provider.ModelDescriptor {
+func descriptorsFromIDs(modelIDs []string) []config.ModelDescriptor {
 	if len(modelIDs) == 0 {
 		return nil
 	}
 
-	descriptors := make([]provider.ModelDescriptor, 0, len(modelIDs))
+	descriptors := make([]config.ModelDescriptor, 0, len(modelIDs))
 	for _, modelID := range modelIDs {
 		id := strings.TrimSpace(modelID)
 		if id == "" {
 			continue
 		}
-		descriptors = append(descriptors, provider.ModelDescriptor{
+		descriptors = append(descriptors, config.ModelDescriptor{
 			ID:   id,
 			Name: id,
 		})

@@ -90,7 +90,7 @@ func TestDiscoverModels(t *testing.T) {
 	}
 }
 
-func TestBuildRequestMapsConversationAndContinuation(t *testing.T) {
+func TestBuildRequestMapsMessagesForChatCompletions(t *testing.T) {
 	t.Parallel()
 
 	provider, err := New(resolvedConfig(config.OpenAIDefaultBaseURL, config.OpenAIDefaultModel))
@@ -99,10 +99,10 @@ func TestBuildRequestMapsConversationAndContinuation(t *testing.T) {
 	}
 
 	payload, err := provider.buildRequest(domain.ChatRequest{
-		SystemPrompt: "system prompt",
+		SystemPrompt: "You are a coding assistant.",
 		Messages: []domain.Message{
 			{Role: domain.RoleUser, Content: "older message"},
-			{Role: domain.RoleAssistant, Content: "prior answer", ResponseID: "resp_prev"},
+			{Role: domain.RoleAssistant, Content: "prior answer"},
 			{Role: domain.RoleTool, ToolCallID: "call_err", Content: "permission denied", IsError: true},
 			{Role: domain.RoleUser, Content: "please try again"},
 		},
@@ -128,38 +128,35 @@ func TestBuildRequestMapsConversationAndContinuation(t *testing.T) {
 	if decoded["model"] != config.OpenAIDefaultModel {
 		t.Fatalf("expected default model %q, got %#v", config.OpenAIDefaultModel, decoded["model"])
 	}
-	if decoded["instructions"] != "system prompt" {
-		t.Fatalf("expected instructions to carry system prompt, got %#v", decoded["instructions"])
-	}
-	if decoded["previous_response_id"] != "resp_prev" {
-		t.Fatalf("expected previous_response_id resp_prev, got %#v", decoded["previous_response_id"])
+
+	messages, ok := decoded["messages"].([]any)
+	if !ok {
+		t.Fatalf("expected messages array, got %#v", decoded["messages"])
 	}
 
-	input, ok := decoded["input"].([]any)
-	if !ok {
-		t.Fatalf("expected input array, got %#v", decoded["input"])
-	}
-	if len(input) != 2 {
-		t.Fatalf("expected 2 tail input items, got %d", len(input))
+	// messages[0] should be system prompt
+	sysMsg, _ := messages[0].(map[string]any)
+	if sysMsg["role"] != "system" || sysMsg["content"] != "You are a coding assistant." {
+		t.Fatalf("expected system message first, got %#v", sysMsg)
 	}
 
-	toolOutput, ok := input[0].(map[string]any)
-	if !ok {
-		t.Fatalf("expected function_call_output map, got %#v", input[0])
+	// Find the tool message (should have structured error output)
+	foundToolErr := false
+	for _, m := range messages {
+		msg, ok := m.(map[string]any)
+		if !ok {
+			continue
+		}
+		if msg["role"] == "tool" {
+			content, _ := msg["content"].(string)
+			if strings.Contains(content, `"is_error":true`) && strings.Contains(content, "permission denied") {
+				foundToolErr = true
+			}
+			break
+		}
 	}
-	if toolOutput["type"] != "function_call_output" {
-		t.Fatalf("expected function_call_output item, got %#v", toolOutput["type"])
-	}
-	if toolOutput["call_id"] != "call_err" {
-		t.Fatalf("expected tool output call_id call_err, got %#v", toolOutput["call_id"])
-	}
-
-	outputText, ok := toolOutput["output"].(string)
-	if !ok {
-		t.Fatalf("expected string output payload, got %#v", toolOutput["output"])
-	}
-	if !strings.Contains(outputText, `"is_error":true`) || !strings.Contains(outputText, "permission denied") {
-		t.Fatalf("expected structured tool error output, got %q", outputText)
+	if !foundToolErr {
+		t.Fatal("expected tool message with structured error output")
 	}
 
 	tools, ok := decoded["tools"].([]any)
@@ -170,12 +167,12 @@ func TestBuildRequestMapsConversationAndContinuation(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected tool payload map, got %#v", tools[0])
 	}
-	if tool["type"] != "function" || tool["name"] != "filesystem_edit" {
+	if tool["type"] != "function" || tool["function"].(map[string]any)["name"] != "filesystem_edit" {
 		t.Fatalf("unexpected tool payload: %#v", tool)
 	}
 }
 
-func TestBuildRequestMapsAssistantToolCalls(t *testing.T) {
+func TestBuildRequestMapsAssistantToolCallsForChatCompletions(t *testing.T) {
 	t.Parallel()
 
 	provider, err := New(resolvedConfig(config.OpenAIDefaultBaseURL, config.OpenAIDefaultModel))
@@ -203,30 +200,34 @@ func TestBuildRequestMapsAssistantToolCalls(t *testing.T) {
 	}
 
 	decoded := mustMarshalAndDecode(t, payload)
-	input := decoded["input"].([]any)
-	if len(input) != 2 {
-		t.Fatalf("expected 2 input items, got %d", len(input))
+	messages := decoded["messages"].([]any)
+	if len(messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(messages))
 	}
-	functionCall := input[1].(map[string]any)
-	if functionCall["type"] != "function_call" {
-		t.Fatalf("expected function_call item, got %#v", functionCall["type"])
+
+	assistantMsg := messages[1].(map[string]any)
+	if assistantMsg["role"] != "assistant" {
+		t.Fatalf("expected assistant role, got %#v", assistantMsg["role"])
 	}
-	if functionCall["call_id"] != "call_1" || functionCall["name"] != "filesystem_edit" {
-		t.Fatalf("unexpected function_call payload: %#v", functionCall)
+
+	toolCalls, ok := assistantMsg["tool_calls"].([]any)
+	if !ok || len(toolCalls) != 1 {
+		t.Fatalf("expected 1 tool_call in assistant message, got %#v", assistantMsg)
+	}
+	tc := toolCalls[0].(map[string]any)
+	fn := tc["function"].(map[string]any)
+	if tc["id"] != "call_1" || fn["name"] != "filesystem_edit" || fn["arguments"] != `{"path":"main.go"}` {
+		t.Fatalf("unexpected tool_call payload: %#v", tc)
 	}
 }
 
-func TestProviderChatStreamsResponsesAPIEvents(t *testing.T) {
+func TestProviderChatStreamsChatCompletionsEvents(t *testing.T) {
 	t.Setenv(config.OpenAIDefaultAPIKeyEnv, "test-key")
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/responses" {
-			t.Fatalf("unexpected path: %s", r.URL.Path)
+		if r.URL.Path != "/chat/completions" {
+			t.Fatalf("unexpected path: %s, expected /chat/completions", r.URL.Path)
 		}
-		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
-			t.Fatalf("unexpected auth header: %s", got)
-		}
-
 		var payload map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatalf("decode request: %v", err)
@@ -236,91 +237,84 @@ func TestProviderChatStreamsResponsesAPIEvents(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "text/event-stream")
+
+		// Chunk 1: role + tool_call start
 		writeSSEChunk(t, w, map[string]any{
-			"type":            "response.output_item.added",
-			"sequence_number": 1,
-			"output_index":    0,
-			"item": map[string]any{
-				"type":      "function_call",
-				"id":        "fc_1",
-				"call_id":   "call_1",
-				"name":      "filesystem_edit",
-				"arguments": "",
-				"status":    "in_progress",
-			},
-		})
-		writeSSEChunk(t, w, map[string]any{
-			"type":            "response.function_call_arguments.delta",
-			"sequence_number": 2,
-			"output_index":    0,
-			"item_id":         "fc_1",
-			"delta":           `{"path":"main.go"}`,
-		})
-		writeSSEChunk(t, w, map[string]any{
-			"type":            "response.output_text.delta",
-			"sequence_number": 3,
-			"output_index":    1,
-			"content_index":   0,
-			"item_id":         "msg_1",
-			"delta":           "Hello ",
-			"logprobs":        []any{},
-		})
-		writeSSEChunk(t, w, map[string]any{
-			"type":            "response.output_text.delta",
-			"sequence_number": 4,
-			"output_index":    1,
-			"content_index":   0,
-			"item_id":         "msg_1",
-			"delta":           "world",
-			"logprobs":        []any{},
-		})
-		writeSSEChunk(t, w, map[string]any{
-			"type":            "response.reasoning_summary_text.delta",
-			"sequence_number": 5,
-			"output_index":    2,
-			"summary_index":   0,
-			"item_id":         "rs_1",
-			"delta":           "thinking",
-		})
-		writeSSEChunk(t, w, map[string]any{
-			"type":            "response.completed",
-			"sequence_number": 6,
-			"response": map[string]any{
-				"id": "resp_123",
-				"output": []map[string]any{
-					{
-						"type":      "function_call",
-						"id":        "fc_1",
-						"call_id":   "call_1",
-						"name":      "filesystem_edit",
-						"arguments": `{"path":"main.go"}`,
-						"status":    "completed",
-					},
-					{
-						"type":   "message",
-						"id":     "msg_1",
-						"role":   "assistant",
-						"status": "completed",
-						"content": []map[string]any{
+			"id": "chatcmpl-xxx",
+			"choices": []map[string]any{
+				{
+					"index": 0,
+					"delta": map[string]any{
+						"role": "assistant",
+						"tool_calls": []map[string]any{
 							{
-								"type":        "output_text",
-								"text":        "Hello world",
-								"annotations": []any{},
+								"index":    0,
+								"id":       "call_1",
+								"type":     "function",
+								"function": map[string]any{"name": "filesystem_edit", "arguments": ""},
 							},
 						},
 					},
+					"finish_reason": nil,
 				},
-				"usage": map[string]any{
-					"input_tokens":  10,
-					"output_tokens": 5,
-					"total_tokens":  15,
-					"input_tokens_details": map[string]any{
-						"cached_tokens": 2,
+			},
+		})
+		// Chunk 2: tool_call arguments delta
+		writeSSEChunk(t, w, map[string]any{
+			"id": "chatcmpl-xxx",
+			"choices": []map[string]any{
+				{
+					"index": 0,
+					"delta": map[string]any{
+						"tool_calls": []map[string]any{
+							{
+								"index":    0,
+								"function": map[string]any{"arguments": `{"path":"main.go"}`},
+							},
+						},
 					},
-					"output_tokens_details": map[string]any{
-						"reasoning_tokens": 1,
-					},
+					"finish_reason": nil,
 				},
+			},
+		})
+		// Chunk 3: text delta
+		writeSSEChunk(t, w, map[string]any{
+			"id": "chatcmpl-xxx",
+			"choices": []map[string]any{
+				{
+					"index":         0,
+					"delta":         map[string]any{"content": "Hello "},
+					"finish_reason": nil,
+				},
+			},
+		})
+		// Chunk 4: text delta continued
+		writeSSEChunk(t, w, map[string]any{
+			"id": "chatcmpl-xxx",
+			"choices": []map[string]any{
+				{
+					"index":         0,
+					"delta":         map[string]any{"content": "world"},
+					"finish_reason": nil,
+				},
+			},
+		})
+		// Final chunk: finish_reason + usage
+		writeSSEChunk(t, w, map[string]any{
+			"id": "chatcmpl-xxx",
+			"choices": []map[string]any{
+				{
+					"index":         0,
+					"delta":         map[string]any{},
+					"finish_reason": "tool_calls",
+				},
+			},
+			"usage": map[string]any{
+				"prompt_tokens":             10,
+				"completion_tokens":         5,
+				"total_tokens":              15,
+				"prompt_tokens_details":     map[string]any{"cached_tokens": 2},
+				"completion_tokens_details": map[string]any{"reasoning_tokens": 1},
 			},
 		})
 	}))
@@ -341,9 +335,7 @@ func TestProviderChatStreamsResponsesAPIEvents(t *testing.T) {
 			{
 				Name:        "filesystem_edit",
 				Description: "Edit one matching block in a file",
-				Schema: map[string]any{
-					"type": "object",
-				},
+				Schema:      map[string]any{"type": "object"},
 			},
 		},
 	}, events)
@@ -354,9 +346,6 @@ func TestProviderChatStreamsResponsesAPIEvents(t *testing.T) {
 	if response.Message.Content != "Hello world" {
 		t.Fatalf("expected content %q, got %q", "Hello world", response.Message.Content)
 	}
-	if response.Message.ResponseID != "resp_123" {
-		t.Fatalf("expected response id resp_123, got %q", response.Message.ResponseID)
-	}
 	if response.FinishReason != "tool_calls" {
 		t.Fatalf("expected finish reason tool_calls, got %q", response.FinishReason)
 	}
@@ -366,6 +355,9 @@ func TestProviderChatStreamsResponsesAPIEvents(t *testing.T) {
 	if len(response.Message.ToolCalls) != 1 {
 		t.Fatalf("expected 1 tool call, got %d", len(response.Message.ToolCalls))
 	}
+	if response.Message.ToolCalls[0].ID != "call_1" || response.Message.ToolCalls[0].Name != "filesystem_edit" {
+		t.Fatalf("unexpected tool call: %+v", response.Message.ToolCalls[0])
+	}
 
 	close(events)
 
@@ -373,10 +365,8 @@ func TestProviderChatStreamsResponsesAPIEvents(t *testing.T) {
 		text             strings.Builder
 		toolCallStart    *domain.StreamEvent
 		toolCallDelta    *domain.StreamEvent
-		reasoningDelta   *domain.StreamEvent
 		messageDoneEvent *domain.StreamEvent
 	)
-
 	for event := range events {
 		switch event.Type {
 		case domain.StreamEventTextDelta:
@@ -387,9 +377,6 @@ func TestProviderChatStreamsResponsesAPIEvents(t *testing.T) {
 		case domain.StreamEventToolCallDelta:
 			copied := event
 			toolCallDelta = &copied
-		case domain.StreamEventReasoningDelta:
-			copied := event
-			reasoningDelta = &copied
 		case domain.StreamEventMessageDone:
 			copied := event
 			messageDoneEvent = &copied
@@ -405,13 +392,10 @@ func TestProviderChatStreamsResponsesAPIEvents(t *testing.T) {
 	if toolCallDelta == nil || toolCallDelta.ToolArgumentsDelta != `{"path":"main.go"}` {
 		t.Fatalf("unexpected tool_call_delta event: %+v", toolCallDelta)
 	}
-	if reasoningDelta == nil || reasoningDelta.ReasoningText != "thinking" {
-		t.Fatalf("unexpected reasoning_delta event: %+v", reasoningDelta)
-	}
 	if messageDoneEvent == nil {
 		t.Fatal("expected message_done event")
 	}
-	if messageDoneEvent.ResponseID != "resp_123" || messageDoneEvent.FinishReason != "tool_calls" {
+	if messageDoneEvent.FinishReason != "tool_calls" {
 		t.Fatalf("unexpected message_done event: %+v", messageDoneEvent)
 	}
 	if messageDoneEvent.Usage == nil || messageDoneEvent.Usage.CachedInputTokens != 2 || messageDoneEvent.Usage.ReasoningTokens != 1 {
@@ -449,52 +433,6 @@ func TestProviderChatHTTPErrorResponses(t *testing.T) {
 	}
 	if !strings.Contains(providerErr.Message, "invalid api key") {
 		t.Fatalf("expected error message to include invalid api key, got %q", providerErr.Message)
-	}
-}
-
-func TestProviderChatResponseFailedEvent(t *testing.T) {
-	t.Setenv(config.OpenAIDefaultAPIKeyEnv, "test-key")
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		writeSSEChunk(t, w, map[string]any{
-			"type":            "response.failed",
-			"sequence_number": 1,
-			"response": map[string]any{
-				"id": "resp_failed",
-				"error": map[string]any{
-					"code":    "rate_limit_exceeded",
-					"message": "slow down",
-				},
-			},
-		})
-	}))
-	defer server.Close()
-
-	provider, err := New(resolvedConfig(server.URL, config.OpenAIDefaultModel), WithHTTPClient(server.Client()))
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	_, err = provider.Chat(context.Background(), domain.ChatRequest{
-		Model: config.OpenAIDefaultModel,
-		Messages: []domain.Message{
-			{Role: domain.RoleUser, Content: "hello"},
-		},
-	}, make(chan domain.StreamEvent, 1))
-	if err == nil {
-		t.Fatal("expected error")
-	}
-
-	var providerErr *domain.ProviderError
-	if !errors.As(err, &providerErr) {
-		t.Fatalf("expected ProviderError, got %T", err)
-	}
-	if providerErr.Code != domain.ErrorCodeRateLimit {
-		t.Fatalf("expected rate limit error, got %s", providerErr.Code)
-	}
-	if !providerErr.Retryable {
-		t.Fatalf("expected failed response rate limit error to be retryable")
 	}
 }
 

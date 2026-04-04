@@ -67,7 +67,7 @@ func Driver() domain.DriverDefinition {
 		Build: func(ctx context.Context, cfg config.ResolvedProviderConfig) (domain.Provider, error) {
 			return New(cfg)
 		},
-		Discover: func(ctx context.Context, cfg config.ResolvedProviderConfig) ([]domain.ModelDescriptor, error) {
+		Discover: func(ctx context.Context, cfg config.ResolvedProviderConfig) ([]config.ModelDescriptor, error) {
 			provider, err := New(cfg)
 			if err != nil {
 				return nil, err
@@ -136,9 +136,9 @@ func (o buildOptions) resolvedHTTPClient() *http.Client {
 	return &cloned
 }
 
-func (p *Provider) DiscoverModels(ctx context.Context) ([]domain.ModelDescriptor, error) {
+func (p *Provider) DiscoverModels(ctx context.Context) ([]config.ModelDescriptor, error) {
 	pager := p.client.Models.ListAutoPaging(ctx)
-	descriptors := make([]domain.ModelDescriptor, 0)
+	descriptors := make([]config.ModelDescriptor, 0)
 
 	for pager.Next() {
 		model := pager.Current()
@@ -151,7 +151,7 @@ func (p *Provider) DiscoverModels(ctx context.Context) ([]domain.ModelDescriptor
 		if id == "" {
 			continue
 		}
-		descriptors = append(descriptors, domain.ModelDescriptor{
+		descriptors = append(descriptors, config.ModelDescriptor{
 			ID:   id,
 			Name: id,
 		})
@@ -161,7 +161,7 @@ func (p *Provider) DiscoverModels(ctx context.Context) ([]domain.ModelDescriptor
 		return nil, mapProviderError(err)
 	}
 
-	return domain.MergeModelDescriptors(descriptors), nil
+	return config.MergeModelDescriptors(descriptors), nil
 }
 
 func (p *Provider) Chat(
@@ -174,7 +174,7 @@ func (p *Provider) Chat(
 		return domain.ChatResponse{}, err
 	}
 
-	stream := p.client.Responses.NewStreaming(ctx, params)
+	stream := p.client.Chat.Completions.NewStreaming(ctx, params)
 	defer func() {
 		_ = stream.Close()
 	}()

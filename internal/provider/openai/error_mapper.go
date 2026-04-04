@@ -8,11 +8,11 @@ import (
 	"strings"
 
 	sdk "github.com/openai/openai-go/v3"
-	"github.com/openai/openai-go/v3/responses"
 
 	domain "neo-code/internal/provider"
 )
 
+// mapProviderError translates SDK / transport errors into domain ProviderError values.
 func mapProviderError(err error) error {
 	if err == nil {
 		return nil
@@ -50,53 +50,4 @@ func mapProviderError(err error) error {
 	}
 
 	return err
-}
-
-func mapResponseFailure(resp responses.Response) error {
-	message := strings.TrimSpace(resp.Error.Message)
-	if message == "" {
-		message = "response failed"
-	}
-
-	providerErr := &domain.ProviderError{
-		Code:      mapResponseFailureCode(resp.Error.Code),
-		Message:   message,
-		Retryable: false,
-	}
-
-	switch providerErr.Code {
-	case domain.ErrorCodeRateLimit, domain.ErrorCodeServer, domain.ErrorCodeTimeout:
-		providerErr.Retryable = true
-	}
-
-	return providerErr
-}
-
-func mapResponseFailureCode(code responses.ResponseErrorCode) domain.ProviderErrorCode {
-	switch code {
-	case responses.ResponseErrorCodeRateLimitExceeded:
-		return domain.ErrorCodeRateLimit
-	case responses.ResponseErrorCodeServerError:
-		return domain.ErrorCodeServer
-	case responses.ResponseErrorCodeVectorStoreTimeout:
-		return domain.ErrorCodeTimeout
-	case responses.ResponseErrorCodeInvalidPrompt,
-		responses.ResponseErrorCodeInvalidImage,
-		responses.ResponseErrorCodeInvalidImageFormat,
-		responses.ResponseErrorCodeInvalidBase64Image,
-		responses.ResponseErrorCodeInvalidImageURL,
-		responses.ResponseErrorCodeImageTooLarge,
-		responses.ResponseErrorCodeImageTooSmall,
-		responses.ResponseErrorCodeImageParseError,
-		responses.ResponseErrorCodeImageContentPolicyViolation,
-		responses.ResponseErrorCodeInvalidImageMode,
-		responses.ResponseErrorCodeImageFileTooLarge,
-		responses.ResponseErrorCodeUnsupportedImageMediaType,
-		responses.ResponseErrorCodeEmptyImageFile,
-		responses.ResponseErrorCodeFailedToDownloadImage,
-		responses.ResponseErrorCodeImageFileNotFound:
-		return domain.ErrorCodeClient
-	default:
-		return domain.ErrorCodeUnknown
-	}
 }
