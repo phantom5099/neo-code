@@ -125,6 +125,9 @@ func shellCommand(shell string, command string) (string, []string) {
 }
 
 func resolveWorkdir(root string, requested string) (string, error) {
+	if strings.ContainsRune(root, '\x00') || strings.ContainsRune(requested, '\x00') {
+		return "", errors.New("bash: invalid path contains NUL")
+	}
 	base, err := filepath.Abs(root)
 	if err != nil {
 		return "", err
