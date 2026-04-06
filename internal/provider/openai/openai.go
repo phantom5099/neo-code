@@ -302,7 +302,11 @@ func (p *Provider) consumeStream(
 		line, err := reader.ReadLine()
 
 		if err != nil && !errors.Is(err, io.EOF) {
-			// 非 EOF 的读取错误统一包装为流中断，交由 Chat() 判断是否可重连
+			// 非 EOF 的读取错误：先刷新缓冲的 data 行，再包装为流中断，
+			// 避免中断前最后一段数据丢失。
+			if flushErr := flushPendingData(); flushErr != nil {
+				return flushErr
+			}
 			return fmt.Errorf("%w: %v", provider.ErrStreamInterrupted, err)
 		}
 

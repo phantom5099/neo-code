@@ -3,6 +3,8 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1026,4 +1028,377 @@ func TestProviderChatEmitsFullEventStream(t *testing.T) {
 	if messageDonePayload.Usage.TotalTokens != 150 {
 		t.Fatalf("expected TotalTokens %d, got %d", 150, messageDonePayload.Usage.TotalTokens)
 	}
+}
+
+// --- 透明重连测试 ---
+
+func TestProviderChatReconnect_OnRecoverableError(t *testing.T) {
+	t.Setenv(config.OpenAIDefaultAPIKeyEnv, "test-key")
+
+	attempt := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt++
+		w.Header().Set("Content-Type", "text/event-stream")
+
+		if attempt == 1 {
+			// 第一次请求：返回 5xx（可恢复）
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":{"message":"temporarily unavailable"}}`))
+			return
+		}
+
+		// 第二次请求：正常返回
+		writeSSEChunk(t, w, map[string]any{
+			"choices": []map[string]any{
+				{"index": 0, "delta": map[string]any{"content": "recovered"}},
+			},
+		})
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	p, err := New(resolvedConfig(server.URL, config.OpenAIDefaultModel))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	p.client = server.Client()
+
+	events := make(chan domain.StreamEvent, 8)
+	err = p.Chat(context.Background(), domain.ChatRequest{
+		Model:    config.OpenAIDefaultModel,
+		Messages: []domain.Message{{Role: "user", Content: "hello"}},
+	}, events)
+	if err != nil {
+		t.Fatalf("Chat() should succeed after reconnect, got: %v", err)
+	}
+
+	drained := drainStreamEvents(events)
+	var foundText bool
+	for _, evt := range drained {
+		if evt.Type == domain.StreamEventTextDelta {
+			foundText = true
+		}
+	}
+	if !foundText {
+		t.Fatal("expected text_delta event after reconnect")
+	}
+	if attempt < 2 {
+		t.Fatalf("expected at least 2 attempts, got %d", attempt)
+	}
+}
+
+func TestProviderChatReconnect_NonRecoverableError_StopsImmediately(t *testing.T) {
+	t.Setenv(config.OpenAIDefaultAPIKeyEnv, "test-key")
+
+	attempt := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt++
+		// 返回 401（不可恢复）→ 应立即停止，不重试
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"invalid key"}}`))
+	}))
+	defer server.Close()
+
+	p, err := New(resolvedConfig(server.URL, config.OpenAIDefaultModel))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	p.client = server.Client()
+
+	err = p.Chat(context.Background(), domain.ChatRequest{
+		Model:    config.OpenAIDefaultModel,
+		Messages: []domain.Message{{Role: "user", Content: "hello"}},
+	}, make(chan domain.StreamEvent, 1))
+	if err == nil {
+		t.Fatal("expected error for 401")
+	}
+	if !strings.Contains(err.Error(), "invalid key") {
+		t.Fatalf("expected auth error, got: %v", err)
+	}
+	if attempt > 1 {
+		t.Fatalf("non-recoverable error should stop immediately, but got %d attempts", attempt)
+	}
+}
+
+func TestProviderChatReconnect_MaxRetriesExhausted(t *testing.T) {
+	t.Setenv(config.OpenAIDefaultAPIKeyEnv, "test-key")
+
+	attempt := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt++
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`bad gateway`))
+	}))
+	defer server.Close()
+
+	p, err := New(resolvedConfig(server.URL, config.OpenAIDefaultModel))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	p.client = server.Client()
+
+	err = p.Chat(context.Background(), domain.ChatRequest{
+		Model:    config.OpenAIDefaultModel,
+		Messages: []domain.Message{{Role: "user", Content: "hello"}},
+	}, make(chan domain.StreamEvent, 1))
+	if err == nil {
+		t.Fatal("expected error after exhausting retries")
+	}
+	// 初始1次 + 最大3次重连 = 最多4次尝试
+	if attempt > 4 {
+		t.Fatalf("too many attempts: %d (max should be 4)", attempt)
+	}
+}
+
+func TestProviderChatReconnect_InjectsAccumulatedContext(t *testing.T) {
+	t.Setenv(config.OpenAIDefaultAPIKeyEnv, "test-key")
+
+	p, err := New(resolvedConfig(config.OpenAIDefaultBaseURL, config.OpenAIDefaultModel))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	// 构造一个先返回有效 SSE 数据再中断的 reader，验证 consumeStream
+	// 在中断前正确累积 accumText 和 accumCalls，且错误为 ErrStreamInterrupted。
+	sseData := "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial \"}}]}\n\n" +
+		"data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"bash\",\"arguments\":\"run\"}}]}}]}\n"
+
+	reader := io.MultiReader(strings.NewReader(sseData), &errReader{err: io.ErrClosedPipe})
+	events := make(chan domain.StreamEvent, 8)
+	accumText := &strings.Builder{}
+	accumCalls := make(map[int]*domain.ToolCall)
+
+	err = p.consumeStream(context.Background(), reader, events, accumText, &accumCalls)
+	if err == nil {
+		t.Fatal("expected error from interrupted stream")
+	}
+	if !errors.Is(err, domain.ErrStreamInterrupted) {
+		t.Fatalf("expected ErrStreamInterrupted, got: %v", err)
+	}
+
+	// 验证累积状态：文本和 tool call 都应已保留
+	if accumText.String() != "partial " {
+		t.Fatalf("expected accumText %q, got %q", "partial ", accumText.String())
+	}
+	call, ok := accumCalls[0]
+	if !ok {
+		t.Fatal("expected accumCalls[0] to exist")
+	}
+	if call.ID != "c1" || call.Name != "bash" {
+		t.Fatalf("expected tool call c1/bash, got %+v", call)
+	}
+	if call.Arguments != "run" {
+		t.Fatalf("expected arguments %q, got %q", "run", call.Arguments)
+	}
+
+	// 验证累积状态可用于 buildAssistantMsg
+	msg := p.buildAssistantMsg(accumText, accumCalls)
+	if msg.Role != domain.RoleAssistant {
+		t.Fatalf("expected role assistant, got %q", msg.Role)
+	}
+	if !strings.Contains(msg.Content, "partial ") {
+		t.Fatalf("expected assistant content to contain 'partial', got %q", msg.Content)
+	}
+	if len(msg.ToolCalls) != 1 || msg.ToolCalls[0].ID != "c1" {
+		t.Fatalf("expected assistant tool calls to contain c1, got %+v", msg.ToolCalls)
+	}
+}
+
+// --- 辅助方法测试 ---
+
+func TestBuildAssistantMsg_TextOnly(t *testing.T) {
+	t.Parallel()
+
+	p, _ := New(resolvedConfig("", ""))
+	var accumText strings.Builder
+	accumText.WriteString("hello world")
+
+	msg := p.buildAssistantMsg(&accumText, nil)
+	if msg.Role != domain.RoleAssistant {
+		t.Fatalf("expected role assistant, got %q", msg.Role)
+	}
+	if msg.Content != "hello world" {
+		t.Fatalf("expected content %q, got %q", "hello world", msg.Content)
+	}
+	if len(msg.ToolCalls) != 0 {
+		t.Fatalf("expected no tool calls, got %+v", msg.ToolCalls)
+	}
+}
+
+func TestBuildAssistantMsg_WithToolCalls(t *testing.T) {
+	t.Parallel()
+
+	p, _ := New(resolvedConfig("", ""))
+	var accumText strings.Builder
+	accumText.WriteString("done")
+	accumCalls := map[int]*domain.ToolCall{
+		0: {ID: "call_1", Name: "edit", Arguments: `{"path":"f.go"}`},
+		1: {ID: "call_2", Name: "read", Arguments: `{"path":"f.go"}`},
+	}
+
+	msg := p.buildAssistantMsg(&accumText, accumCalls)
+	if msg.Content != "done" {
+		t.Fatalf("content mismatch")
+	}
+	if len(msg.ToolCalls) != 2 {
+		t.Fatalf("expected 2 tool calls, got %d", len(msg.ToolCalls))
+	}
+	if msg.ToolCalls[0].Name != "edit" || msg.ToolCalls[1].Name != "read" {
+		t.Fatalf("unexpected tool calls: %+v", msg.ToolCalls)
+	}
+}
+
+func TestBuildAssistantMsg_EmptyAccum(t *testing.T) {
+	t.Parallel()
+
+	p, _ := New(resolvedConfig("", ""))
+	var accumText strings.Builder
+
+	msg := p.buildAssistantMsg(&accumText, nil)
+	if msg.Content != "" {
+		t.Fatalf("expected empty content, got %q", msg.Content)
+	}
+	if msg.ToolCalls != nil {
+		t.Fatal("expected nil ToolCalls when accum is nil")
+	}
+}
+
+func TestMergeToolCallDeltaWithAccum_SyncsExternalState(t *testing.T) {
+	t.Parallel()
+
+	events := make(chan domain.StreamEvent, 4)
+	accumCalls := make(map[int]*domain.ToolCall)
+
+	delta1 := toolCallDelta{
+		Index: 0,
+		ID:    "call_acc",
+		Function: openAIFunctionCall{
+			Name:      "bash",
+			Arguments: `{"cmd":"ls"`,
+		},
+	}
+	if err := mergeToolCallDeltaWithAccum(context.Background(), events, &accumCalls, delta1); err != nil {
+		t.Fatalf("first delta error = %v", err)
+	}
+
+	delta2 := toolCallDelta{
+		Index: 0,
+		Function: openAIFunctionCall{
+			Arguments: `"}`,
+		},
+	}
+	if err := mergeToolCallDeltaWithAccum(context.Background(), events, &accumCalls, delta2); err != nil {
+		t.Fatalf("second delta error = %v", err)
+	}
+
+	// 验证外部 accumCalls 状态已同步
+	call, ok := accumCalls[0]
+	if !ok {
+		t.Fatal("expected accumCalls[0] to exist")
+	}
+	if call.ID != "call_acc" || call.Name != "bash" {
+		t.Fatalf("unexpected call state: %+v", call)
+	}
+	if call.Arguments != `{"cmd":"ls""}` {
+		t.Fatalf("expected arguments %q, got %q", `{"cmd":"ls""}`, call.Arguments)
+	}
+}
+
+func TestMergeToolCallDeltaWithAccum_NilMapInitializes(t *testing.T) {
+	t.Parallel()
+
+	var accumCalls map[int]*domain.ToolCall // nil map（非指针）
+
+	delta := toolCallDelta{
+		Index: 2,
+		ID:    "call_nil",
+		Function: openAIFunctionCall{
+			Name: "read",
+		},
+	}
+	events := make(chan domain.StreamEvent, 2)
+	if err := mergeToolCallDeltaWithAccum(context.Background(), events, &accumCalls, delta); err != nil {
+		t.Fatalf("error = %v", err)
+	}
+
+	if accumCalls == nil {
+		t.Fatal("expected accumCalls to be initialized from nil")
+	}
+	if accumCalls[2] == nil || accumCalls[2].Name != "read" {
+		t.Fatalf("unexpected accumCalls[2]: %+v", accumCalls[2])
+	}
+}
+
+// --- consumeStream 错误包装测试 ---
+
+func TestConsumeStream_WrapsNonEOFAsInterrupted(t *testing.T) {
+	t.Setenv(config.OpenAIDefaultAPIKeyEnv, "test-key")
+
+	p, err := New(resolvedConfig("", ""))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	// 使用一个会触发读取错误的 source（模拟网络断开）
+	errReader := &errReader{err: io.ErrClosedPipe}
+	accumText := &strings.Builder{}
+	accums := make(map[int]*domain.ToolCall)
+
+	err = p.consumeStream(context.Background(), errReader, make(chan domain.StreamEvent, 1), accumText, &accums)
+	if err == nil {
+		t.Fatal("expected error for broken reader")
+	}
+	if !errors.Is(err, domain.ErrStreamInterrupted) {
+		t.Fatalf("expected ErrStreamInterrupted wrapping, got: %v", err)
+	}
+}
+
+// TestConsumeStream_FlushesPendingDataOnNonEOFError 验证非 EOF 读取错误发生前，
+// 已缓冲但尚未刷新的 data: 行仍会被处理（不会因中断而丢失）。
+func TestConsumeStream_FlushesPendingDataOnNonEOFError(t *testing.T) {
+	t.Setenv(config.OpenAIDefaultAPIKeyEnv, "test-key")
+
+	p, err := New(resolvedConfig("", ""))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	// 构造一段 SSE 数据：包含一个有效 data 行，但紧跟一个错误而非空行。
+	// 这模拟了流中断前最后一帧数据还没来得及被空行触发刷新的场景。
+	sseData := `data: {"id":"a","object":"chat.completion.chunk","choices":[{"delta":{"content":"hello"},"finish_reason":""}]}
+` // 注意：这里有换行符，但由于紧接着是 error，不会被空行刷新
+	body := io.MultiReader(strings.NewReader(sseData), &errReader{err: io.ErrClosedPipe})
+
+	events := make(chan domain.StreamEvent, 10)
+	accumText := &strings.Builder{}
+	accums := make(map[int]*domain.ToolCall)
+
+	err = p.consumeStream(context.Background(), body, events, accumText, &accums)
+	if err == nil {
+		t.Fatal("expected error for broken reader")
+	}
+	if !errors.Is(err, domain.ErrStreamInterrupted) {
+		t.Fatalf("expected ErrStreamInterrupted, got: %v", err)
+	}
+
+	// 关键断言：中断前的 data 行必须已被刷新处理，文本累积不为空。
+	if accumText.String() != "hello" {
+		t.Fatalf("expected accumText 'hello', got %q", accumText.String())
+	}
+}
+
+// errReader 是一个每次 ReadLine 都返回指定错误的测试辅助类型。
+type errReader struct {
+	err error
+}
+
+func (e *errReader) Read(p []byte) (int, error) {
+	return 0, e.err
+}
+
+// roundTripperFunc 将函数适配为 http.RoundTripper 接口，用于测试中 mock HTTP 行为。
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
