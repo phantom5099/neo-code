@@ -306,6 +306,48 @@ func TestDefaultBuilderBuildHonorsToolMicroCompactPolicies(t *testing.T) {
 	}
 }
 
+func TestNewBuilderWithToolPoliciesUsesProvidedPolicySource(t *testing.T) {
+	t.Parallel()
+
+	builder := NewBuilderWithToolPolicies(stubMicroCompactPolicySource{
+		"custom_tool": tools.MicroCompactPolicyPreserveHistory,
+	})
+
+	messages := []provider.Message{
+		{Role: provider.RoleUser, Content: "older user"},
+		{
+			Role: provider.RoleAssistant,
+			ToolCalls: []provider.ToolCall{
+				{ID: "call-1", Name: "custom_tool", Arguments: "{}"},
+			},
+		},
+		{Role: provider.RoleTool, ToolCallID: "call-1", Content: "old custom result"},
+		{
+			Role: provider.RoleAssistant,
+			ToolCalls: []provider.ToolCall{
+				{ID: "call-2", Name: "bash", Arguments: "{}"},
+			},
+		},
+		{Role: provider.RoleTool, ToolCallID: "call-2", Content: "recent bash result"},
+		{
+			Role: provider.RoleAssistant,
+			ToolCalls: []provider.ToolCall{
+				{ID: "call-3", Name: "webfetch", Arguments: "{}"},
+			},
+		},
+		{Role: provider.RoleTool, ToolCallID: "call-3", Content: "latest webfetch result"},
+		{Role: provider.RoleUser, Content: "latest explicit instruction"},
+	}
+
+	got, err := builder.Build(stdcontext.Background(), BuildInput{Messages: messages})
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+	if got.Messages[2].Content != "old custom result" {
+		t.Fatalf("expected preserved tool result to remain, got %q", got.Messages[2].Content)
+	}
+}
+
 func TestTrimMessagesPreservesToolPairs(t *testing.T) {
 	t.Parallel()
 

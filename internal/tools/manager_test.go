@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"neo-code/internal/provider"
 	"neo-code/internal/security"
 )
 
@@ -15,6 +16,7 @@ type managerStubTool struct {
 	name      string
 	content   string
 	err       error
+	policy    MicroCompactPolicy
 	callCount int
 	lastCall  ToolCallInput
 }
@@ -25,7 +27,7 @@ func (t *managerStubTool) Description() string { return "stub tool" }
 
 func (t *managerStubTool) Schema() map[string]any { return map[string]any{"type": "object"} }
 
-func (t *managerStubTool) MicroCompactPolicy() MicroCompactPolicy { return MicroCompactPolicyCompact }
+func (t *managerStubTool) MicroCompactPolicy() MicroCompactPolicy { return t.policy }
 
 func (t *managerStubTool) Execute(ctx context.Context, call ToolCallInput) (ToolResult, error) {
 	t.callCount++
@@ -41,6 +43,21 @@ type stubSandbox struct {
 	callCount  int
 	lastAction security.Action
 }
+
+type executorWithoutMicroCompactPolicy struct{}
+
+func (executorWithoutMicroCompactPolicy) ListAvailableSpecs(ctx context.Context, input SpecListInput) ([]provider.ToolSpec, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return nil, nil
+}
+
+func (executorWithoutMicroCompactPolicy) Execute(ctx context.Context, call ToolCallInput) (ToolResult, error) {
+	return ToolResult{}, ctx.Err()
+}
+
+func (executorWithoutMicroCompactPolicy) Supports(name string) bool { return false }
 
 func (s *stubSandbox) Check(ctx context.Context, action security.Action) (*security.WorkspaceExecutionPlan, error) {
 	s.callCount++
@@ -68,6 +85,46 @@ func TestDefaultManagerListAvailableSpecs(t *testing.T) {
 	if len(specs) != 1 || specs[0].Name != "bash" {
 		t.Fatalf("unexpected specs: %+v", specs)
 	}
+}
+
+func TestDefaultManagerMicroCompactPolicy(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil manager defaults to compact", func(t *testing.T) {
+		t.Parallel()
+
+		var manager *DefaultManager
+		if got := manager.MicroCompactPolicy("custom_tool"); got != MicroCompactPolicyCompact {
+			t.Fatalf("expected compact default, got %q", got)
+		}
+	})
+
+	t.Run("executor without policy support defaults to compact", func(t *testing.T) {
+		t.Parallel()
+
+		manager, err := NewManager(executorWithoutMicroCompactPolicy{}, nil, nil)
+		if err != nil {
+			t.Fatalf("new manager: %v", err)
+		}
+		if got := manager.MicroCompactPolicy("custom_tool"); got != MicroCompactPolicyCompact {
+			t.Fatalf("expected compact default, got %q", got)
+		}
+	})
+
+	t.Run("executor policy is forwarded", func(t *testing.T) {
+		t.Parallel()
+
+		registry := NewRegistry()
+		registry.Register(&managerStubTool{name: "preserve_tool", policy: MicroCompactPolicyPreserveHistory})
+
+		manager, err := NewManager(registry, nil, nil)
+		if err != nil {
+			t.Fatalf("new manager: %v", err)
+		}
+		if got := manager.MicroCompactPolicy("preserve_tool"); got != MicroCompactPolicyPreserveHistory {
+			t.Fatalf("expected preserve history, got %q", got)
+		}
+	})
 }
 
 func TestDefaultManagerListAvailableSpecsBoundaries(t *testing.T) {

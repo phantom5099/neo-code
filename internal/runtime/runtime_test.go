@@ -641,6 +641,69 @@ func TestServiceRunDefaultBuilderUsesToolManagerMicroCompactPolicies(t *testing.
 	}
 }
 
+func TestServiceRunDefaultBuilderUsesGenericToolManagerMicroCompactPolicies(t *testing.T) {
+	t.Parallel()
+
+	manager := newRuntimeConfigManager(t)
+	store := newMemoryStore()
+	toolManager := &stubToolManager{
+		policies: map[string]tools.MicroCompactPolicy{
+			"preserve_tool": tools.MicroCompactPolicyPreserveHistory,
+		},
+	}
+
+	session := newSession("preserve history by manager")
+	session.ID = "session-preserve-history-manager"
+	session.Messages = []provider.Message{
+		{Role: provider.RoleUser, Content: "older user"},
+		{
+			Role: provider.RoleAssistant,
+			ToolCalls: []provider.ToolCall{
+				{ID: "call-1", Name: "preserve_tool", Arguments: "{}"},
+			},
+		},
+		{Role: provider.RoleTool, ToolCallID: "call-1", Content: "preserved result"},
+		{
+			Role: provider.RoleAssistant,
+			ToolCalls: []provider.ToolCall{
+				{ID: "call-2", Name: "bash", Arguments: "{}"},
+			},
+		},
+		{Role: provider.RoleTool, ToolCallID: "call-2", Content: "recent bash result"},
+		{
+			Role: provider.RoleAssistant,
+			ToolCalls: []provider.ToolCall{
+				{ID: "call-3", Name: "webfetch", Arguments: "{}"},
+			},
+		},
+		{Role: provider.RoleTool, ToolCallID: "call-3", Content: "latest webfetch result"},
+	}
+	store.sessions[session.ID] = cloneSession(session)
+
+	scripted := &scriptedProvider{
+		responses: []provider.ChatResponse{{
+			Message:      provider.Message{Role: provider.RoleAssistant, Content: "done"},
+			FinishReason: "stop",
+		}},
+	}
+
+	service := NewWithFactory(manager, toolManager, store, &scriptedProviderFactory{provider: scripted}, nil)
+	if err := service.Run(context.Background(), UserInput{
+		SessionID: session.ID,
+		RunID:     "run-preserve-history-generic-manager",
+		Content:   "latest explicit instruction",
+	}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if len(scripted.requests) != 1 {
+		t.Fatalf("expected 1 provider request, got %d", len(scripted.requests))
+	}
+	if got := scripted.requests[0].Messages[2].Content; got != "preserved result" {
+		t.Fatalf("expected preserved tool result to remain visible, got %q", got)
+	}
+}
+
 func TestServiceRunFailurePreservesExistingSessionProviderAndModel(t *testing.T) {
 	t.Parallel()
 
