@@ -170,7 +170,7 @@ func TestServiceRunPermissionRejectFlow(t *testing.T) {
 	}
 
 	scripted := &scriptedProvider{
-		responses: []provider.ChatResponse{
+		responses: []scriptedResponse{
 			{
 				Message: provider.Message{
 					Role: "assistant",

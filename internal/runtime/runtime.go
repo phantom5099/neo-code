@@ -165,7 +165,7 @@ func NewWithFactory(
 		toolManager = tools.NewRegistry()
 	}
 	if contextBuilder == nil {
-		contextBuilder = agentcontext.NewBuilder()
+		contextBuilder = agentcontext.NewBuilderWithToolPolicies(toolManager)
 	}
 
 	return &Service{
@@ -235,6 +235,9 @@ func (s *Service) Run(ctx context.Context, input UserInput) error {
 				Shell:    cfg.Shell,
 				Provider: cfg.SelectedProvider,
 				Model:    cfg.CurrentModel,
+			},
+			Compact: agentcontext.CompactOptions{
+				DisableMicroCompact: cfg.Context.Compact.MicroCompactDisabled,
 			},
 		})
 		if err != nil {

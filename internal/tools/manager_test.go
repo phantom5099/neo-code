@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"neo-code/internal/provider"
 	"neo-code/internal/security"
 )
 
@@ -15,6 +16,7 @@ type managerStubTool struct {
 	name      string
 	content   string
 	err       error
+	policy    MicroCompactPolicy
 	callCount int
 	lastCall  ToolCallInput
 }
@@ -24,6 +26,8 @@ func (t *managerStubTool) Name() string { return t.name }
 func (t *managerStubTool) Description() string { return "stub tool" }
 
 func (t *managerStubTool) Schema() map[string]any { return map[string]any{"type": "object"} }
+
+func (t *managerStubTool) MicroCompactPolicy() MicroCompactPolicy { return t.policy }
 
 func (t *managerStubTool) Execute(ctx context.Context, call ToolCallInput) (ToolResult, error) {
 	t.callCount++
@@ -36,9 +40,25 @@ func (t *managerStubTool) Execute(ctx context.Context, call ToolCallInput) (Tool
 
 type stubSandbox struct {
 	err        error
+	plan       *security.WorkspaceExecutionPlan
 	callCount  int
 	lastAction security.Action
 }
+
+type executorWithoutMicroCompactPolicy struct{}
+
+func (executorWithoutMicroCompactPolicy) ListAvailableSpecs(ctx context.Context, input SpecListInput) ([]provider.ToolSpec, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return nil, nil
+}
+
+func (executorWithoutMicroCompactPolicy) Execute(ctx context.Context, call ToolCallInput) (ToolResult, error) {
+	return ToolResult{}, ctx.Err()
+}
+
+func (executorWithoutMicroCompactPolicy) Supports(name string) bool { return false }
 
 func (s *stubSandbox) Check(ctx context.Context, action security.Action) (*security.WorkspaceExecutionPlan, error) {
 	s.callCount++
@@ -46,7 +66,7 @@ func (s *stubSandbox) Check(ctx context.Context, action security.Action) (*secur
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return nil, s.err
+	return s.plan, s.err
 }
 
 func TestDefaultManagerListAvailableSpecs(t *testing.T) {
@@ -66,6 +86,46 @@ func TestDefaultManagerListAvailableSpecs(t *testing.T) {
 	if len(specs) != 1 || specs[0].Name != "bash" {
 		t.Fatalf("unexpected specs: %+v", specs)
 	}
+}
+
+func TestDefaultManagerMicroCompactPolicy(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil manager defaults to compact", func(t *testing.T) {
+		t.Parallel()
+
+		var manager *DefaultManager
+		if got := manager.MicroCompactPolicy("custom_tool"); got != MicroCompactPolicyCompact {
+			t.Fatalf("expected compact default, got %q", got)
+		}
+	})
+
+	t.Run("executor without policy support defaults to compact", func(t *testing.T) {
+		t.Parallel()
+
+		manager, err := NewManager(executorWithoutMicroCompactPolicy{}, nil, nil)
+		if err != nil {
+			t.Fatalf("new manager: %v", err)
+		}
+		if got := manager.MicroCompactPolicy("custom_tool"); got != MicroCompactPolicyCompact {
+			t.Fatalf("expected compact default, got %q", got)
+		}
+	})
+
+	t.Run("executor policy is forwarded", func(t *testing.T) {
+		t.Parallel()
+
+		registry := NewRegistry()
+		registry.Register(&managerStubTool{name: "preserve_tool", policy: MicroCompactPolicyPreserveHistory})
+
+		manager, err := NewManager(registry, nil, nil)
+		if err != nil {
+			t.Fatalf("new manager: %v", err)
+		}
+		if got := manager.MicroCompactPolicy("preserve_tool"); got != MicroCompactPolicyPreserveHistory {
+			t.Fatalf("expected preserve history, got %q", got)
+		}
+	})
 }
 
 func TestDefaultManagerListAvailableSpecsBoundaries(t *testing.T) {
@@ -343,6 +403,43 @@ func TestDefaultManagerExecuteWithWorkspaceSandbox(t *testing.T) {
 	}
 }
 
+func TestDefaultManagerExecuteForwardsWorkspacePlanToTool(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	tool := &managerStubTool{name: "filesystem_write_file", content: "ok"}
+	registry.Register(tool)
+
+	engine, err := security.NewStaticGateway(security.DecisionAllow, nil)
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	plan := &security.WorkspaceExecutionPlan{
+		Root:            "workspace-root",
+		Target:          "workspace-root/notes.txt",
+		RequestedTarget: "notes.txt",
+	}
+	manager, err := NewManager(registry, engine, &stubSandbox{plan: plan})
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+
+	result, execErr := manager.Execute(context.Background(), ToolCallInput{
+		Name:      "filesystem_write_file",
+		Arguments: []byte(`{"path":"notes.txt","content":"hello"}`),
+		Workdir:   t.TempDir(),
+	})
+	if execErr != nil {
+		t.Fatalf("unexpected error: %v", execErr)
+	}
+	if result.Content != "ok" {
+		t.Fatalf("expected ok result, got %+v", result)
+	}
+	if tool.lastCall.WorkspacePlan == nil || tool.lastCall.WorkspacePlan.Target != plan.Target {
+		t.Fatalf("expected workspace plan to be forwarded, got %+v", tool.lastCall.WorkspacePlan)
+	}
+}
+
 func TestPermissionDecisionError(t *testing.T) {
 	t.Parallel()
 
@@ -401,6 +498,23 @@ func TestPermissionDecisionError(t *testing.T) {
 	var nilErr *PermissionDecisionError
 	if nilErr.Error() != "" || nilErr.Decision() != "" || nilErr.ToolName() != "" || nilErr.RememberScope() != "" {
 		t.Fatalf("expected nil permission error helpers to be empty")
+	}
+	if nilErr.Reason() != "" || nilErr.RuleID() != "" || nilErr.Action() != (security.Action{}) {
+		t.Fatalf("expected nil permission error extended helpers to be empty")
+	}
+
+	defaultAsk := &PermissionDecisionError{decision: security.DecisionAsk}
+	if !strings.Contains(defaultAsk.Error(), "permission approval required") {
+		t.Fatalf("expected default ask message, got %q", defaultAsk.Error())
+	}
+}
+
+func TestNewManagerRejectsNilExecutor(t *testing.T) {
+	t.Parallel()
+
+	manager, err := NewManager(nil, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "executor is nil") {
+		t.Fatalf("expected nil executor error, got manager=%v err=%v", manager, err)
 	}
 }
 
