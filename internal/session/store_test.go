@@ -327,16 +327,16 @@ func TestJSONStoreSavePersistsProviderModelAndMessages(t *testing.T) {
 		Model:     "gpt-4.1",
 		CreatedAt: time.Now().Add(-time.Hour),
 		UpdatedAt: time.Now(),
-		Messages: []provider.Message{
-			{Role: provider.RoleUser, Content: "hello"},
+		Messages: []providertypes.Message{
+			{Role: providertypes.RoleUser, Content: "hello"},
 			{
-				Role:    provider.RoleAssistant,
+				Role:    providertypes.RoleAssistant,
 				Content: "calling tool",
-				ToolCalls: []provider.ToolCall{
+				ToolCalls: []providertypes.ToolCall{
 					{ID: "call-1", Name: "webfetch", Arguments: `{"url":"https://example.com"}`},
 				},
 			},
-			{Role: provider.RoleTool, ToolCallID: "call-1", Content: "ok"},
+			{Role: providertypes.RoleTool, ToolCallID: "call-1", Content: "ok"},
 		},
 	}
 

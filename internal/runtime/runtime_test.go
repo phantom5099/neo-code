@@ -2930,8 +2930,8 @@ func TestServiceRunFailsWhenAssistantSaveFails(t *testing.T) {
 	registry.Register(&stubTool{name: "filesystem_read_file", content: "default"})
 
 	scripted := &scriptedProvider{
-		streams: [][]provider.StreamEvent{
-			{provider.NewTextDeltaStreamEvent("assistant reply")},
+		streams: [][]providertypes.StreamEvent{
+			{providertypes.NewTextDeltaStreamEvent("assistant reply")},
 		},
 	}
 	service := NewWithFactory(manager, registry, store, &scriptedProviderFactory{provider: scripted}, nil)
@@ -2950,7 +2950,7 @@ func TestHandleProviderStreamEventErrorBranches(t *testing.T) {
 	acc := newStreamAccumulator()
 
 	err := handleProviderStreamEvent(
-		provider.StreamEvent{Type: provider.StreamEventToolCallStart},
+		providertypes.StreamEvent{Type: providertypes.StreamEventToolCallStart},
 		acc,
 		nil,
 		nil,
@@ -2960,7 +2960,7 @@ func TestHandleProviderStreamEventErrorBranches(t *testing.T) {
 	}
 
 	err = handleProviderStreamEvent(
-		provider.StreamEvent{Type: provider.StreamEventToolCallDelta},
+		providertypes.StreamEvent{Type: providertypes.StreamEventToolCallDelta},
 		acc,
 		nil,
 		nil,
@@ -2970,7 +2970,7 @@ func TestHandleProviderStreamEventErrorBranches(t *testing.T) {
 	}
 
 	err = handleProviderStreamEvent(
-		provider.StreamEvent{Type: provider.StreamEventMessageDone},
+		providertypes.StreamEvent{Type: providertypes.StreamEventMessageDone},
 		acc,
 		nil,
 		nil,
@@ -3013,8 +3013,8 @@ func TestCallProviderWithRetryReturnsCombinedForwardError(t *testing.T) {
 	store := newMemoryStore()
 
 	scripted := &scriptedProvider{
-		chatFn: func(ctx context.Context, req provider.ChatRequest, events chan<- provider.StreamEvent) error {
-			events <- provider.StreamEvent{Type: provider.StreamEventTextDelta}
+		chatFn: func(ctx context.Context, req providertypes.ChatRequest, events chan<- providertypes.StreamEvent) error {
+			events <- providertypes.StreamEvent{Type: providertypes.StreamEventTextDelta}
 			return errors.New("provider chat failed")
 		},
 	}
@@ -3024,10 +3024,10 @@ func TestCallProviderWithRetryReturnsCombinedForwardError(t *testing.T) {
 		context.Background(),
 		"run-forward-error",
 		"session-forward-error",
-		provider.ChatRequest{
+		providertypes.ChatRequest{
 			Model:        "test-model",
 			SystemPrompt: "prompt",
-			Messages:     []provider.Message{{Role: provider.RoleUser, Content: "hello"}},
+			Messages:     []providertypes.Message{{Role: providertypes.RoleUser, Content: "hello"}},
 		},
 	)
 	if err == nil || !containsError(err, "provider stream handling failed after provider error") {
