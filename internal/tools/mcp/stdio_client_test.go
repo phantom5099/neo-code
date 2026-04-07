@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -45,6 +46,51 @@ func TestStdIOClientHealthCheck(t *testing.T) {
 	defer cancel()
 	if err := client.HealthCheck(ctx); err != nil {
 		t.Fatalf("HealthCheck() error = %v", err)
+	}
+}
+
+func TestStdIOClientConcurrentCallTool(t *testing.T) {
+	t.Parallel()
+
+	client := newTestStdIOClient(t)
+	defer func() { _ = client.Close() }()
+
+	const workers = 16
+	var wg sync.WaitGroup
+	errCh := make(chan error, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			result, err := client.CallTool(context.Background(), "search", []byte(`{"query":"mcp"}`))
+			if err != nil {
+				errCh <- err
+				return
+			}
+			if !strings.Contains(result.Content, "search") {
+				errCh <- fmt.Errorf("unexpected content: %q", result.Content)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatalf("concurrent call failed: %v", err)
+	}
+}
+
+func TestReadFramedMessageRejectsOversizedPayload(t *testing.T) {
+	t.Parallel()
+
+	payload := strings.Repeat("x", 32)
+	raw := fmt.Sprintf("Content-Length: %d\r\n\r\n%s", maxStdioFrameBytes+1, payload)
+	reader := bufio.NewReader(strings.NewReader(raw))
+	_, err := readFramedMessage(reader)
+	if err == nil {
+		t.Fatalf("expected oversized payload error")
+	}
+	if !strings.Contains(err.Error(), "exceeds limit") {
+		t.Fatalf("expected exceeds limit error, got %v", err)
 	}
 }
 

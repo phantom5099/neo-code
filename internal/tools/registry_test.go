@@ -347,3 +347,68 @@ func TestRegistryExecuteDispatchesToMCPAdapter(t *testing.T) {
 		t.Fatalf("unexpected mcp metadata: %+v", result.Metadata)
 	}
 }
+
+func TestRegistryExecuteMCPResolveErrorPropagates(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	mcpRegistry := mcp.NewRegistry()
+	if err := mcpRegistry.RegisterServer("docs", "stdio", "v1", &stubMCPClient{
+		tools: []mcp.ToolDescriptor{
+			{Name: "search", Description: "search docs", InputSchema: map[string]any{"type": "object"}},
+		},
+	}); err != nil {
+		t.Fatalf("register mcp server: %v", err)
+	}
+	registry.SetMCPRegistry(mcpRegistry)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result, err := registry.Execute(ctx, ToolCallInput{
+		ID:   "mcp-call-canceled",
+		Name: "mcp.docs.search",
+	})
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context canceled, got %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("expected error result")
+	}
+	if !strings.Contains(result.Content, context.Canceled.Error()) {
+		t.Fatalf("expected canceled content, got %q", result.Content)
+	}
+}
+
+func TestRegistryExecuteMCPCallErrorDoesNotReturnOK(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	mcpRegistry := mcp.NewRegistry()
+	if err := mcpRegistry.RegisterServer("docs", "stdio", "v1", &stubMCPClient{
+		tools: []mcp.ToolDescriptor{
+			{Name: "search", Description: "search docs", InputSchema: map[string]any{"type": "object"}},
+		},
+		callErr: errors.New("mcp transport timeout"),
+	}); err != nil {
+		t.Fatalf("register mcp server: %v", err)
+	}
+	if err := mcpRegistry.RefreshServerTools(context.Background(), "docs"); err != nil {
+		t.Fatalf("refresh mcp tools: %v", err)
+	}
+	registry.SetMCPRegistry(mcpRegistry)
+
+	result, err := registry.Execute(context.Background(), ToolCallInput{
+		ID:        "mcp-call-error",
+		Name:      "mcp.docs.search",
+		Arguments: []byte(`{"query":"neocode"}`),
+	})
+	if err == nil {
+		t.Fatalf("expected mcp call error")
+	}
+	if !result.IsError {
+		t.Fatalf("expected IsError true")
+	}
+	if strings.TrimSpace(result.Content) == "" || strings.EqualFold(strings.TrimSpace(result.Content), "ok") {
+		t.Fatalf("expected non-ok error content, got %q", result.Content)
+	}
+}

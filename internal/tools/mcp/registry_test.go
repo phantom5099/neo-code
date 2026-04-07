@@ -161,3 +161,50 @@ func TestRegistryConcurrentSnapshotAndRefresh(t *testing.T) {
 		t.Fatalf("concurrent registry operations timed out")
 	}
 }
+
+func TestRegistrySnapshotSchemaIsDeepCloned(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	client := &stubServerClient{
+		tools: []ToolDescriptor{
+			{
+				Name: "search",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"query": map[string]any{
+							"type": "string",
+						},
+					},
+				},
+			},
+		},
+	}
+	if err := registry.RegisterServer("server-1", "stdio", "v1", client); err != nil {
+		t.Fatalf("register server: %v", err)
+	}
+	if err := registry.RefreshServerTools(context.Background(), "server-1"); err != nil {
+		t.Fatalf("refresh tools: %v", err)
+	}
+
+	first := registry.Snapshot()
+	properties, ok := first[0].Tools[0].InputSchema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected properties map")
+	}
+	properties["query"] = map[string]any{"type": "number"}
+
+	second := registry.Snapshot()
+	secondProperties, ok := second[0].Tools[0].InputSchema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected properties map in second snapshot")
+	}
+	query, ok := secondProperties["query"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected query schema map")
+	}
+	if query["type"] != "string" {
+		t.Fatalf("expected deep cloned schema type string, got %v", query["type"])
+	}
+}
