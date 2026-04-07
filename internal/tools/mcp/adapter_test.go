@@ -107,3 +107,42 @@ func TestAdapterCallError(t *testing.T) {
 		t.Fatalf("expected call error")
 	}
 }
+
+func TestAdapterAccessorsAndSchemaClone(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	adapter, err := NewAdapter(registry, "Docs", ToolDescriptor{
+		Name:        "search",
+		Description: "",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"q": map[string]any{"type": "string"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAdapter() error = %v", err)
+	}
+
+	if adapter.ServerID() != "docs" {
+		t.Fatalf("expected normalized server id docs, got %q", adapter.ServerID())
+	}
+	if adapter.ToolName() != "search" {
+		t.Fatalf("expected tool name search, got %q", adapter.ToolName())
+	}
+	if adapter.Description() == "" {
+		t.Fatalf("expected non-empty fallback description")
+	}
+
+	schema1 := adapter.Schema()
+	schema2 := adapter.Schema()
+	props1, _ := schema1["properties"].(map[string]any)
+	props1["q"] = map[string]any{"type": "number"}
+	props2, _ := schema2["properties"].(map[string]any)
+	query2, _ := props2["q"].(map[string]any)
+	if query2["type"] != "string" {
+		t.Fatalf("expected schema clone not mutated, got %v", query2["type"])
+	}
+}

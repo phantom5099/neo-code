@@ -208,3 +208,39 @@ func TestRegistrySnapshotSchemaIsDeepCloned(t *testing.T) {
 		t.Fatalf("expected deep cloned schema type string, got %v", query["type"])
 	}
 }
+
+func TestRegistryRegisterAndUnregisterBoundaries(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	client := &stubServerClient{}
+
+	if err := registry.RegisterServer("docs", "stdio", "v1", client); err != nil {
+		t.Fatalf("register server: %v", err)
+	}
+	if err := registry.RegisterServer("docs", "stdio", "v1", client); err == nil {
+		t.Fatalf("expected duplicate register error")
+	}
+	if !registry.UnregisterServer("docs") {
+		t.Fatalf("expected unregister success")
+	}
+	if registry.UnregisterServer("docs") {
+		t.Fatalf("expected unregister miss to be false")
+	}
+}
+
+func TestRegistrySetServerStatusValidation(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	client := &stubServerClient{}
+	if err := registry.RegisterServer("docs", "stdio", "v1", client); err != nil {
+		t.Fatalf("register server: %v", err)
+	}
+	if err := registry.SetServerStatus("docs", ServerStatus("unknown")); err == nil {
+		t.Fatalf("expected invalid status error")
+	}
+	if err := registry.SetServerStatus("missing", ServerStatusReady); err == nil {
+		t.Fatalf("expected missing server error")
+	}
+}
