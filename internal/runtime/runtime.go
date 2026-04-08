@@ -130,7 +130,7 @@ type UserInput struct {
 
 type ProviderFactory interface {
 	Build(ctx context.Context, cfg config.ResolvedProviderConfig) (provider.Provider, error)
-	DriverCapabilities(driverType string) provider.DriverCapabilities
+	DriverCapabilities(driverType string) (provider.DriverCapabilities, error)
 }
 
 type Service struct {
@@ -679,7 +679,10 @@ func ensureProviderDriverCapabilities(
 	}
 
 	driverType := strings.TrimSpace(cfg.Driver)
-	caps := factory.DriverCapabilities(driverType)
+	caps, err := factory.DriverCapabilities(driverType)
+	if err != nil {
+		return err
+	}
 	if requireStreaming && !caps.Streaming {
 		return fmt.Errorf("runtime: provider driver %q does not support streaming", driverType)
 	}

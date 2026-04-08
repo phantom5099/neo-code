@@ -737,6 +737,85 @@ func TestDiscoverModels_NetworkError(t *testing.T) {
 	}
 }
 
+func TestFetchModelsSetsAuthorizationHeader(t *testing.T) {
+	t.Parallel()
+
+	var authorization string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorization = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{}})
+	}))
+	defer server.Close()
+
+	p, err := New(resolvedConfig(server.URL, "header-key"))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	p.client = server.Client()
+
+	if _, err := p.fetchModels(context.Background()); err != nil {
+		t.Fatalf("fetchModels() error = %v", err)
+	}
+	if authorization != "Bearer test-key" {
+		t.Fatalf("expected bearer authorization header, got %q", authorization)
+	}
+}
+
+func TestFetchModelsDecodeError(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{invalid-json"))
+	}))
+	defer server.Close()
+
+	p, err := New(resolvedConfig(server.URL, "decode-key"))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	p.client = server.Client()
+
+	_, err = p.fetchModels(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "decode models response") {
+		t.Fatalf("expected decode error, got %v", err)
+	}
+}
+
+func TestDiscoverModelsSkipsInvalidEntriesAndDedupes(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{
+				{"id": "gpt-4.1", "name": "GPT-4.1"},
+				{"foo": "bar"},
+				{"id": "gpt-4.1", "name": "GPT-4.1 Duplicate"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	p, err := New(resolvedConfig(server.URL, "discover-key"))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	p.client = server.Client()
+
+	models, err := p.DiscoverModels(context.Background())
+	if err != nil {
+		t.Fatalf("DiscoverModels() error = %v", err)
+	}
+	if len(models) != 1 {
+		t.Fatalf("expected invalid and duplicate models to be filtered, got %+v", models)
+	}
+	if models[0].ID != "gpt-4.1" {
+		t.Fatalf("expected remaining model to be gpt-4.1, got %+v", models[0])
+	}
+}
+
 // --- mergeToolCallDelta 边界测试 ---
 
 func TestMergeToolCallDelta_MultipleIndices(t *testing.T) {

@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -235,5 +236,32 @@ func TestCompactSummaryGeneratorRejectsDriverWithoutStreaming(t *testing.T) {
 	}
 	if scripted.callCount != 0 {
 		t.Fatalf("expected provider Generate() to be skipped, got %d", scripted.callCount)
+	}
+}
+
+func TestCompactSummaryGeneratorPropagatesDriverNotFoundFromCapabilities(t *testing.T) {
+	t.Parallel()
+
+	manager := newRuntimeConfigManager(t)
+	resolvedProvider, err := resolvedProviderForTests(manager.Get(), config.OpenAIName)
+	if err != nil {
+		t.Fatalf("resolve provider: %v", err)
+	}
+
+	factory := &scriptedProviderFactory{
+		provider:        &scriptedProvider{},
+		capabilitiesErr: provider.ErrDriverNotFound,
+	}
+	generator := newCompactSummaryGenerator(factory, resolvedProvider, "session-model")
+
+	_, err = generator.Generate(context.Background(), contextcompact.SummaryInput{
+		Mode:   contextcompact.ModeManual,
+		Config: manager.Get().Context.Compact,
+	})
+	if !errors.Is(err, provider.ErrDriverNotFound) {
+		t.Fatalf("expected ErrDriverNotFound, got %v", err)
+	}
+	if factory.calls != 0 {
+		t.Fatalf("expected provider build to be skipped, got %d", factory.calls)
 	}
 }

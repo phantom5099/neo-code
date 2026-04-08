@@ -117,7 +117,13 @@ func (p *Provider) consumeStream(
 			if flushErr := flushPendingData(); flushErr != nil {
 				return flushErr
 			}
-			return finishStream()
+			if done {
+				return finishStream()
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return provider.ErrStreamInterrupted
 		}
 	}
 }

@@ -73,13 +73,13 @@ func (r *Registry) Supports(driverType string) bool {
 	return err == nil
 }
 
-// DriverCapabilities 返回指定 driver 的能力声明，不存在时返回零值。
-func (r *Registry) DriverCapabilities(driverType string) DriverCapabilities {
+// DriverCapabilities 返回指定 driver 的能力声明；driver 不存在时返回对应错误。
+func (r *Registry) DriverCapabilities(driverType string) (DriverCapabilities, error) {
 	driver, err := r.driver(driverType)
 	if err != nil {
-		return DriverCapabilities{}
+		return DriverCapabilities{}, err
 	}
-	return driver.Capabilities
+	return driver.Capabilities, nil
 }
 
 func (r *Registry) driver(driverType string) (DriverDefinition, error) {

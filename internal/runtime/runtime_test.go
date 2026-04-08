@@ -172,11 +172,12 @@ func streamContainsMessageDone(events []providertypes.StreamEvent) bool {
 }
 
 type scriptedProviderFactory struct {
-	provider     provider.Provider
-	calls        int
-	configs      []config.ResolvedProviderConfig
-	err          error
-	capabilities provider.DriverCapabilities
+	provider        provider.Provider
+	calls           int
+	configs         []config.ResolvedProviderConfig
+	err             error
+	capabilities    provider.DriverCapabilities
+	capabilitiesErr error
 }
 
 func (f *scriptedProviderFactory) Build(ctx context.Context, cfg config.ResolvedProviderConfig) (provider.Provider, error) {
@@ -188,14 +189,17 @@ func (f *scriptedProviderFactory) Build(ctx context.Context, cfg config.Resolved
 	return f.provider, nil
 }
 
-func (f *scriptedProviderFactory) DriverCapabilities(driverType string) provider.DriverCapabilities {
+func (f *scriptedProviderFactory) DriverCapabilities(driverType string) (provider.DriverCapabilities, error) {
+	if f.capabilitiesErr != nil {
+		return provider.DriverCapabilities{}, f.capabilitiesErr
+	}
 	if f.capabilities == (provider.DriverCapabilities{}) {
 		return provider.DriverCapabilities{
 			Streaming:     true,
 			ToolTransport: true,
-		}
+		}, nil
 	}
-	return f.capabilities
+	return f.capabilities, nil
 }
 
 type stubTool struct {
@@ -3140,6 +3144,32 @@ func TestServiceRunRejectsDriverWithoutToolTransport(t *testing.T) {
 	}
 	if scripted.callCount != 0 {
 		t.Fatalf("expected provider Generate() to be skipped, got %d", scripted.callCount)
+	}
+}
+
+func TestServiceRunPropagatesDriverNotFoundFromCapabilities(t *testing.T) {
+	t.Parallel()
+
+	manager := newRuntimeConfigManager(t)
+	store := newMemoryStore()
+	registry := tools.NewRegistry()
+	registry.Register(&stubTool{name: "filesystem_read_file", content: "default"})
+
+	factory := &scriptedProviderFactory{
+		provider:        &scriptedProvider{},
+		capabilitiesErr: fmt.Errorf("%w: missing", provider.ErrDriverNotFound),
+	}
+
+	service := NewWithFactory(manager, registry, store, factory, &stubContextBuilder{})
+	err := service.Run(context.Background(), UserInput{
+		RunID:   "run-driver-missing",
+		Content: "hello",
+	})
+	if !errors.Is(err, provider.ErrDriverNotFound) {
+		t.Fatalf("expected ErrDriverNotFound, got %v", err)
+	}
+	if factory.calls != 0 {
+		t.Fatalf("expected provider build to be skipped, got %d", factory.calls)
 	}
 }
 
