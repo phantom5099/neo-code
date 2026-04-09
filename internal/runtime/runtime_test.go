@@ -176,7 +176,7 @@ type scriptedProviderFactory struct {
 	calls           int
 	configs         []provider.RuntimeConfig
 	err             error
-	capabilities    provider.DriverCapabilities
+	capabilities    provider.DriverTransportCapabilities
 	capabilitiesErr error
 }
 
@@ -189,12 +189,12 @@ func (f *scriptedProviderFactory) Build(ctx context.Context, cfg provider.Runtim
 	return f.provider, nil
 }
 
-func (f *scriptedProviderFactory) DriverCapabilities(driverType string) (provider.DriverCapabilities, error) {
+func (f *scriptedProviderFactory) DriverTransportCapabilities(driverType string) (provider.DriverTransportCapabilities, error) {
 	if f.capabilitiesErr != nil {
-		return provider.DriverCapabilities{}, f.capabilitiesErr
+		return provider.DriverTransportCapabilities{}, f.capabilitiesErr
 	}
-	if f.capabilities == (provider.DriverCapabilities{}) {
-		return provider.DriverCapabilities{
+	if f.capabilities == (provider.DriverTransportCapabilities{}) {
+		return provider.DriverTransportCapabilities{
 			Streaming:     true,
 			ToolTransport: true,
 		}, nil
@@ -3125,7 +3125,7 @@ func TestServiceRunRejectsDriverWithoutToolTransport(t *testing.T) {
 	}
 	factory := &scriptedProviderFactory{
 		provider: scripted,
-		capabilities: provider.DriverCapabilities{
+		capabilities: provider.DriverTransportCapabilities{
 			Streaming:     true,
 			ToolTransport: false,
 		},

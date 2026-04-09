@@ -31,7 +31,7 @@ func Driver() provider.DriverDefinition {
 			}
 			return p.DiscoverModels(ctx)
 		},
-		Capabilities: provider.DriverCapabilities{
+		Capabilities: provider.DriverTransportCapabilities{
 			Streaming:           true,
 			ToolTransport:       true,
 			ModelDiscovery:      true,

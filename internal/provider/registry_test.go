@@ -176,13 +176,13 @@ func TestRegistrySupports(t *testing.T) {
 	}
 }
 
-func TestRegistryDriverCapabilities(t *testing.T) {
+func TestRegistryDriverTransportCapabilities(t *testing.T) {
 	t.Parallel()
 
 	registry := newTestRegistry(t)
-	got, err := registry.DriverCapabilities("OPENAI")
+	got, err := registry.DriverTransportCapabilities("OPENAI")
 	if err != nil {
-		t.Fatalf("DriverCapabilities() error = %v", err)
+		t.Fatalf("DriverTransportCapabilities() error = %v", err)
 	}
 	if !got.Streaming {
 		t.Fatalf("expected openai driver to support streaming, got %+v", got)
@@ -194,7 +194,7 @@ func TestRegistryDriverCapabilities(t *testing.T) {
 		t.Fatalf("expected openai driver to support model discovery, got %+v", got)
 	}
 
-	_, err = registry.DriverCapabilities("missing")
+	_, err = registry.DriverTransportCapabilities("missing")
 	if !errors.Is(err, provider.ErrDriverNotFound) {
 		t.Fatalf("expected ErrDriverNotFound for missing driver, got %v", err)
 	}

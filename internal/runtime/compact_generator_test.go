@@ -217,7 +217,7 @@ func TestCompactSummaryGeneratorRejectsDriverWithoutStreaming(t *testing.T) {
 	}
 	factory := &scriptedProviderFactory{
 		provider: scripted,
-		capabilities: provider.DriverCapabilities{
+		capabilities: provider.DriverTransportCapabilities{
 			Streaming:     false,
 			ToolTransport: true,
 		},

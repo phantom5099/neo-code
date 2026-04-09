@@ -16,7 +16,7 @@ type DriverDefinition struct {
 	Name         string
 	Build        Builder
 	Discover     DiscoveryFunc
-	Capabilities DriverCapabilities
+	Capabilities DriverTransportCapabilities
 }
 
 type Registry struct {
@@ -73,11 +73,11 @@ func (r *Registry) Supports(driverType string) bool {
 	return err == nil
 }
 
-// DriverCapabilities 返回指定 driver 的能力声明；driver 不存在时返回对应错误。
-func (r *Registry) DriverCapabilities(driverType string) (DriverCapabilities, error) {
+// DriverTransportCapabilities 返回指定 driver 的传输能力声明；driver 不存在时返回对应错误。
+func (r *Registry) DriverTransportCapabilities(driverType string) (DriverTransportCapabilities, error) {
 	driver, err := r.driver(driverType)
 	if err != nil {
-		return DriverCapabilities{}, err
+		return DriverTransportCapabilities{}, err
 	}
 	return driver.Capabilities, nil
 }

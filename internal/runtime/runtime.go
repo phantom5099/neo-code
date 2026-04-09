@@ -130,7 +130,7 @@ type UserInput struct {
 
 type ProviderFactory interface {
 	Build(ctx context.Context, cfg provider.RuntimeConfig) (provider.Provider, error)
-	DriverCapabilities(driverType string) (provider.DriverCapabilities, error)
+	DriverTransportCapabilities(driverType string) (provider.DriverTransportCapabilities, error)
 }
 
 type Service struct {
@@ -667,8 +667,8 @@ func isRetryableProviderError(err error) bool {
 	return pErr.Retryable
 }
 
-// ensureProviderDriverCapabilities 校验当前 driver 是否满足指定运行场景的基础能力要求。
-func ensureProviderDriverCapabilities(
+// ensureDriverTransportCapabilities 校验当前 driver 是否满足指定运行场景的基础传输能力要求。
+func ensureDriverTransportCapabilities(
 	factory ProviderFactory,
 	cfg provider.RuntimeConfig,
 	requireStreaming bool,
@@ -679,7 +679,7 @@ func ensureProviderDriverCapabilities(
 	}
 
 	driverType := strings.TrimSpace(cfg.Driver)
-	caps, err := factory.DriverCapabilities(driverType)
+	caps, err := factory.DriverTransportCapabilities(driverType)
 	if err != nil {
 		return err
 	}
@@ -726,7 +726,7 @@ func (s *Service) callProviderWithRetry(
 			return nil, err
 		}
 		runtimeCfg := resolvedProvider.ToRuntimeConfig()
-		if err := ensureProviderDriverCapabilities(s.providerFactory, runtimeCfg, true, true); err != nil {
+		if err := ensureDriverTransportCapabilities(s.providerFactory, runtimeCfg, true, true); err != nil {
 			return nil, err
 		}
 
