@@ -2,7 +2,9 @@ package catalog
 
 import (
 	"context"
+	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -203,6 +205,190 @@ func TestDescriptorsFromIDsHelper(t *testing.T) {
 	}
 }
 
+func TestServiceValidateErrors(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil service", func(t *testing.T) {
+		t.Parallel()
+
+		var service *Service
+		_, err := service.ListProviderModels(context.Background(), config.OpenAIProvider())
+		if err == nil || err.Error() != "provider catalog: service is nil" {
+			t.Fatalf("expected nil service error, got %v", err)
+		}
+	})
+
+	t.Run("nil registry", func(t *testing.T) {
+		t.Parallel()
+
+		service := NewService("", nil, newMemoryStore())
+		_, err := service.ListProviderModels(context.Background(), config.OpenAIProvider())
+		if err == nil || err.Error() != "provider catalog: registry is nil" {
+			t.Fatalf("expected nil registry error, got %v", err)
+		}
+	})
+}
+
+func TestListProviderModelsHonorsContextError(t *testing.T) {
+	t.Parallel()
+
+	service := NewService("", provider.NewRegistry(), newMemoryStore())
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := service.ListProviderModels(ctx, config.OpenAIProvider())
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
+
+func TestListProviderModelsCachedUsesFreshCatalogWithoutDiscovery(t *testing.T) {
+	t.Setenv(testAPIKeyEnv, "test-key")
+
+	identity, err := config.OpenAIProvider().Identity()
+	if err != nil {
+		t.Fatalf("Identity() error = %v", err)
+	}
+
+	store := newMemoryStore()
+	now := time.Date(2026, 4, 8, 12, 0, 0, 0, time.UTC)
+	if err := store.Save(context.Background(), ModelCatalog{
+		SchemaVersion: schemaVersion,
+		Identity:      identity,
+		FetchedAt:     now.Add(-time.Hour),
+		ExpiresAt:     now.Add(time.Hour),
+		Models: []config.ModelDescriptor{
+			{ID: "cached-model", Name: "Cached Model"},
+		},
+	}); err != nil {
+		t.Fatalf("seed fresh catalog: %v", err)
+	}
+
+	var discoverCalls int32
+	registry := newRegistry(t, config.OpenAIName, func(ctx context.Context, cfg config.ResolvedProviderConfig) ([]config.ModelDescriptor, error) {
+		atomic.AddInt32(&discoverCalls, 1)
+		return []config.ModelDescriptor{{ID: "fresh-model", Name: "Fresh Model"}}, nil
+	})
+
+	service := NewService("", registry, store)
+	service.now = func() time.Time { return now }
+
+	models, err := service.ListProviderModelsCached(context.Background(), config.OpenAIProvider())
+	if err != nil {
+		t.Fatalf("ListProviderModelsCached() error = %v", err)
+	}
+	if !containsModelDescriptorID(models, "cached-model") {
+		t.Fatalf("expected cached model to be returned, got %+v", models)
+	}
+	if atomic.LoadInt32(&discoverCalls) != 0 {
+		t.Fatalf("expected no discovery for fresh cache, got %d", discoverCalls)
+	}
+}
+
+func TestDiscoverAndPersistFailurePaths(t *testing.T) {
+	t.Run("unsupported driver", func(t *testing.T) {
+		service := NewService("", provider.NewRegistry(), newMemoryStore())
+		if discovered, ok := service.discoverAndPersist(context.Background(), config.OpenAIProvider()); ok || discovered != nil {
+			t.Fatalf("expected unsupported driver to skip discovery, got ok=%v models=%+v", ok, discovered)
+		}
+	})
+
+	t.Run("resolve provider config failure", func(t *testing.T) {
+		service := NewService("", newRegistry(t, config.OpenAIName, func(ctx context.Context, cfg config.ResolvedProviderConfig) ([]config.ModelDescriptor, error) {
+			return nil, nil
+		}), newMemoryStore())
+
+		providerCfg := config.ProviderConfig{
+			Name:      "broken-openai",
+			Driver:    config.OpenAIName,
+			BaseURL:   config.OpenAIDefaultBaseURL,
+			Model:     config.OpenAIDefaultModel,
+			APIKeyEnv: "",
+		}
+
+		if discovered, ok := service.discoverAndPersist(context.Background(), providerCfg); ok || discovered != nil {
+			t.Fatalf("expected resolve failure to skip discovery, got ok=%v models=%+v", ok, discovered)
+		}
+	})
+
+	t.Run("discovery error", func(t *testing.T) {
+		t.Setenv(testAPIKeyEnv, "test-key")
+		service := NewService("", newRegistry(t, config.OpenAIName, func(ctx context.Context, cfg config.ResolvedProviderConfig) ([]config.ModelDescriptor, error) {
+			return nil, errors.New("discover failed")
+		}), newMemoryStore())
+
+		if discovered, ok := service.discoverAndPersist(context.Background(), config.OpenAIProvider()); ok || discovered != nil {
+			t.Fatalf("expected discovery error to skip persistence, got ok=%v models=%+v", ok, discovered)
+		}
+	})
+
+	t.Run("store nil still returns discovered models", func(t *testing.T) {
+		t.Setenv(testAPIKeyEnv, "test-key")
+		service := NewService("", newRegistry(t, config.OpenAIName, func(ctx context.Context, cfg config.ResolvedProviderConfig) ([]config.ModelDescriptor, error) {
+			return []config.ModelDescriptor{{ID: "gpt-4.1", Name: "GPT-4.1"}}, nil
+		}), nil)
+
+		discovered, ok := service.discoverAndPersist(context.Background(), config.OpenAIProvider())
+		if !ok {
+			t.Fatal("expected discovery without store to succeed")
+		}
+		if !containsModelDescriptorID(discovered, "gpt-4.1") {
+			t.Fatalf("expected discovered model to be returned, got %+v", discovered)
+		}
+	})
+}
+
+func TestQueueRefreshDeduplicatesInFlightRequests(t *testing.T) {
+	t.Setenv(testAPIKeyEnv, "test-key")
+
+	identity, err := config.OpenAIProvider().Identity()
+	if err != nil {
+		t.Fatalf("Identity() error = %v", err)
+	}
+
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var discoverCalls int32
+	registry := newRegistry(t, config.OpenAIName, func(ctx context.Context, cfg config.ResolvedProviderConfig) ([]config.ModelDescriptor, error) {
+		atomic.AddInt32(&discoverCalls, 1)
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		return []config.ModelDescriptor{{ID: "gpt-4o", Name: "GPT-4o"}}, nil
+	})
+
+	service := NewService("", registry, newMemoryStore())
+	service.backgroundTimeout = time.Second
+
+	service.queueRefresh(config.OpenAIProvider(), identity)
+	<-started
+	service.queueRefresh(config.OpenAIProvider(), identity)
+
+	time.Sleep(50 * time.Millisecond)
+	if calls := atomic.LoadInt32(&discoverCalls); calls != 1 {
+		t.Fatalf("expected exactly one in-flight refresh, got %d", calls)
+	}
+
+	close(release)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		service.refreshMu.Lock()
+		_, exists := service.inFlightByID[identity.Key()]
+		service.refreshMu.Unlock()
+		if !exists {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	t.Fatal("expected in-flight refresh marker to be cleared")
+}
+
 func newRegistry(t *testing.T, name string, discover provider.DiscoveryFunc) *provider.Registry {
 	t.Helper()
 
@@ -235,7 +421,7 @@ func containsModelDescriptorID(models []config.ModelDescriptor, modelID string) 
 
 type catalogTestProvider struct{}
 
-func (catalogTestProvider) Chat(ctx context.Context, req providertypes.ChatRequest, events chan<- providertypes.StreamEvent) error {
+func (catalogTestProvider) Generate(ctx context.Context, req providertypes.GenerateRequest, events chan<- providertypes.StreamEvent) error {
 	return nil
 }
 

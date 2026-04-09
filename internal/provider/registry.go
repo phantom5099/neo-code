@@ -13,9 +13,10 @@ type Builder func(ctx context.Context, cfg config.ResolvedProviderConfig) (Provi
 type DiscoveryFunc func(ctx context.Context, cfg config.ResolvedProviderConfig) ([]config.ModelDescriptor, error)
 
 type DriverDefinition struct {
-	Name     string
-	Build    Builder
-	Discover DiscoveryFunc
+	Name         string
+	Build        Builder
+	Discover     DiscoveryFunc
+	Capabilities DriverCapabilities
 }
 
 type Registry struct {
@@ -70,6 +71,15 @@ func (r *Registry) DiscoverModels(ctx context.Context, cfg config.ResolvedProvid
 func (r *Registry) Supports(driverType string) bool {
 	_, err := r.driver(driverType)
 	return err == nil
+}
+
+// DriverCapabilities 返回指定 driver 的能力声明；driver 不存在时返回对应错误。
+func (r *Registry) DriverCapabilities(driverType string) (DriverCapabilities, error) {
+	driver, err := r.driver(driverType)
+	if err != nil {
+		return DriverCapabilities{}, err
+	}
+	return driver.Capabilities, nil
 }
 
 func (r *Registry) driver(driverType string) (DriverDefinition, error) {

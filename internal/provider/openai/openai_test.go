@@ -287,7 +287,7 @@ func TestBuildRequest_EmptyModelReturnsError(t *testing.T) {
 		client: &http.Client{},
 	}
 
-	_, buildErr := p.buildRequest(providertypes.ChatRequest{})
+	_, buildErr := p.buildRequest(providertypes.GenerateRequest{})
 	if buildErr == nil {
 		t.Fatal("expected error for empty model")
 	}
@@ -304,7 +304,7 @@ func TestBuildRequest_FallsBackToConfigModel(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	payload, err := p.buildRequest(providertypes.ChatRequest{Messages: []providertypes.Message{{Role: "user", Content: "hi"}}})
+	payload, err := p.buildRequest(providertypes.GenerateRequest{Messages: []providertypes.Message{{Role: "user", Content: "hi"}}})
 	if err != nil {
 		t.Fatalf("buildRequest() error = %v", err)
 	}
@@ -321,7 +321,7 @@ func TestBuildRequest_RequestModelTakesPrecedence(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	payload, err := p.buildRequest(providertypes.ChatRequest{Model: "gpt-4-custom", Messages: []providertypes.Message{{Role: "user", Content: "hi"}}})
+	payload, err := p.buildRequest(providertypes.GenerateRequest{Model: "gpt-4-custom", Messages: []providertypes.Message{{Role: "user", Content: "hi"}}})
 	if err != nil {
 		t.Fatalf("buildRequest() error = %v", err)
 	}
@@ -338,7 +338,7 @@ func TestBuildRequest_NoSystemPrompt(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	payload, err := p.buildRequest(providertypes.ChatRequest{SystemPrompt: "", Messages: []providertypes.Message{{Role: "user", Content: "hi"}}})
+	payload, err := p.buildRequest(providertypes.GenerateRequest{SystemPrompt: "", Messages: []providertypes.Message{{Role: "user", Content: "hi"}}})
 	if err != nil {
 		t.Fatalf("buildRequest() error = %v", err)
 	}
@@ -357,7 +357,7 @@ func TestBuildRequest_NoTools(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	payload, err := p.buildRequest(providertypes.ChatRequest{Messages: []providertypes.Message{{Role: "user", Content: "hi"}}, Tools: nil})
+	payload, err := p.buildRequest(providertypes.GenerateRequest{Messages: []providertypes.Message{{Role: "user", Content: "hi"}}, Tools: nil})
 	if err != nil {
 		t.Fatalf("buildRequest() error = %v", err)
 	}
@@ -374,7 +374,7 @@ func TestBuildRequest_EmptyToolsSlice(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	payload, err := p.buildRequest(providertypes.ChatRequest{Messages: []providertypes.Message{{Role: "user", Content: "hi"}}, Tools: []providertypes.ToolSpec{}})
+	payload, err := p.buildRequest(providertypes.GenerateRequest{Messages: []providertypes.Message{{Role: "user", Content: "hi"}}, Tools: []providertypes.ToolSpec{}})
 	if err != nil {
 		t.Fatalf("buildRequest() error = %v", err)
 	}
@@ -391,7 +391,7 @@ func TestBuildRequest_MultipleTools(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	payload, err := p.buildRequest(providertypes.ChatRequest{
+	payload, err := p.buildRequest(providertypes.GenerateRequest{
 		Messages: []providertypes.Message{{Role: "user", Content: "use tools"}},
 		Tools: []providertypes.ToolSpec{
 			{Name: "tool_a", Description: "Tool A", Schema: map[string]any{"type": "object"}},
@@ -417,7 +417,7 @@ func TestBuildRequest_WhitespaceSystemPromptSkipped(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	payload, err := p.buildRequest(providertypes.ChatRequest{SystemPrompt: "   ", Messages: []providertypes.Message{{Role: "user", Content: "hi"}}})
+	payload, err := p.buildRequest(providertypes.GenerateRequest{SystemPrompt: "   ", Messages: []providertypes.Message{{Role: "user", Content: "hi"}}})
 	if err != nil {
 		t.Fatalf("buildRequest() error = %v", err)
 	}
@@ -737,6 +737,85 @@ func TestDiscoverModels_NetworkError(t *testing.T) {
 	}
 }
 
+func TestFetchModelsSetsAuthorizationHeader(t *testing.T) {
+	t.Parallel()
+
+	var authorization string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorization = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{}})
+	}))
+	defer server.Close()
+
+	p, err := New(resolvedConfig(server.URL, "header-key"))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	p.client = server.Client()
+
+	if _, err := p.fetchModels(context.Background()); err != nil {
+		t.Fatalf("fetchModels() error = %v", err)
+	}
+	if authorization != "Bearer test-key" {
+		t.Fatalf("expected bearer authorization header, got %q", authorization)
+	}
+}
+
+func TestFetchModelsDecodeError(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{invalid-json"))
+	}))
+	defer server.Close()
+
+	p, err := New(resolvedConfig(server.URL, "decode-key"))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	p.client = server.Client()
+
+	_, err = p.fetchModels(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "decode models response") {
+		t.Fatalf("expected decode error, got %v", err)
+	}
+}
+
+func TestDiscoverModelsSkipsInvalidEntriesAndDedupes(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{
+				{"id": "gpt-4.1", "name": "GPT-4.1"},
+				{"foo": "bar"},
+				{"id": "gpt-4.1", "name": "GPT-4.1 Duplicate"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	p, err := New(resolvedConfig(server.URL, "discover-key"))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	p.client = server.Client()
+
+	models, err := p.DiscoverModels(context.Background())
+	if err != nil {
+		t.Fatalf("DiscoverModels() error = %v", err)
+	}
+	if len(models) != 1 {
+		t.Fatalf("expected invalid and duplicate models to be filtered, got %+v", models)
+	}
+	if models[0].ID != "gpt-4.1" {
+		t.Fatalf("expected remaining model to be gpt-4.1, got %+v", models[0])
+	}
+}
+
 // --- mergeToolCallDelta 边界测试 ---
 
 func TestMergeToolCallDelta_MultipleIndices(t *testing.T) {
@@ -821,12 +900,12 @@ data: [DONE]
 	p.client = server.Client()
 
 	events := make(chan providertypes.StreamEvent, 4)
-	err = p.Chat(context.Background(), providertypes.ChatRequest{
+	err = p.Generate(context.Background(), providertypes.GenerateRequest{
 		Model:    config.OpenAIDefaultModel,
 		Messages: []providertypes.Message{{Role: "user", Content: "hi"}},
 	}, events)
 	if err != nil {
-		t.Fatalf("Chat() error = %v", err)
+		t.Fatalf("Generate() error = %v", err)
 	}
 }
 
@@ -908,7 +987,7 @@ func TestProviderChatConsumesSSEAndMergesToolCalls(t *testing.T) {
 	p.client = server.Client()
 
 	events := make(chan providertypes.StreamEvent, 8)
-	err = p.Chat(context.Background(), providertypes.ChatRequest{
+	err = p.Generate(context.Background(), providertypes.GenerateRequest{
 		Model: "gpt-5.4",
 		Messages: []providertypes.Message{
 			{Role: "user", Content: "please edit the file"},
@@ -918,7 +997,7 @@ func TestProviderChatConsumesSSEAndMergesToolCalls(t *testing.T) {
 		Tools: []providertypes.ToolSpec{{Name: "filesystem_edit", Description: "Edit one matching block in a file", Schema: map[string]any{"type": "object"}}},
 	}, events)
 	if err != nil {
-		t.Fatalf("Chat() error = %v", err)
+		t.Fatalf("Generate() error = %v", err)
 	}
 
 	streamEvents := drainStreamEvents(events)
@@ -1003,7 +1082,7 @@ func TestProviderChatHTTPErrorResponses(t *testing.T) {
 			}
 			p.client = server.Client()
 
-			err = p.Chat(context.Background(), providertypes.ChatRequest{Model: config.OpenAIDefaultModel}, make(chan providertypes.StreamEvent, 1))
+			err = p.Generate(context.Background(), providertypes.GenerateRequest{Model: config.OpenAIDefaultModel}, make(chan providertypes.StreamEvent, 1))
 			if err == nil || !strings.Contains(err.Error(), tt.expectErr) {
 				t.Fatalf("expected error containing %q, got %v", tt.expectErr, err)
 			}
@@ -1019,7 +1098,7 @@ func TestBuildRequestIncludesSystemPromptToolsAndToolMessages(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	payload, err := p.buildRequest(providertypes.ChatRequest{
+	payload, err := p.buildRequest(providertypes.GenerateRequest{
 		SystemPrompt: "system prompt",
 		Messages: []providertypes.Message{
 			{Role: "user", Content: "hello"},
@@ -1368,12 +1447,12 @@ func TestProviderChatEmitsToolCallStartEvent(t *testing.T) {
 	p.client = server.Client()
 
 	events := make(chan providertypes.StreamEvent, 8)
-	err = p.Chat(context.Background(), providertypes.ChatRequest{
+	err = p.Generate(context.Background(), providertypes.GenerateRequest{
 		Model: config.OpenAIDefaultModel, Messages: []providertypes.Message{{Role: "user", Content: "edit"}},
 		Tools: []providertypes.ToolSpec{{Name: "filesystem_edit", Description: "edit", Schema: map[string]any{"type": "object"}}},
 	}, events)
 	if err != nil {
-		t.Fatalf("Chat() error = %v", err)
+		t.Fatalf("Generate() error = %v", err)
 	}
 
 	var foundToolCallStart bool
@@ -1413,9 +1492,9 @@ func TestProviderChatEmitsFullEventStream(t *testing.T) {
 	p.client = server.Client()
 
 	events := make(chan providertypes.StreamEvent, 16)
-	err = p.Chat(context.Background(), providertypes.ChatRequest{Model: config.OpenAIDefaultModel, Messages: []providertypes.Message{{Role: "user", Content: "test"}}}, events)
+	err = p.Generate(context.Background(), providertypes.GenerateRequest{Model: config.OpenAIDefaultModel, Messages: []providertypes.Message{{Role: "user", Content: "test"}}}, events)
 	if err != nil {
-		t.Fatalf("Chat() error = %v", err)
+		t.Fatalf("Generate() error = %v", err)
 	}
 
 	var foundTextDelta, foundToolCallStart, foundToolCallDelta, foundMessageDone bool

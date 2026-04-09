@@ -195,10 +195,10 @@ func TestToolSpecStructFields(t *testing.T) {
 	}
 }
 
-func TestChatRequestStructFields(t *testing.T) {
+func TestGenerateRequestStructFields(t *testing.T) {
 	t.Parallel()
 
-	req := ChatRequest{
+	req := GenerateRequest{
 		Model:        "gpt-4",
 		SystemPrompt: "you are helpful",
 		Messages:     []Message{{Role: RoleUser}},
@@ -263,5 +263,90 @@ func TestStreamEventValueAccessorsRejectMissingPayload(t *testing.T) {
 	event := StreamEvent{Type: StreamEventTextDelta}
 	if _, err := event.TextDeltaValue(); err == nil {
 		t.Fatal("expected TextDeltaValue() to reject missing payload")
+	}
+}
+
+func TestStreamEventValueAccessorsRejectWrongType(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		run  func() error
+	}{
+		{
+			name: "text delta accessor",
+			run: func() error {
+				_, err := NewToolCallStartStreamEvent(0, "call-1", "edit").TextDeltaValue()
+				return err
+			},
+		},
+		{
+			name: "tool call start accessor",
+			run: func() error {
+				_, err := NewTextDeltaStreamEvent("hello").ToolCallStartValue()
+				return err
+			},
+		},
+		{
+			name: "tool call delta accessor",
+			run: func() error {
+				_, err := NewMessageDoneStreamEvent("stop", nil).ToolCallDeltaValue()
+				return err
+			},
+		},
+		{
+			name: "message done accessor",
+			run: func() error {
+				_, err := NewToolCallDeltaStreamEvent(1, "call-2", "{}").MessageDoneValue()
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.run(); err == nil {
+				t.Fatal("expected wrong-type accessor to return error")
+			}
+		})
+	}
+}
+
+func TestStreamEventValueAccessorsRejectMissingPayloadForAllTypes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		run  func() error
+	}{
+		{
+			name: "tool call start payload missing",
+			run: func() error {
+				_, err := (StreamEvent{Type: StreamEventToolCallStart}).ToolCallStartValue()
+				return err
+			},
+		},
+		{
+			name: "tool call delta payload missing",
+			run: func() error {
+				_, err := (StreamEvent{Type: StreamEventToolCallDelta}).ToolCallDeltaValue()
+				return err
+			},
+		},
+		{
+			name: "message done payload missing",
+			run: func() error {
+				_, err := (StreamEvent{Type: StreamEventMessageDone}).MessageDoneValue()
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.run(); err == nil {
+				t.Fatal("expected missing payload to return error")
+			}
+		})
 	}
 }

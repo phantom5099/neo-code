@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -140,5 +141,123 @@ func TestJSONStoreSaveReplacesExistingCatalogWithoutTempLeak(t *testing.T) {
 	}
 	if len(data) == 0 || data[len(data)-1] != '\n' {
 		t.Fatalf("expected persisted catalog to end with newline, got %q", string(data))
+	}
+}
+
+func TestModelCatalogExpired(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 4, 8, 12, 0, 0, 0, time.UTC)
+	if (ModelCatalog{}).Expired(now) {
+		t.Fatal("expected zero-value catalog to be treated as not expired")
+	}
+	if !(ModelCatalog{ExpiresAt: now}).Expired(now) {
+		t.Fatal("expected catalog expiring at now to be expired")
+	}
+	if (ModelCatalog{ExpiresAt: now.Add(time.Minute)}).Expired(now) {
+		t.Fatal("expected future expiry to be treated as fresh")
+	}
+}
+
+func TestJSONStoreLoadHonorsContextError(t *testing.T) {
+	t.Parallel()
+
+	store := newJSONStore(t.TempDir())
+	identity, err := config.NewProviderIdentity("openai", "https://api.openai.com/v1")
+	if err != nil {
+		t.Fatalf("NewProviderIdentity() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = store.Load(ctx, identity)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
+
+func TestJSONStoreLoadRejectsInvalidIdentity(t *testing.T) {
+	t.Parallel()
+
+	store := newJSONStore(t.TempDir())
+	_, err := store.Load(context.Background(), config.ProviderIdentity{
+		Driver:  "openai",
+		BaseURL: "://bad",
+	})
+	if err == nil || !strings.Contains(err.Error(), "normalize model catalog key") {
+		t.Fatalf("expected identity normalization error, got %v", err)
+	}
+}
+
+func TestJSONStoreLoadRejectsInvalidJSON(t *testing.T) {
+	t.Parallel()
+
+	store := newJSONStore(t.TempDir())
+	identity, err := config.NewProviderIdentity("openai", "https://api.openai.com/v1")
+	if err != nil {
+		t.Fatalf("NewProviderIdentity() error = %v", err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(store.catalogPath(identity)), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(store.catalogPath(identity), []byte("{not-json"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	_, err = store.Load(context.Background(), identity)
+	if err == nil || !strings.Contains(err.Error(), "decode model catalog") {
+		t.Fatalf("expected decode error, got %v", err)
+	}
+}
+
+func TestJSONStoreSaveHonorsContextError(t *testing.T) {
+	t.Parallel()
+
+	store := newJSONStore(t.TempDir())
+	identity, err := config.NewProviderIdentity("openai", "https://api.openai.com/v1")
+	if err != nil {
+		t.Fatalf("NewProviderIdentity() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err = store.Save(ctx, ModelCatalog{Identity: identity})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
+
+func TestJSONStoreSaveRejectsInvalidIdentity(t *testing.T) {
+	t.Parallel()
+
+	store := newJSONStore(t.TempDir())
+	err := store.Save(context.Background(), ModelCatalog{
+		Identity: config.ProviderIdentity{
+			Driver:  "",
+			BaseURL: "https://api.openai.com/v1",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "normalize model catalog key") {
+		t.Fatalf("expected identity normalization error, got %v", err)
+	}
+}
+
+func TestNormalizeCatalogDefaultsSchemaAndDedupesModels(t *testing.T) {
+	t.Parallel()
+
+	modelCatalog := normalizeCatalog(ModelCatalog{
+		Models: []config.ModelDescriptor{
+			{ID: "gpt-4o", Name: "GPT-4o"},
+			{ID: "gpt-4o", Name: "GPT-4o Duplicate"},
+		},
+	})
+	if modelCatalog.SchemaVersion != schemaVersion {
+		t.Fatalf("expected schema version %d, got %d", schemaVersion, modelCatalog.SchemaVersion)
+	}
+	if len(modelCatalog.Models) != 1 {
+		t.Fatalf("expected duplicate models to be merged, got %+v", modelCatalog.Models)
 	}
 }
