@@ -28,8 +28,8 @@ func TestOpenAIProviderConfig(t *testing.T) {
 	if provider.Name != OpenAIName {
 		t.Fatalf("expected name %q, got %q", OpenAIName, provider.Name)
 	}
-	if provider.Driver != "openai" {
-		t.Fatalf("expected driver %q, got %q", "openai", provider.Driver)
+	if provider.Driver != "openaicompat" {
+		t.Fatalf("expected driver %q, got %q", "openaicompat", provider.Driver)
 	}
 	if provider.BaseURL != OpenAIDefaultBaseURL {
 		t.Fatalf("expected base URL %q, got %q", OpenAIDefaultBaseURL, provider.BaseURL)
@@ -50,8 +50,8 @@ func TestGeminiProviderConfig(t *testing.T) {
 	if provider.Name != GeminiName {
 		t.Fatalf("expected name %q, got %q", GeminiName, provider.Name)
 	}
-	if provider.Driver != "openai" {
-		t.Fatalf("expected driver %q, got %q", "openai", provider.Driver)
+	if provider.Driver != "openaicompat" {
+		t.Fatalf("expected driver %q, got %q", "openaicompat", provider.Driver)
 	}
 	if provider.BaseURL != GeminiDefaultBaseURL {
 		t.Fatalf("expected base URL %q, got %q", GeminiDefaultBaseURL, provider.BaseURL)
@@ -72,8 +72,8 @@ func TestOpenLLProviderConfig(t *testing.T) {
 	if provider.Name != OpenLLName {
 		t.Fatalf("expected name %q, got %q", OpenLLName, provider.Name)
 	}
-	if provider.Driver != "openai" {
-		t.Fatalf("expected driver %q, got %q", "openai", provider.Driver)
+	if provider.Driver != "openaicompat" {
+		t.Fatalf("expected driver %q, got %q", "openaicompat", provider.Driver)
 	}
 	if provider.BaseURL != OpenLLDefaultBaseURL {
 		t.Fatalf("expected base URL %q, got %q", OpenLLDefaultBaseURL, provider.BaseURL)

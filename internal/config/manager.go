@@ -73,7 +73,11 @@ func (m *Manager) Update(ctx context.Context, mutate func(*Config) error) error 
 		return err
 	}
 
+	providersSnapshot := cloneProviders(next.Providers)
 	next.ApplyDefaultsFrom(m.loader.DefaultConfig())
+	if len(providersSnapshot) > 0 {
+		next.Providers = providersSnapshot
+	}
 	if err := next.Validate(); err != nil {
 		return err
 	}

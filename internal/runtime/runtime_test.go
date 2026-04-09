@@ -174,13 +174,13 @@ func streamContainsMessageDone(events []providertypes.StreamEvent) bool {
 type scriptedProviderFactory struct {
 	provider        provider.Provider
 	calls           int
-	configs         []config.ResolvedProviderConfig
+	configs         []provider.RuntimeConfig
 	err             error
-	capabilities    provider.DriverCapabilities
+	capabilities    provider.DriverTransportCapabilities
 	capabilitiesErr error
 }
 
-func (f *scriptedProviderFactory) Build(ctx context.Context, cfg config.ResolvedProviderConfig) (provider.Provider, error) {
+func (f *scriptedProviderFactory) Build(ctx context.Context, cfg provider.RuntimeConfig) (provider.Provider, error) {
 	f.calls++
 	f.configs = append(f.configs, cfg)
 	if f.err != nil {
@@ -189,12 +189,12 @@ func (f *scriptedProviderFactory) Build(ctx context.Context, cfg config.Resolved
 	return f.provider, nil
 }
 
-func (f *scriptedProviderFactory) DriverCapabilities(driverType string) (provider.DriverCapabilities, error) {
+func (f *scriptedProviderFactory) DriverTransportCapabilities(driverType string) (provider.DriverTransportCapabilities, error) {
 	if f.capabilitiesErr != nil {
-		return provider.DriverCapabilities{}, f.capabilitiesErr
+		return provider.DriverTransportCapabilities{}, f.capabilitiesErr
 	}
-	if f.capabilities == (provider.DriverCapabilities{}) {
-		return provider.DriverCapabilities{
+	if f.capabilities == (provider.DriverTransportCapabilities{}) {
+		return provider.DriverTransportCapabilities{
 			Streaming:     true,
 			ToolTransport: true,
 		}, nil
@@ -2539,16 +2539,16 @@ func newRuntimeConfigManagerWithProviderEnvs(t *testing.T, providerEnvs map[stri
 	}
 
 	defaults := config.DefaultConfig()
-	selected := config.NormalizeProviderName(defaults.SelectedProvider)
+	selected := provider.NormalizeKey(defaults.SelectedProvider)
 	for i := range defaults.Providers {
-		if config.NormalizeProviderName(defaults.Providers[i].Name) == selected {
+		if provider.NormalizeKey(defaults.Providers[i].Name) == selected {
 			defaults.Providers[i].APIKeyEnv = apiKeyEnv
 			break
 		}
 	}
 	for providerName, envKey := range providerEnvs {
 		for i := range defaults.Providers {
-			if config.NormalizeProviderName(defaults.Providers[i].Name) == config.NormalizeProviderName(providerName) {
+			if provider.NormalizeKey(defaults.Providers[i].Name) == provider.NormalizeKey(providerName) {
 				defaults.Providers[i].APIKeyEnv = envKey
 				break
 			}
@@ -3110,7 +3110,7 @@ func TestCallProviderWithRetryReturnsCombinedForwardError(t *testing.T) {
 	}
 }
 
-func TestServiceRunRejectsDriverWithoutToolTransport(t *testing.T) {
+func TestServiceRunRejectsDriverWithoutToolTransportWhenRequestExposesTools(t *testing.T) {
 	t.Parallel()
 
 	manager := newRuntimeConfigManager(t)
@@ -3125,7 +3125,7 @@ func TestServiceRunRejectsDriverWithoutToolTransport(t *testing.T) {
 	}
 	factory := &scriptedProviderFactory{
 		provider: scripted,
-		capabilities: provider.DriverCapabilities{
+		capabilities: provider.DriverTransportCapabilities{
 			Streaming:     true,
 			ToolTransport: false,
 		},
@@ -3145,6 +3145,52 @@ func TestServiceRunRejectsDriverWithoutToolTransport(t *testing.T) {
 	if scripted.callCount != 0 {
 		t.Fatalf("expected provider Generate() to be skipped, got %d", scripted.callCount)
 	}
+}
+
+func TestServiceRunAllowsDriverWithoutToolTransportWhenRequestHasNoTools(t *testing.T) {
+	t.Parallel()
+
+	manager := newRuntimeConfigManager(t)
+	store := newMemoryStore()
+	toolManager := &stubToolManager{}
+
+	scripted := &scriptedProvider{
+		streams: [][]providertypes.StreamEvent{
+			{providertypes.NewTextDeltaStreamEvent("plain answer")},
+		},
+	}
+	factory := &scriptedProviderFactory{
+		provider: scripted,
+		capabilities: provider.DriverTransportCapabilities{
+			Streaming:     true,
+			ToolTransport: false,
+		},
+	}
+
+	service := NewWithFactory(manager, toolManager, store, factory, &stubContextBuilder{})
+	err := service.Run(context.Background(), UserInput{
+		RunID:   "run-driver-no-tool-transport-no-tools",
+		Content: "hello",
+	})
+	if err != nil {
+		t.Fatalf("expected no-tools request to succeed, got %v", err)
+	}
+	if factory.calls != 1 {
+		t.Fatalf("expected provider build once, got %d", factory.calls)
+	}
+	if scripted.callCount != 1 {
+		t.Fatalf("expected provider Generate() once, got %d", scripted.callCount)
+	}
+	if len(scripted.requests) != 1 {
+		t.Fatalf("expected one provider request, got %d", len(scripted.requests))
+	}
+	if len(scripted.requests[0].Tools) != 0 {
+		t.Fatalf("expected provider request without tools, got %+v", scripted.requests[0].Tools)
+	}
+
+	events := collectRuntimeEvents(service.Events())
+	assertEventSequence(t, events, []EventType{EventUserMessage, EventAgentChunk, EventAgentDone})
+	assertNoEventType(t, events, EventError)
 }
 
 func TestServiceRunPropagatesDriverNotFoundFromCapabilities(t *testing.T) {

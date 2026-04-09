@@ -22,14 +22,17 @@ const (
 	QiniuDefaultAPIKeyEnv = "QINIU_API_KEY"
 )
 
+const OpenaiCompatDriver = "openaicompat"
+
 // OpenAIProvider returns the builtin OpenAI provider definition.
 func OpenAIProvider() ProviderConfig {
 	return ProviderConfig{
 		Name:      OpenAIName,
-		Driver:    "openai",
+		Driver:    OpenaiCompatDriver,
 		BaseURL:   OpenAIDefaultBaseURL,
 		Model:     OpenAIDefaultModel,
 		APIKeyEnv: OpenAIDefaultAPIKeyEnv,
+		Source:    ProviderSourceBuiltin,
 	}
 }
 
@@ -37,10 +40,11 @@ func OpenAIProvider() ProviderConfig {
 func GeminiProvider() ProviderConfig {
 	return ProviderConfig{
 		Name:      GeminiName,
-		Driver:    "openai",
+		Driver:    OpenaiCompatDriver,
 		BaseURL:   GeminiDefaultBaseURL,
 		Model:     GeminiDefaultModel,
 		APIKeyEnv: GeminiDefaultAPIKeyEnv,
+		Source:    ProviderSourceBuiltin,
 	}
 }
 
@@ -48,10 +52,11 @@ func GeminiProvider() ProviderConfig {
 func OpenLLProvider() ProviderConfig {
 	return ProviderConfig{
 		Name:      OpenLLName,
-		Driver:    "openai",
+		Driver:    OpenaiCompatDriver,
 		BaseURL:   OpenLLDefaultBaseURL,
 		Model:     OpenLLDefaultModel,
 		APIKeyEnv: OpenLLDefaultAPIKeyEnv,
+		Source:    ProviderSourceBuiltin,
 	}
 }
 
@@ -59,10 +64,11 @@ func OpenLLProvider() ProviderConfig {
 func QiniuProvider() ProviderConfig {
 	return ProviderConfig{
 		Name:      QiniuName,
-		Driver:    "openai",
+		Driver:    OpenaiCompatDriver,
 		BaseURL:   QiniuDefaultBaseURL,
 		Model:     QiniuDefaultModel,
 		APIKeyEnv: QiniuDefaultAPIKeyEnv,
+		Source:    ProviderSourceBuiltin,
 	}
 }
 

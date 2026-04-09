@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"neo-code/internal/config"
+	providertypes "neo-code/internal/provider/types"
 )
 
 // ProviderSelector 定义 provider 选择命令所需最小能力。
@@ -19,9 +20,9 @@ type ModelSelector interface {
 	SetCurrentModel(ctx context.Context, modelID string) (config.ProviderSelection, error)
 }
 
-// ModelCatalogReader 定义 model catalog 刷新所需最小能力。
+// ModelCatalogReader 定义当前 provider 模型目录刷新所需最小能力。
 type ModelCatalogReader interface {
-	ListModels(ctx context.Context) ([]config.ModelDescriptor, error)
+	ListModels(ctx context.Context) ([]providertypes.ModelDescriptor, error)
 }
 
 // SelectProviderCmd 执行 provider 切换并将结果映射为 UI 消息。
@@ -48,11 +49,11 @@ func SelectModelCmd(
 	}
 }
 
-// RefreshModelCatalogCmd 拉取指定 provider 的模型列表并返回 UI 消息。
+// RefreshModelCatalogCmd 拉取当前 provider 的模型列表，并带回触发时的 providerID 快照供 UI 去重。
 func RefreshModelCatalogCmd(
 	providerSvc ModelCatalogReader,
 	providerID string,
-	toMsg func(string, []config.ModelDescriptor, error) tea.Msg,
+	toMsg func(string, []providertypes.ModelDescriptor, error) tea.Msg,
 ) tea.Cmd {
 	providerID = strings.TrimSpace(providerID)
 	if providerSvc == nil || providerID == "" {

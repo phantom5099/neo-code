@@ -70,7 +70,7 @@ func BuildRuntime(ctx context.Context, opts BootstrapOptions) (RuntimeBundle, er
 		return RuntimeBundle{}, err
 	}
 	modelCatalogs := providercatalog.NewService(manager.BaseDir(), providerRegistry, nil)
-	providerSelection := config.NewSelectionService(manager, providerRegistry, providerRegistry, modelCatalogs)
+	providerSelection := config.NewSelectionService(manager, providerRegistry, modelCatalogs)
 	if _, err := providerSelection.EnsureSelection(ctx); err != nil {
 		return RuntimeBundle{}, err
 	}

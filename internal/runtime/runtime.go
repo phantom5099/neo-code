@@ -129,8 +129,8 @@ type UserInput struct {
 }
 
 type ProviderFactory interface {
-	Build(ctx context.Context, cfg config.ResolvedProviderConfig) (provider.Provider, error)
-	DriverCapabilities(driverType string) (provider.DriverCapabilities, error)
+	Build(ctx context.Context, cfg provider.RuntimeConfig) (provider.Provider, error)
+	DriverTransportCapabilities(driverType string) (provider.DriverTransportCapabilities, error)
 }
 
 type Service struct {
@@ -667,10 +667,10 @@ func isRetryableProviderError(err error) bool {
 	return pErr.Retryable
 }
 
-// ensureProviderDriverCapabilities 校验当前 driver 是否满足指定运行场景的基础能力要求。
-func ensureProviderDriverCapabilities(
+// ensureDriverTransportCapabilities 校验当前 driver 是否满足指定运行场景的基础传输能力要求。
+func ensureDriverTransportCapabilities(
 	factory ProviderFactory,
-	cfg config.ResolvedProviderConfig,
+	cfg provider.RuntimeConfig,
 	requireStreaming bool,
 	requireToolTransport bool,
 ) error {
@@ -679,7 +679,7 @@ func ensureProviderDriverCapabilities(
 	}
 
 	driverType := strings.TrimSpace(cfg.Driver)
-	caps, err := factory.DriverCapabilities(driverType)
+	caps, err := factory.DriverTransportCapabilities(driverType)
 	if err != nil {
 		return err
 	}
@@ -725,11 +725,13 @@ func (s *Service) callProviderWithRetry(
 		if err != nil {
 			return nil, err
 		}
-		if err := ensureProviderDriverCapabilities(s.providerFactory, resolvedProvider, true, true); err != nil {
+		runtimeCfg := resolvedProvider.ToRuntimeConfig()
+		requireToolTransport := len(req.Tools) > 0
+		if err := ensureDriverTransportCapabilities(s.providerFactory, runtimeCfg, true, requireToolTransport); err != nil {
 			return nil, err
 		}
 
-		modelProvider, err := s.providerFactory.Build(ctx, resolvedProvider)
+		modelProvider, err := s.providerFactory.Build(ctx, runtimeCfg)
 		if err != nil {
 			return nil, err
 		}

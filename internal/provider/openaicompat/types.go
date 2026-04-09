@@ -1,4 +1,4 @@
-package openai
+package openaicompat
 
 // 以下类型定义了 OpenAI Chat Completions API 的请求和响应结构体，
 // 仅在 openai 子包内部使用，不对外暴露。

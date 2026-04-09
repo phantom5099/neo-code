@@ -8,6 +8,9 @@ import (
 	"path/filepath"
 	goruntime "runtime"
 	"strings"
+
+	"neo-code/internal/provider"
+	providertypes "neo-code/internal/provider/types"
 )
 
 const (
@@ -46,12 +49,24 @@ type Config struct {
 	Tools            ToolsConfig      `yaml:"tools,omitempty"`
 }
 
+type ProviderSource string
+
+const (
+	ProviderSourceBuiltin ProviderSource = "builtin"
+	ProviderSourceCustom  ProviderSource = "custom"
+)
+
 type ProviderConfig struct {
-	Name      string `yaml:"name"`
-	Driver    string `yaml:"driver"`
-	BaseURL   string `yaml:"base_url"`
-	Model     string `yaml:"model"`
-	APIKeyEnv string `yaml:"api_key_env"`
+	Name           string                          `yaml:"name"`
+	Driver         string                          `yaml:"driver"`
+	BaseURL        string                          `yaml:"base_url"`
+	Model          string                          `yaml:"model"`
+	APIKeyEnv      string                          `yaml:"api_key_env"`
+	APIStyle       string                          `yaml:"-"`
+	DeploymentMode string                          `yaml:"-"`
+	APIVersion     string                          `yaml:"-"`
+	Models         []providertypes.ModelDescriptor `yaml:"-"`
+	Source         ProviderSource                  `yaml:"-"`
 }
 
 type ResolvedProviderConfig struct {
@@ -150,9 +165,7 @@ func (c *Config) ApplyDefaultsFrom(defaults Config) {
 		return
 	}
 
-	if len(defaults.Providers) > 0 {
-		c.Providers = cloneProviders(defaults.Providers)
-	}
+	c.Providers = mergeProviders(defaults.Providers, c.Providers)
 
 	fallbackProvider := defaultSelectedProviderName(c.Providers, defaults.SelectedProvider)
 	selectedReset := false
@@ -168,7 +181,7 @@ func (c *Config) ApplyDefaultsFrom(defaults Config) {
 	}
 	if strings.TrimSpace(c.CurrentModel) == "" || selectedReset {
 		if selected, err := c.SelectedProviderConfig(); err == nil {
-			c.CurrentModel = selected.Model
+			c.CurrentModel = strings.TrimSpace(selected.Model)
 		} else if strings.TrimSpace(defaults.CurrentModel) != "" {
 			c.CurrentModel = defaults.CurrentModel
 		}
@@ -206,7 +219,7 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("config: provider[%d]: %w", i, err)
 		}
 
-		key := NormalizeProviderName(provider.Name)
+		key := normalizeProviderName(provider.Name)
 		if _, exists := seen[key]; exists {
 			return fmt.Errorf("config: duplicate provider name %q", provider.Name)
 		}
@@ -219,7 +232,7 @@ func (c *Config) Validate() error {
 		if existingName, exists := seenEndpoints[identity.Key()]; exists {
 			return fmt.Errorf(
 				"config: duplicate provider endpoint %q for providers %q and %q",
-				identity.BaseURL,
+				identity.String(),
 				existingName,
 				provider.Name,
 			)
@@ -243,7 +256,7 @@ func (c *Config) Validate() error {
 	if !filepath.IsAbs(c.Workdir) {
 		return fmt.Errorf("config: workdir must be absolute, got %q", c.Workdir)
 	}
-	if strings.TrimSpace(selected.Model) == "" {
+	if selected.Source != ProviderSourceCustom && strings.TrimSpace(selected.Model) == "" {
 		return fmt.Errorf("config: selected provider %q has empty model", selected.Name)
 	}
 	if err := c.Tools.Validate(); err != nil {
@@ -268,9 +281,9 @@ func (c *Config) ProviderByName(name string) (ProviderConfig, error) {
 		return ProviderConfig{}, errors.New("config: config is nil")
 	}
 
-	target := NormalizeProviderName(name)
+	target := normalizeProviderName(name)
 	for _, provider := range c.Providers {
-		if NormalizeProviderName(provider.Name) == target {
+		if normalizeProviderName(provider.Name) == target {
 			return provider, nil
 		}
 	}
@@ -285,10 +298,16 @@ func (p ProviderConfig) Validate() error {
 	if strings.TrimSpace(p.Driver) == "" {
 		return fmt.Errorf("provider %q driver is empty", p.Name)
 	}
+	if normalizeProviderDriver(p.Driver) == "openai" {
+		return fmt.Errorf("provider %q driver %q is no longer supported", p.Name, p.Driver)
+	}
 	if strings.TrimSpace(p.BaseURL) == "" {
 		return fmt.Errorf("provider %q base_url is empty", p.Name)
 	}
-	if strings.TrimSpace(p.Model) == "" {
+	if p.Source == ProviderSourceCustom && strings.TrimSpace(p.Model) != "" {
+		return fmt.Errorf("provider %q custom providers must not define model", p.Name)
+	}
+	if p.Source != ProviderSourceCustom && strings.TrimSpace(p.Model) == "" {
 		return fmt.Errorf("provider %q model is empty", p.Name)
 	}
 	if strings.TrimSpace(p.APIKeyEnv) == "" {
@@ -300,8 +319,8 @@ func (p ProviderConfig) Validate() error {
 	return nil
 }
 
-func (p ProviderConfig) Identity() (ProviderIdentity, error) {
-	return NewProviderIdentity(p.Driver, p.BaseURL)
+func (p ProviderConfig) Identity() (provider.ProviderIdentity, error) {
+	return providerIdentityFromConfig(p)
 }
 
 func (p ProviderConfig) ResolveAPIKey() (string, error) {
@@ -689,9 +708,119 @@ func cloneProviders(providers []ProviderConfig) []ProviderConfig {
 
 	cloned := make([]ProviderConfig, 0, len(providers))
 	for _, provider := range providers {
-		cloned = append(cloned, provider)
+		cloned = append(cloned, cloneProviderConfig(provider))
 	}
 	return cloned
+}
+
+// cloneProviderConfig 返回 provider 配置的深拷贝，避免模型元数据等切片在不同快照间共享。
+func cloneProviderConfig(provider ProviderConfig) ProviderConfig {
+	cloned := provider
+	cloned.Models = providertypes.CloneModelDescriptors(provider.Models)
+	return cloned
+}
+
+// mergeProviders 将 builtin defaults 与当前运行时 providers 合并，保留自定义 provider，
+// 并用 builtin 定义为同名 provider 补齐缺失字段。
+func mergeProviders(defaults []ProviderConfig, current []ProviderConfig) []ProviderConfig {
+	if len(defaults) == 0 && len(current) == 0 {
+		return nil
+	}
+
+	merged := make([]ProviderConfig, 0, len(defaults)+len(current))
+	indexByName := make(map[string]int, len(defaults)+len(current))
+
+	appendProvider := func(provider ProviderConfig) {
+		key := normalizeProviderName(provider.Name)
+		indexByName[key] = len(merged)
+		merged = append(merged, cloneProviderConfig(provider))
+	}
+
+	for _, provider := range defaults {
+		builtin := cloneProviderConfig(provider)
+		if builtin.Source == "" {
+			builtin.Source = ProviderSourceBuiltin
+		}
+		appendProvider(builtin)
+	}
+
+	for _, provider := range current {
+		candidate := cloneProviderConfig(provider)
+		key := normalizeProviderName(candidate.Name)
+		if key == "" {
+			merged = append(merged, candidate)
+			continue
+		}
+
+		if index, exists := indexByName[key]; exists {
+			if !shouldMergeProviderDefinition(merged[index], candidate) {
+				merged = append(merged, candidate)
+				continue
+			}
+			merged[index] = mergeProviderConfig(merged[index], candidate)
+			continue
+		}
+
+		if candidate.Source == "" {
+			candidate.Source = ProviderSourceCustom
+		}
+		appendProvider(candidate)
+	}
+
+	return merged
+}
+
+// mergeProviderConfig 将 override 中的显式字段覆盖到 base 之上，用于 builtin 缺省值回填。
+func mergeProviderConfig(base ProviderConfig, override ProviderConfig) ProviderConfig {
+	merged := cloneProviderConfig(base)
+
+	if strings.TrimSpace(override.Name) != "" {
+		merged.Name = strings.TrimSpace(override.Name)
+	}
+	if strings.TrimSpace(override.Driver) != "" {
+		merged.Driver = strings.TrimSpace(override.Driver)
+	}
+	if strings.TrimSpace(override.BaseURL) != "" {
+		merged.BaseURL = strings.TrimSpace(override.BaseURL)
+	}
+	if strings.TrimSpace(override.Model) != "" {
+		merged.Model = strings.TrimSpace(override.Model)
+	}
+	if strings.TrimSpace(override.APIKeyEnv) != "" {
+		merged.APIKeyEnv = strings.TrimSpace(override.APIKeyEnv)
+	}
+	if strings.TrimSpace(override.APIStyle) != "" {
+		merged.APIStyle = strings.TrimSpace(override.APIStyle)
+	}
+	if strings.TrimSpace(override.DeploymentMode) != "" {
+		merged.DeploymentMode = strings.TrimSpace(override.DeploymentMode)
+	}
+	if strings.TrimSpace(override.APIVersion) != "" {
+		merged.APIVersion = strings.TrimSpace(override.APIVersion)
+	}
+	if len(override.Models) > 0 {
+		merged.Models = providertypes.CloneModelDescriptors(override.Models)
+	}
+	if override.Source != "" {
+		merged.Source = override.Source
+	}
+
+	return merged
+}
+
+// shouldMergeProviderDefinition 判断同名 provider 是否允许做 builtin 默认值回填。
+// custom provider 的同名冲突必须保留下来，交给后续校验明确报错。
+func shouldMergeProviderDefinition(existing ProviderConfig, candidate ProviderConfig) bool {
+	if normalizeProviderName(existing.Name) != normalizeProviderName(candidate.Name) {
+		return false
+	}
+	if existing.Source == ProviderSourceBuiltin {
+		return candidate.Source != ProviderSourceCustom
+	}
+	if candidate.Source == ProviderSourceBuiltin {
+		return false
+	}
+	return false
 }
 
 func defaultSelectedProviderName(providers []ProviderConfig, fallback string) string {
@@ -705,12 +834,12 @@ func defaultSelectedProviderName(providers []ProviderConfig, fallback string) st
 }
 
 func containsProviderName(providers []ProviderConfig, name string) bool {
-	target := NormalizeProviderName(name)
+	target := normalizeProviderName(name)
 	if target == "" {
 		return false
 	}
 	for _, provider := range providers {
-		if NormalizeProviderName(provider.Name) == target {
+		if normalizeProviderName(provider.Name) == target {
 			return true
 		}
 	}

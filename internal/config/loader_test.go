@@ -240,3 +240,437 @@ shell: powershell
 		t.Fatalf("expected rewritten config to persist current model, got:\n%s", text)
 	}
 }
+
+func TestLoaderLoadsCustomProvidersFromProvidersDirectory(t *testing.T) {
+	t.Parallel()
+
+	loader := NewLoader(t.TempDir(), testDefaultConfig())
+	if err := os.MkdirAll(filepath.Join(loader.BaseDir(), providersDirName, "company-gateway"), 0o755); err != nil {
+		t.Fatalf("mkdir custom provider dir: %v", err)
+	}
+
+	rawConfig := `
+selected_provider: company-gateway
+current_model: deepseek-coder
+shell: powershell
+`
+	if err := os.WriteFile(loader.ConfigPath(), []byte(strings.TrimSpace(rawConfig)+"\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	providerYAML := `
+name: company-gateway
+driver: openaicompat
+api_key_env: COMPANY_GATEWAY_API_KEY
+openai_compatible:
+  profile: generic
+  base_url: https://llm.example.com/v1
+  api_style: chat_completions
+`
+	customDir := filepath.Join(loader.BaseDir(), providersDirName, "company-gateway")
+	if err := os.WriteFile(filepath.Join(customDir, customProviderConfigName), []byte(strings.TrimSpace(providerYAML)+"\n"), 0o644); err != nil {
+		t.Fatalf("write provider.yaml: %v", err)
+	}
+
+	cfg, err := loader.Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.SelectedProvider != "company-gateway" {
+		t.Fatalf("expected selected provider company-gateway, got %q", cfg.SelectedProvider)
+	}
+	if cfg.CurrentModel != "deepseek-coder" {
+		t.Fatalf("expected current model deepseek-coder, got %q", cfg.CurrentModel)
+	}
+
+	customProvider, err := cfg.ProviderByName("company-gateway")
+	if err != nil {
+		t.Fatalf("ProviderByName(company-gateway) error = %v", err)
+	}
+	if customProvider.Source != ProviderSourceCustom {
+		t.Fatalf("expected custom provider source, got %+v", customProvider)
+	}
+	if customProvider.Driver != "openaicompat" {
+		t.Fatalf("expected custom provider driver openaicompat, got %q", customProvider.Driver)
+	}
+	if customProvider.APIStyle != "chat_completions" {
+		t.Fatalf("expected api_style chat_completions, got %q", customProvider.APIStyle)
+	}
+	if customProvider.BaseURL != "https://llm.example.com/v1" {
+		t.Fatalf("expected base url https://llm.example.com/v1, got %q", customProvider.BaseURL)
+	}
+	if customProvider.Model != "" {
+		t.Fatalf("expected custom provider default model to be empty, got %q", customProvider.Model)
+	}
+	if len(customProvider.Models) != 0 {
+		t.Fatalf("expected custom provider models to come only from remote discovery, got %+v", customProvider.Models)
+	}
+}
+
+func TestLoaderRejectsCustomProviderDefaultModel(t *testing.T) {
+	t.Parallel()
+
+	loader := NewLoader(t.TempDir(), testDefaultConfig())
+	customDir := filepath.Join(loader.BaseDir(), providersDirName, "company-gateway")
+	if err := os.MkdirAll(customDir, 0o755); err != nil {
+		t.Fatalf("mkdir custom provider dir: %v", err)
+	}
+
+	providerYAML := `
+name: company-gateway
+driver: openaicompat
+default_model: deepseek-coder
+api_key_env: COMPANY_GATEWAY_API_KEY
+openai_compatible:
+  base_url: https://llm.example.com/v1
+  api_style: chat_completions
+`
+	if err := os.WriteFile(filepath.Join(customDir, customProviderConfigName), []byte(strings.TrimSpace(providerYAML)+"\n"), 0o644); err != nil {
+		t.Fatalf("write provider.yaml: %v", err)
+	}
+
+	_, err := loader.Load(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "does not support default_model") {
+		t.Fatalf("expected default_model rejection, got %v", err)
+	}
+}
+
+func TestLoaderIgnoresCustomProviderModelsYAML(t *testing.T) {
+	t.Parallel()
+
+	loader := NewLoader(t.TempDir(), testDefaultConfig())
+	customDir := filepath.Join(loader.BaseDir(), providersDirName, "company-gateway")
+	if err := os.MkdirAll(customDir, 0o755); err != nil {
+		t.Fatalf("mkdir custom provider dir: %v", err)
+	}
+
+	providerYAML := `
+name: company-gateway
+driver: openaicompat
+api_key_env: COMPANY_GATEWAY_API_KEY
+openai_compatible:
+  base_url: https://llm.example.com/v1
+  api_style: chat_completions
+`
+	modelsYAML := `
+models:
+  - name: deepseek-coder
+`
+	if err := os.WriteFile(filepath.Join(customDir, customProviderConfigName), []byte(strings.TrimSpace(providerYAML)+"\n"), 0o644); err != nil {
+		t.Fatalf("write provider.yaml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(customDir, "models.yaml"), []byte(strings.TrimSpace(modelsYAML)+"\n"), 0o644); err != nil {
+		t.Fatalf("write models.yaml: %v", err)
+	}
+
+	cfg, err := loader.Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	customProvider, err := cfg.ProviderByName("company-gateway")
+	if err != nil {
+		t.Fatalf("ProviderByName(company-gateway) error = %v", err)
+	}
+	if len(customProvider.Models) != 0 {
+		t.Fatalf("expected models.yaml to be ignored, got %+v", customProvider.Models)
+	}
+}
+
+func TestLoaderRejectsCustomProviderNameConflictingWithBuiltin(t *testing.T) {
+	t.Parallel()
+
+	loader := NewLoader(t.TempDir(), testDefaultConfig())
+	customDir := filepath.Join(loader.BaseDir(), providersDirName, "openai")
+	if err := os.MkdirAll(customDir, 0o755); err != nil {
+		t.Fatalf("mkdir custom provider dir: %v", err)
+	}
+
+	providerYAML := `
+name: openai
+driver: openaicompat
+api_key_env: OPENAI_GATEWAY_API_KEY
+openai_compatible:
+  base_url: https://api.example.com/v1
+  api_style: chat_completions
+`
+	if err := os.WriteFile(filepath.Join(customDir, customProviderConfigName), []byte(strings.TrimSpace(providerYAML)+"\n"), 0o644); err != nil {
+		t.Fatalf("write provider.yaml: %v", err)
+	}
+
+	_, err := loader.Load(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "duplicate provider name") {
+		t.Fatalf("expected duplicate provider name error, got %v", err)
+	}
+}
+
+func TestLoaderRejectsDuplicateCustomProviderEndpointIdentity(t *testing.T) {
+	t.Parallel()
+
+	loader := NewLoader(t.TempDir(), testDefaultConfig())
+	customA := filepath.Join(loader.BaseDir(), providersDirName, "gateway-a")
+	customB := filepath.Join(loader.BaseDir(), providersDirName, "gateway-b")
+	for _, dir := range []string{customA, customB} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir custom provider dir: %v", err)
+		}
+	}
+
+	providerA := `
+name: gateway-a
+driver: openaicompat
+api_key_env: GATEWAY_A_API_KEY
+openai_compatible:
+  base_url: https://api.example.com/v1/
+  api_style: responses
+`
+	providerB := `
+name: gateway-b
+driver: openaicompat
+api_key_env: GATEWAY_B_API_KEY
+openai_compatible:
+  base_url: https://API.EXAMPLE.COM/v1
+  api_style: Responses
+`
+	if err := os.WriteFile(filepath.Join(customA, customProviderConfigName), []byte(strings.TrimSpace(providerA)+"\n"), 0o644); err != nil {
+		t.Fatalf("write provider a: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(customB, customProviderConfigName), []byte(strings.TrimSpace(providerB)+"\n"), 0o644); err != nil {
+		t.Fatalf("write provider b: %v", err)
+	}
+
+	_, err := loader.Load(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "duplicate provider endpoint") {
+		t.Fatalf("expected duplicate provider endpoint error, got %v", err)
+	}
+}
+
+func TestLoaderRejectsCustomProviderLegacyOpenAIDriver(t *testing.T) {
+	t.Parallel()
+
+	loader := NewLoader(t.TempDir(), testDefaultConfig())
+	customDir := filepath.Join(loader.BaseDir(), providersDirName, "legacy-gateway")
+	if err := os.MkdirAll(customDir, 0o755); err != nil {
+		t.Fatalf("mkdir custom provider dir: %v", err)
+	}
+
+	providerYAML := `
+name: legacy-gateway
+driver: openai
+api_key_env: LEGACY_GATEWAY_API_KEY
+base_url: https://legacy.example.com/v1
+`
+	if err := os.WriteFile(filepath.Join(customDir, customProviderConfigName), []byte(strings.TrimSpace(providerYAML)+"\n"), 0o644); err != nil {
+		t.Fatalf("write provider.yaml: %v", err)
+	}
+
+	_, err := loader.Load(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "no longer supported") {
+		t.Fatalf("expected legacy driver rejection, got %v", err)
+	}
+}
+
+func TestLoaderUsesOnlyDriverSpecificCustomProviderFields(t *testing.T) {
+	t.Parallel()
+
+	loader := NewLoader(t.TempDir(), testDefaultConfig())
+	customDir := filepath.Join(loader.BaseDir(), providersDirName, "company-gateway")
+	if err := os.MkdirAll(customDir, 0o755); err != nil {
+		t.Fatalf("mkdir custom provider dir: %v", err)
+	}
+
+	rawConfig := `
+selected_provider: company-gateway
+current_model: server-model
+shell: powershell
+`
+	if err := os.WriteFile(loader.ConfigPath(), []byte(strings.TrimSpace(rawConfig)+"\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	providerYAML := `
+name: company-gateway
+driver: openaicompat
+api_key_env: COMPANY_GATEWAY_API_KEY
+openai_compatible:
+  base_url: https://llm.example.com/v1
+  api_style: responses
+gemini:
+  base_url: https://gemini.example.com/v1beta
+  deployment_mode: vertex
+anthropic:
+  base_url: https://anthropic.example.com/v1
+  api_version: 2023-06-01
+`
+	if err := os.WriteFile(filepath.Join(customDir, customProviderConfigName), []byte(strings.TrimSpace(providerYAML)+"\n"), 0o644); err != nil {
+		t.Fatalf("write provider.yaml: %v", err)
+	}
+
+	cfg, err := loader.Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	customProvider, err := cfg.ProviderByName("company-gateway")
+	if err != nil {
+		t.Fatalf("ProviderByName(company-gateway) error = %v", err)
+	}
+	if customProvider.BaseURL != "https://llm.example.com/v1" {
+		t.Fatalf("expected openai-compatible base url, got %q", customProvider.BaseURL)
+	}
+	if customProvider.APIStyle != "responses" {
+		t.Fatalf("expected openai-compatible api_style, got %q", customProvider.APIStyle)
+	}
+	if customProvider.DeploymentMode != "" {
+		t.Fatalf("expected gemini deployment_mode to be ignored, got %q", customProvider.DeploymentMode)
+	}
+	if customProvider.APIVersion != "" {
+		t.Fatalf("expected anthropic api_version to be ignored, got %q", customProvider.APIVersion)
+	}
+}
+
+func TestLoaderRejectsCrossDriverBaseURLFallback(t *testing.T) {
+	t.Parallel()
+
+	loader := NewLoader(t.TempDir(), testDefaultConfig())
+	customDir := filepath.Join(loader.BaseDir(), providersDirName, "company-gateway")
+	if err := os.MkdirAll(customDir, 0o755); err != nil {
+		t.Fatalf("mkdir custom provider dir: %v", err)
+	}
+
+	rawConfig := `
+selected_provider: company-gateway
+current_model: server-model
+shell: powershell
+`
+	if err := os.WriteFile(loader.ConfigPath(), []byte(strings.TrimSpace(rawConfig)+"\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	providerYAML := `
+name: company-gateway
+driver: openaicompat
+api_key_env: COMPANY_GATEWAY_API_KEY
+gemini:
+  base_url: https://gemini.example.com/v1beta
+  deployment_mode: vertex
+`
+	if err := os.WriteFile(filepath.Join(customDir, customProviderConfigName), []byte(strings.TrimSpace(providerYAML)+"\n"), 0o644); err != nil {
+		t.Fatalf("write provider.yaml: %v", err)
+	}
+
+	_, err := loader.Load(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "base_url is empty") {
+		t.Fatalf("expected missing openai-compatible base_url error, got %v", err)
+	}
+}
+
+func TestResolveCustomProviderSettingsByDriver(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		file customProviderFile
+		want customProviderSettings
+	}{
+		{
+			name: "openaicompat prefers protocol block fields",
+			file: customProviderFile{
+				Driver: "openaicompat",
+				OpenAICompatible: customOpenAICompatibleFile{
+					BaseURL:  " https://llm.example.com/v1 ",
+					APIStyle: " responses ",
+				},
+				Gemini: customGeminiProviderFile{
+					BaseURL:        "https://gemini.example.com",
+					DeploymentMode: "vertex",
+				},
+			},
+			want: customProviderSettings{
+				BaseURL:  "https://llm.example.com/v1",
+				APIStyle: "responses",
+			},
+		},
+		{
+			name: "gemini uses deployment mode only from gemini block",
+			file: customProviderFile{
+				Driver:  "gemini",
+				BaseURL: " https://gateway.example.com ",
+				Gemini: customGeminiProviderFile{
+					BaseURL:        "https://gemini.example.com",
+					DeploymentMode: " vertex ",
+				},
+				Anthropic: customAnthropicProviderFile{
+					APIVersion: "2023-06-01",
+				},
+			},
+			want: customProviderSettings{
+				BaseURL:        "https://gateway.example.com",
+				DeploymentMode: "vertex",
+			},
+		},
+		{
+			name: "anthropic uses api version only from anthropic block",
+			file: customProviderFile{
+				Driver: "anthropic",
+				Anthropic: customAnthropicProviderFile{
+					BaseURL:    " https://anthropic.example.com/v1 ",
+					APIVersion: " 2023-06-01 ",
+				},
+			},
+			want: customProviderSettings{
+				BaseURL:    "https://anthropic.example.com/v1",
+				APIVersion: "2023-06-01",
+			},
+		},
+		{
+			name: "unknown driver falls back across known blocks",
+			file: customProviderFile{
+				Driver: "custom-driver",
+				Gemini: customGeminiProviderFile{
+					BaseURL: " https://gemini.example.com/v1beta ",
+				},
+				Anthropic: customAnthropicProviderFile{
+					BaseURL: "https://anthropic.example.com/v1",
+				},
+			},
+			want: customProviderSettings{
+				BaseURL: "https://gemini.example.com/v1beta",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := resolveCustomProviderSettings(tt.file)
+			if got != tt.want {
+				t.Fatalf("resolveCustomProviderSettings() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveFallbackCustomProviderBaseURL(t *testing.T) {
+	t.Parallel()
+
+	got := resolveFallbackCustomProviderBaseURL(customProviderFile{
+		OpenAICompatible: customOpenAICompatibleFile{
+			BaseURL: "   ",
+		},
+		Gemini: customGeminiProviderFile{
+			BaseURL: " https://gemini.example.com/v1beta ",
+		},
+		Anthropic: customAnthropicProviderFile{
+			BaseURL: "https://anthropic.example.com/v1",
+		},
+	})
+	if got != "https://gemini.example.com/v1beta" {
+		t.Fatalf("expected gemini fallback base URL, got %q", got)
+	}
+
+	if got := resolveFallbackCustomProviderBaseURL(customProviderFile{}); got != "" {
+		t.Fatalf("expected empty fallback base URL, got %q", got)
+	}
+}

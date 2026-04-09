@@ -3,23 +3,24 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
-	"neo-code/internal/config"
 	agentcontext "neo-code/internal/context"
 	contextcompact "neo-code/internal/context/compact"
+	"neo-code/internal/provider"
 	providertypes "neo-code/internal/provider/types"
 )
 
 type compactSummaryGenerator struct {
 	providerFactory ProviderFactory
-	providerConfig  config.ResolvedProviderConfig
+	providerConfig  provider.RuntimeConfig
 	model           string
 }
 
 func newCompactSummaryGenerator(
 	providerFactory ProviderFactory,
-	providerCfg config.ResolvedProviderConfig,
+	providerCfg provider.RuntimeConfig,
 	model string,
 ) contextcompact.SummaryGenerator {
 	return &compactSummaryGenerator{
@@ -41,7 +42,7 @@ func (g *compactSummaryGenerator) Generate(ctx context.Context, input contextcom
 		strings.TrimSpace(g.providerConfig.APIKey) == "" {
 		return "", errors.New("runtime: compact summary generator provider config is incomplete")
 	}
-	if err := ensureProviderDriverCapabilities(g.providerFactory, g.providerConfig, true, false); err != nil {
+	if err := ensureDriverTransportCapabilities(g.providerFactory, g.providerConfig, true, false); err != nil {
 		return "", err
 	}
 
@@ -103,6 +104,9 @@ func (g *compactSummaryGenerator) Generate(ctx context.Context, input contextcom
 	}
 	if streamErr != nil {
 		return "", streamErr
+	}
+	if !acc.messageDone {
+		return "", fmt.Errorf("%w: provider stream ended without message_done event", provider.ErrStreamInterrupted)
 	}
 
 	message, err := acc.buildMessage()

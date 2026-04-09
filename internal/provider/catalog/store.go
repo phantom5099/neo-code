@@ -13,7 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"neo-code/internal/config"
+	"neo-code/internal/provider"
+	providertypes "neo-code/internal/provider/types"
 )
 
 const schemaVersion = 1
@@ -22,11 +23,11 @@ var ErrCatalogNotFound = errors.New("provider: model catalog not found")
 
 // ModelCatalog stores discovered models for a concrete provider endpoint.
 type ModelCatalog struct {
-	SchemaVersion int                      `json:"schema_version"`
-	Identity      config.ProviderIdentity  `json:"identity"`
-	FetchedAt     time.Time                `json:"fetched_at"`
-	ExpiresAt     time.Time                `json:"expires_at"`
-	Models        []config.ModelDescriptor `json:"models"`
+	SchemaVersion int                             `json:"schema_version"`
+	Identity      provider.ProviderIdentity       `json:"identity"`
+	FetchedAt     time.Time                       `json:"fetched_at"`
+	ExpiresAt     time.Time                       `json:"expires_at"`
+	Models        []providertypes.ModelDescriptor `json:"models"`
 }
 
 func (c ModelCatalog) Expired(now time.Time) bool {
@@ -35,7 +36,7 @@ func (c ModelCatalog) Expired(now time.Time) bool {
 
 // Store persists model catalogs keyed by normalized provider identity.
 type Store interface {
-	Load(ctx context.Context, identity config.ProviderIdentity) (ModelCatalog, error)
+	Load(ctx context.Context, identity provider.ProviderIdentity) (ModelCatalog, error)
 	Save(ctx context.Context, catalog ModelCatalog) error
 }
 
@@ -50,12 +51,12 @@ func newJSONStore(baseDir string) *jsonStore {
 	}
 }
 
-func (s *jsonStore) Load(ctx context.Context, identity config.ProviderIdentity) (ModelCatalog, error) {
+func (s *jsonStore) Load(ctx context.Context, identity provider.ProviderIdentity) (ModelCatalog, error) {
 	if err := ctx.Err(); err != nil {
 		return ModelCatalog{}, err
 	}
 
-	normalized, err := config.NewProviderIdentity(identity.Driver, identity.BaseURL)
+	normalized, err := provider.NormalizeProviderIdentity(identity)
 	if err != nil {
 		return ModelCatalog{}, fmt.Errorf("provider: normalize model catalog key: %w", err)
 	}
@@ -86,7 +87,7 @@ func (s *jsonStore) Save(ctx context.Context, catalog ModelCatalog) error {
 	}
 
 	normalized := normalizeCatalog(catalog)
-	identity, err := config.NewProviderIdentity(normalized.Identity.Driver, normalized.Identity.BaseURL)
+	identity, err := provider.NormalizeProviderIdentity(normalized.Identity)
 	if err != nil {
 		return fmt.Errorf("provider: normalize model catalog key: %w", err)
 	}
@@ -113,11 +114,11 @@ func normalizeCatalog(modelCatalog ModelCatalog) ModelCatalog {
 	if modelCatalog.SchemaVersion == 0 {
 		modelCatalog.SchemaVersion = schemaVersion
 	}
-	modelCatalog.Models = config.MergeModelDescriptors(modelCatalog.Models)
+	modelCatalog.Models = providertypes.MergeModelDescriptors(modelCatalog.Models)
 	return modelCatalog
 }
 
-func (s *jsonStore) catalogPath(identity config.ProviderIdentity) string {
+func (s *jsonStore) catalogPath(identity provider.ProviderIdentity) string {
 	sum := sha256.Sum256([]byte(identity.Key()))
 	return filepath.Join(s.dir, hex.EncodeToString(sum[:])+".json")
 }

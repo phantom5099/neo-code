@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"neo-code/internal/config"
 	"neo-code/internal/provider"
+	providertypes "neo-code/internal/provider/types"
 )
 
 const (
@@ -42,28 +42,28 @@ func NewService(baseDir string, registry *provider.Registry, store Store) *Servi
 	}
 }
 
-func (s *Service) ListProviderModels(ctx context.Context, providerCfg config.ProviderConfig) ([]config.ModelDescriptor, error) {
-	return s.listProviderModels(ctx, providerCfg, queryOptions{
+func (s *Service) ListProviderModels(ctx context.Context, input provider.CatalogInput) ([]providertypes.ModelDescriptor, error) {
+	return s.listProviderModels(ctx, input, queryOptions{
 		allowSyncRefresh: true,
 		queueRefresh:     true,
 	})
 }
 
-func (s *Service) ListProviderModelsSnapshot(ctx context.Context, providerCfg config.ProviderConfig) ([]config.ModelDescriptor, error) {
-	return s.listProviderModels(ctx, providerCfg, queryOptions{
+func (s *Service) ListProviderModelsSnapshot(ctx context.Context, input provider.CatalogInput) ([]providertypes.ModelDescriptor, error) {
+	return s.listProviderModels(ctx, input, queryOptions{
 		queueRefresh: true,
 	})
 }
 
-func (s *Service) ListProviderModelsCached(ctx context.Context, providerCfg config.ProviderConfig) ([]config.ModelDescriptor, error) {
-	return s.listProviderModels(ctx, providerCfg, queryOptions{})
+func (s *Service) ListProviderModelsCached(ctx context.Context, input provider.CatalogInput) ([]providertypes.ModelDescriptor, error) {
+	return s.listProviderModels(ctx, input, queryOptions{})
 }
 
 func (s *Service) listProviderModels(
 	ctx context.Context,
-	providerCfg config.ProviderConfig,
+	input provider.CatalogInput,
 	options queryOptions,
-) ([]config.ModelDescriptor, error) {
+) ([]providertypes.ModelDescriptor, error) {
 	if err := s.validate(); err != nil {
 		return nil, err
 	}
@@ -71,7 +71,7 @@ func (s *Service) listProviderModels(
 		return nil, err
 	}
 
-	return s.modelsForProvider(ctx, providerCfg, options), nil
+	return s.modelsForProvider(ctx, input, options)
 }
 
 func (s *Service) validate() error {
@@ -90,40 +90,52 @@ type queryOptions struct {
 }
 
 type catalogSnapshot struct {
-	models   []config.ModelDescriptor
+	models   []providertypes.ModelDescriptor
 	ok       bool
 	expired  bool
-	identity config.ProviderIdentity
+	identity provider.ProviderIdentity
 }
 
-func (s *Service) modelsForProvider(ctx context.Context, providerCfg config.ProviderConfig, options queryOptions) []config.ModelDescriptor {
-	defaultModels := config.DescriptorsFromIDs([]string{providerCfg.Model})
-	snapshot := s.catalogSnapshot(ctx, providerCfg)
+func (s *Service) modelsForProvider(ctx context.Context, input provider.CatalogInput, options queryOptions) ([]providertypes.ModelDescriptor, error) {
+	configuredModels := providertypes.MergeModelDescriptors(input.ConfiguredModels)
+	defaultModels := providertypes.MergeModelDescriptors(input.DefaultModels)
+	snapshot := s.catalogSnapshot(ctx, input)
 
 	models := snapshot.models
-	modelsOK := snapshot.ok
-	if !modelsOK && options.allowSyncRefresh {
-		discovered, ok := s.discoverAndPersist(ctx, providerCfg)
-		if ok {
+	catalogOK := snapshot.ok
+	performedSyncRefresh := false
+	if !catalogOK && options.allowSyncRefresh {
+		discovered, err := s.discoverAndPersist(ctx, input)
+		if err != nil {
+			if len(defaultModels) == 0 {
+				return nil, err
+			}
+		} else {
 			models = discovered
-			modelsOK = true
+			catalogOK = true
+			performedSyncRefresh = true
 		}
 	}
 
-	if options.queueRefresh && (!modelsOK || snapshot.expired) {
-		s.queueRefresh(providerCfg, snapshot.identity)
+	if options.queueRefresh && snapshot.expired {
+		s.queueRefresh(input)
+	}
+	if options.queueRefresh && !snapshot.ok && !performedSyncRefresh {
+		s.queueRefresh(input)
 	}
 
-	return config.MergeModelDescriptors(models, defaultModels)
+	if !catalogOK {
+		if len(defaultModels) == 0 {
+			return nil, nil
+		}
+		return providertypes.MergeModelDescriptors(configuredModels, defaultModels), nil
+	}
+	return providertypes.MergeModelDescriptors(configuredModels, models, defaultModels), nil
 }
 
-func (s *Service) catalogSnapshot(ctx context.Context, providerCfg config.ProviderConfig) catalogSnapshot {
-	identity, err := providerCfg.Identity()
-	if err != nil {
-		return catalogSnapshot{}
-	}
-
-	modelCatalog, err := s.loadCatalog(ctx, providerCfg)
+func (s *Service) catalogSnapshot(ctx context.Context, input provider.CatalogInput) catalogSnapshot {
+	identity := input.Identity
+	modelCatalog, err := s.loadCatalog(ctx, identity)
 	if err != nil {
 		return catalogSnapshot{identity: identity}
 	}
@@ -135,58 +147,55 @@ func (s *Service) catalogSnapshot(ctx context.Context, providerCfg config.Provid
 	}
 }
 
-func (s *Service) loadCatalog(ctx context.Context, providerCfg config.ProviderConfig) (ModelCatalog, error) {
+func (s *Service) loadCatalog(ctx context.Context, identity provider.ProviderIdentity) (ModelCatalog, error) {
 	if s.store == nil {
 		return ModelCatalog{}, ErrCatalogNotFound
-	}
-
-	identity, err := providerCfg.Identity()
-	if err != nil {
-		return ModelCatalog{}, err
 	}
 	return s.store.Load(ctx, identity)
 }
 
-func (s *Service) discoverAndPersist(ctx context.Context, providerCfg config.ProviderConfig) ([]config.ModelDescriptor, bool) {
-	if !s.registry.Supports(providerCfg.Driver) {
-		return nil, false
+func (s *Service) discoverAndPersist(ctx context.Context, input provider.CatalogInput) ([]providertypes.ModelDescriptor, error) {
+	driverType := strings.TrimSpace(input.Identity.Driver)
+	if !s.registry.Supports(driverType) {
+		return nil, nil
 	}
 
-	resolved, err := providerCfg.Resolve()
+	if input.ResolveDiscoveryConfig == nil {
+		return nil, errors.New("provider catalog: discovery config resolver is nil")
+	}
+
+	runtimeCfg, err := input.ResolveDiscoveryConfig()
 	if err != nil {
-		return nil, false
+		return nil, err
 	}
 
-	discovered, err := s.registry.DiscoverModels(ctx, resolved)
+	discovered, err := s.registry.DiscoverModels(ctx, runtimeCfg)
 	if err != nil {
-		return nil, false
+		return nil, err
 	}
 
-	discovered = config.MergeModelDescriptors(discovered)
+	discovered = providertypes.MergeModelDescriptors(discovered)
 	if s.store == nil {
-		return discovered, true
-	}
-
-	identity, err := providerCfg.Identity()
-	if err != nil {
-		return discovered, true
+		return discovered, nil
 	}
 
 	now := s.now()
 	_ = s.store.Save(ctx, ModelCatalog{
 		SchemaVersion: schemaVersion,
-		Identity:      identity,
+		Identity:      input.Identity,
 		FetchedAt:     now,
 		ExpiresAt:     now.Add(s.catalogTTL),
 		Models:        discovered,
 	})
-	return discovered, true
+	return discovered, nil
 }
 
-func (s *Service) queueRefresh(providerCfg config.ProviderConfig, identity config.ProviderIdentity) {
-	if s.store == nil || !s.registry.Supports(providerCfg.Driver) {
+func (s *Service) queueRefresh(input provider.CatalogInput) {
+	driverType := strings.TrimSpace(input.Identity.Driver)
+	if s.store == nil || !s.registry.Supports(driverType) {
 		return
 	}
+	identity := input.Identity
 	if identity.Driver == "" || identity.BaseURL == "" {
 		return
 	}
@@ -209,6 +218,6 @@ func (s *Service) queueRefresh(providerCfg config.ProviderConfig, identity confi
 
 		ctx, cancel := context.WithTimeout(context.Background(), s.backgroundTimeout)
 		defer cancel()
-		_, _ = s.discoverAndPersist(ctx, providerCfg)
+		_, _ = s.discoverAndPersist(ctx, input)
 	}()
 }

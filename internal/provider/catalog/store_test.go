@@ -9,14 +9,15 @@ import (
 	"testing"
 	"time"
 
-	"neo-code/internal/config"
+	"neo-code/internal/provider"
+	providertypes "neo-code/internal/provider/types"
 )
 
 func TestJSONStoreRoundTrip(t *testing.T) {
 	t.Parallel()
 
 	store := newJSONStore(t.TempDir())
-	identity, err := config.NewProviderIdentity("openai", "https://api.openai.com/v1")
+	identity, err := provider.NewProviderIdentity("openai", "https://api.openai.com/v1")
 	if err != nil {
 		t.Fatalf("NewProviderIdentity() error = %v", err)
 	}
@@ -26,15 +27,15 @@ func TestJSONStoreRoundTrip(t *testing.T) {
 		Identity:      identity,
 		FetchedAt:     time.Date(2026, 4, 2, 10, 0, 0, 0, time.UTC),
 		ExpiresAt:     time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC),
-		Models: []config.ModelDescriptor{
+		Models: []providertypes.ModelDescriptor{
 			{
 				ID:              "gpt-4.1",
 				Name:            "GPT-4.1",
 				Description:     "Fast flagship",
 				ContextWindow:   128000,
 				MaxOutputTokens: 16384,
-				Capabilities: map[string]bool{
-					"tool_call": true,
+				CapabilityHints: providertypes.ModelCapabilityHints{
+					ToolCalling: providertypes.ModelCapabilityStateSupported,
 				},
 			},
 		},
@@ -63,8 +64,63 @@ func TestJSONStoreRoundTrip(t *testing.T) {
 	if got.Models[0].ID != expected.Models[0].ID || got.Models[0].Name != expected.Models[0].Name {
 		t.Fatalf("expected model %+v, got %+v", expected.Models[0], got.Models[0])
 	}
-	if !got.Models[0].Capabilities["tool_call"] {
-		t.Fatalf("expected capabilities to round-trip, got %+v", got.Models[0].Capabilities)
+	if got.Models[0].CapabilityHints.ToolCalling != providertypes.ModelCapabilityStateSupported {
+		t.Fatalf("expected capability hints to round-trip, got %+v", got.Models[0].CapabilityHints)
+	}
+}
+
+func TestJSONStoreSeparatesDriverSpecificIdentityKeys(t *testing.T) {
+	t.Parallel()
+
+	store := newJSONStore(t.TempDir())
+	responsesIdentity := provider.ProviderIdentity{
+		Driver:   "openaicompat",
+		BaseURL:  "https://API.EXAMPLE.COM/v1/",
+		APIStyle: " Responses ",
+	}
+	chatIdentity := provider.ProviderIdentity{
+		Driver:   "openaicompat",
+		BaseURL:  "https://api.example.com/v1",
+		APIStyle: "chat_completions",
+	}
+
+	if err := store.Save(context.Background(), ModelCatalog{
+		Identity: responsesIdentity,
+		Models: []providertypes.ModelDescriptor{
+			{ID: "responses-model", Name: "Responses Model"},
+		},
+	}); err != nil {
+		t.Fatalf("save responses catalog: %v", err)
+	}
+	if err := store.Save(context.Background(), ModelCatalog{
+		Identity: chatIdentity,
+		Models: []providertypes.ModelDescriptor{
+			{ID: "chat-model", Name: "Chat Model"},
+		},
+	}); err != nil {
+		t.Fatalf("save chat catalog: %v", err)
+	}
+
+	responsesCatalog, err := store.Load(context.Background(), responsesIdentity)
+	if err != nil {
+		t.Fatalf("load responses catalog: %v", err)
+	}
+	if len(responsesCatalog.Models) != 1 || responsesCatalog.Models[0].ID != "responses-model" {
+		t.Fatalf("expected responses catalog to stay isolated, got %+v", responsesCatalog.Models)
+	}
+	if responsesCatalog.Identity.APIStyle != "responses" {
+		t.Fatalf("expected normalized api_style=responses, got %+v", responsesCatalog.Identity)
+	}
+
+	chatCatalog, err := store.Load(context.Background(), chatIdentity)
+	if err != nil {
+		t.Fatalf("load chat catalog: %v", err)
+	}
+	if len(chatCatalog.Models) != 1 || chatCatalog.Models[0].ID != "chat-model" {
+		t.Fatalf("expected chat catalog to stay isolated, got %+v", chatCatalog.Models)
+	}
+	if chatCatalog.Identity.APIStyle != "chat_completions" {
+		t.Fatalf("expected normalized api_style=chat_completions, got %+v", chatCatalog.Identity)
 	}
 }
 
@@ -72,7 +128,7 @@ func TestJSONStoreMissingCatalog(t *testing.T) {
 	t.Parallel()
 
 	store := newJSONStore(t.TempDir())
-	identity, err := config.NewProviderIdentity("openai", "https://api.openai.com/v1")
+	identity, err := provider.NewProviderIdentity("openai", "https://api.openai.com/v1")
 	if err != nil {
 		t.Fatalf("NewProviderIdentity() error = %v", err)
 	}
@@ -88,7 +144,7 @@ func TestJSONStoreSaveReplacesExistingCatalogWithoutTempLeak(t *testing.T) {
 
 	baseDir := t.TempDir()
 	store := newJSONStore(baseDir)
-	identity, err := config.NewProviderIdentity("openai", "https://api.openai.com/v1")
+	identity, err := provider.NewProviderIdentity("openai", "https://api.openai.com/v1")
 	if err != nil {
 		t.Fatalf("NewProviderIdentity() error = %v", err)
 	}
@@ -98,7 +154,7 @@ func TestJSONStoreSaveReplacesExistingCatalogWithoutTempLeak(t *testing.T) {
 		Identity:      identity,
 		FetchedAt:     time.Date(2026, 4, 2, 10, 0, 0, 0, time.UTC),
 		ExpiresAt:     time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC),
-		Models: []config.ModelDescriptor{
+		Models: []providertypes.ModelDescriptor{
 			{ID: "gpt-old", Name: "GPT Old"},
 		},
 	}
@@ -107,7 +163,7 @@ func TestJSONStoreSaveReplacesExistingCatalogWithoutTempLeak(t *testing.T) {
 		Identity:      identity,
 		FetchedAt:     time.Date(2026, 4, 4, 10, 0, 0, 0, time.UTC),
 		ExpiresAt:     time.Date(2026, 4, 5, 10, 0, 0, 0, time.UTC),
-		Models: []config.ModelDescriptor{
+		Models: []providertypes.ModelDescriptor{
 			{ID: "gpt-new", Name: "GPT New"},
 		},
 	}
@@ -163,7 +219,7 @@ func TestJSONStoreLoadHonorsContextError(t *testing.T) {
 	t.Parallel()
 
 	store := newJSONStore(t.TempDir())
-	identity, err := config.NewProviderIdentity("openai", "https://api.openai.com/v1")
+	identity, err := provider.NewProviderIdentity("openai", "https://api.openai.com/v1")
 	if err != nil {
 		t.Fatalf("NewProviderIdentity() error = %v", err)
 	}
@@ -181,7 +237,7 @@ func TestJSONStoreLoadRejectsInvalidIdentity(t *testing.T) {
 	t.Parallel()
 
 	store := newJSONStore(t.TempDir())
-	_, err := store.Load(context.Background(), config.ProviderIdentity{
+	_, err := store.Load(context.Background(), provider.ProviderIdentity{
 		Driver:  "openai",
 		BaseURL: "://bad",
 	})
@@ -194,7 +250,7 @@ func TestJSONStoreLoadRejectsInvalidJSON(t *testing.T) {
 	t.Parallel()
 
 	store := newJSONStore(t.TempDir())
-	identity, err := config.NewProviderIdentity("openai", "https://api.openai.com/v1")
+	identity, err := provider.NewProviderIdentity("openai", "https://api.openai.com/v1")
 	if err != nil {
 		t.Fatalf("NewProviderIdentity() error = %v", err)
 	}
@@ -216,7 +272,7 @@ func TestJSONStoreSaveHonorsContextError(t *testing.T) {
 	t.Parallel()
 
 	store := newJSONStore(t.TempDir())
-	identity, err := config.NewProviderIdentity("openai", "https://api.openai.com/v1")
+	identity, err := provider.NewProviderIdentity("openai", "https://api.openai.com/v1")
 	if err != nil {
 		t.Fatalf("NewProviderIdentity() error = %v", err)
 	}
@@ -235,7 +291,7 @@ func TestJSONStoreSaveRejectsInvalidIdentity(t *testing.T) {
 
 	store := newJSONStore(t.TempDir())
 	err := store.Save(context.Background(), ModelCatalog{
-		Identity: config.ProviderIdentity{
+		Identity: provider.ProviderIdentity{
 			Driver:  "",
 			BaseURL: "https://api.openai.com/v1",
 		},
@@ -249,7 +305,7 @@ func TestNormalizeCatalogDefaultsSchemaAndDedupesModels(t *testing.T) {
 	t.Parallel()
 
 	modelCatalog := normalizeCatalog(ModelCatalog{
-		Models: []config.ModelDescriptor{
+		Models: []providertypes.ModelDescriptor{
 			{ID: "gpt-4o", Name: "GPT-4o"},
 			{ID: "gpt-4o", Name: "GPT-4o Duplicate"},
 		},

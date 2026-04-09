@@ -44,7 +44,7 @@ func TestCompactSummaryGeneratorBuildsProviderRequestWithoutTools(t *testing.T) 
 		},
 	}
 	factory := &scriptedProviderFactory{provider: scripted}
-	generator := newCompactSummaryGenerator(factory, resolvedProvider, "session-model")
+	generator := newCompactSummaryGenerator(factory, resolvedProvider.ToRuntimeConfig(), "session-model")
 
 	summary, err := generator.Generate(context.Background(), contextcompact.SummaryInput{
 		Mode: contextcompact.ModeManual,
@@ -123,7 +123,7 @@ func TestCompactSummaryGeneratorRejectsToolCalls(t *testing.T) {
 			},
 		},
 	}
-	generator := newCompactSummaryGenerator(&scriptedProviderFactory{provider: scripted}, resolvedProvider, "session-model")
+	generator := newCompactSummaryGenerator(&scriptedProviderFactory{provider: scripted}, resolvedProvider.ToRuntimeConfig(), "session-model")
 
 	_, err = generator.Generate(context.Background(), contextcompact.SummaryInput{
 		Mode: contextcompact.ModeManual,
@@ -153,7 +153,7 @@ func TestCompactSummaryGeneratorRejectsMalformedStreamEvent(t *testing.T) {
 			},
 		},
 	}
-	generator := newCompactSummaryGenerator(&scriptedProviderFactory{provider: scripted}, resolvedProvider, "session-model")
+	generator := newCompactSummaryGenerator(&scriptedProviderFactory{provider: scripted}, resolvedProvider.ToRuntimeConfig(), "session-model")
 
 	_, err = generator.Generate(context.Background(), contextcompact.SummaryInput{
 		Mode:   contextcompact.ModeManual,
@@ -161,6 +161,39 @@ func TestCompactSummaryGeneratorRejectsMalformedStreamEvent(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "text_delta event payload is nil") {
 		t.Fatalf("expected malformed stream event rejection, got %v", err)
+	}
+}
+
+func TestCompactSummaryGeneratorRejectsCompletionWithoutMessageDone(t *testing.T) {
+	t.Parallel()
+
+	manager := newRuntimeConfigManager(t)
+	resolvedProvider, err := resolvedProviderForTests(manager.Get(), config.OpenAIName)
+	if err != nil {
+		t.Fatalf("resolve provider: %v", err)
+	}
+
+	scripted := &scriptedProvider{
+		chatFn: func(ctx context.Context, req providertypes.GenerateRequest, events chan<- providertypes.StreamEvent) error {
+			select {
+			case events <- providertypes.NewTextDeltaStreamEvent("[compact_summary]\npartial"):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			return nil
+		},
+	}
+	generator := newCompactSummaryGenerator(&scriptedProviderFactory{provider: scripted}, resolvedProvider.ToRuntimeConfig(), "session-model")
+
+	_, err = generator.Generate(context.Background(), contextcompact.SummaryInput{
+		Mode:   contextcompact.ModeManual,
+		Config: manager.Get().Context.Compact,
+	})
+	if !errors.Is(err, provider.ErrStreamInterrupted) {
+		t.Fatalf("expected ErrStreamInterrupted, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "without message_done") {
+		t.Fatalf("expected missing message_done error, got %v", err)
 	}
 }
 
@@ -180,7 +213,7 @@ func TestCompactSummaryGeneratorMalformedStreamEventDoesNotDeadlock(t *testing.T
 	scripted := &scriptedProvider{
 		streams: [][]providertypes.StreamEvent{stream},
 	}
-	generator := newCompactSummaryGenerator(&scriptedProviderFactory{provider: scripted}, resolvedProvider, "session-model")
+	generator := newCompactSummaryGenerator(&scriptedProviderFactory{provider: scripted}, resolvedProvider.ToRuntimeConfig(), "session-model")
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -217,12 +250,12 @@ func TestCompactSummaryGeneratorRejectsDriverWithoutStreaming(t *testing.T) {
 	}
 	factory := &scriptedProviderFactory{
 		provider: scripted,
-		capabilities: provider.DriverCapabilities{
+		capabilities: provider.DriverTransportCapabilities{
 			Streaming:     false,
 			ToolTransport: true,
 		},
 	}
-	generator := newCompactSummaryGenerator(factory, resolvedProvider, "session-model")
+	generator := newCompactSummaryGenerator(factory, resolvedProvider.ToRuntimeConfig(), "session-model")
 
 	_, err = generator.Generate(context.Background(), contextcompact.SummaryInput{
 		Mode:   contextcompact.ModeManual,
@@ -252,7 +285,7 @@ func TestCompactSummaryGeneratorPropagatesDriverNotFoundFromCapabilities(t *test
 		provider:        &scriptedProvider{},
 		capabilitiesErr: provider.ErrDriverNotFound,
 	}
-	generator := newCompactSummaryGenerator(factory, resolvedProvider, "session-model")
+	generator := newCompactSummaryGenerator(factory, resolvedProvider.ToRuntimeConfig(), "session-model")
 
 	_, err = generator.Generate(context.Background(), contextcompact.SummaryInput{
 		Mode:   contextcompact.ModeManual,

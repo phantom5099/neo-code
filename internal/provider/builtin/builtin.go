@@ -4,7 +4,7 @@ import (
 	"errors"
 
 	"neo-code/internal/provider"
-	"neo-code/internal/provider/openai"
+	"neo-code/internal/provider/openaicompat"
 )
 
 func NewRegistry() (*provider.Registry, error) {
@@ -19,5 +19,5 @@ func register(registry *provider.Registry) error {
 	if registry == nil {
 		return errors.New("builtin provider registry is nil")
 	}
-	return registry.Register(openai.Driver())
+	return registry.Register(openaicompat.Driver())
 }

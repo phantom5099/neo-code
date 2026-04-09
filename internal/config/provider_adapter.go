@@ -1,0 +1,71 @@
+package config
+
+import (
+	"neo-code/internal/provider"
+	providertypes "neo-code/internal/provider/types"
+)
+
+// normalizeConfigKey 统一规范化 config 层比较使用的字符串键，避免大小写和空白造成分支漂移。
+func normalizeConfigKey(value string) string {
+	return provider.NormalizeKey(value)
+}
+
+// normalizeProviderName 统一规范化 provider 名称，供 config 层查找、去重与比较逻辑复用。
+func normalizeProviderName(name string) string {
+	return provider.NormalizeKey(name)
+}
+
+// normalizeProviderDriver 统一规范化 driver 名称，供 config 层校验和配置解析分支复用。
+func normalizeProviderDriver(driver string) string {
+	return provider.NormalizeProviderDriver(driver)
+}
+
+// providerIdentityFromConfig 根据 provider 配置构造用于去重与缓存的规范化连接身份。
+func providerIdentityFromConfig(cfg ProviderConfig) (provider.ProviderIdentity, error) {
+	return provider.NormalizeProviderIdentity(provider.ProviderIdentity{
+		Driver:         cfg.Driver,
+		BaseURL:        cfg.BaseURL,
+		APIStyle:       cfg.APIStyle,
+		DeploymentMode: cfg.DeploymentMode,
+		APIVersion:     cfg.APIVersion,
+	})
+}
+
+// ToRuntimeConfig 将解析后的 provider 配置收敛为 provider 层使用的最小运行时输入。
+func (p ResolvedProviderConfig) ToRuntimeConfig() provider.RuntimeConfig {
+	return provider.RuntimeConfig{
+		Name:           p.Name,
+		Driver:         p.Driver,
+		BaseURL:        p.BaseURL,
+		DefaultModel:   p.Model,
+		APIKey:         p.APIKey,
+		APIStyle:       p.APIStyle,
+		DeploymentMode: p.DeploymentMode,
+		APIVersion:     p.APIVersion,
+	}
+}
+
+// NewProviderCatalogInput 基于 provider 配置构造 catalog 查询输入，避免由 ProviderConfig 直接暴露 provider 契约。
+func NewProviderCatalogInput(cfg ProviderConfig) (provider.CatalogInput, error) {
+	cloned := cloneProviderConfig(cfg)
+	identity, err := providerIdentityFromConfig(cloned)
+	if err != nil {
+		return provider.CatalogInput{}, err
+	}
+
+	input := provider.CatalogInput{
+		Identity:         identity,
+		ConfiguredModels: providertypes.CloneModelDescriptors(cloned.Models),
+		ResolveDiscoveryConfig: func() (provider.RuntimeConfig, error) {
+			resolved, err := cloned.Resolve()
+			if err != nil {
+				return provider.RuntimeConfig{}, err
+			}
+			return resolved.ToRuntimeConfig(), nil
+		},
+	}
+	if cloned.Source != ProviderSourceCustom {
+		input.DefaultModels = providertypes.DescriptorsFromIDs([]string{cloned.Model})
+	}
+	return input, nil
+}

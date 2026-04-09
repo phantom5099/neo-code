@@ -6,17 +6,17 @@ import (
 	"fmt"
 	"strings"
 
-	"neo-code/internal/config"
+	providertypes "neo-code/internal/provider/types"
 )
 
-type Builder func(ctx context.Context, cfg config.ResolvedProviderConfig) (Provider, error)
-type DiscoveryFunc func(ctx context.Context, cfg config.ResolvedProviderConfig) ([]config.ModelDescriptor, error)
+type Builder func(ctx context.Context, cfg RuntimeConfig) (Provider, error)
+type DiscoveryFunc func(ctx context.Context, cfg RuntimeConfig) ([]providertypes.ModelDescriptor, error)
 
 type DriverDefinition struct {
 	Name         string
 	Build        Builder
 	Discover     DiscoveryFunc
-	Capabilities DriverCapabilities
+	Capabilities DriverTransportCapabilities
 }
 
 type Registry struct {
@@ -35,7 +35,7 @@ func (r *Registry) Register(driver DriverDefinition) error {
 	r.ensureDrivers()
 
 	driver.Name = strings.TrimSpace(driver.Name)
-	driverType := config.NormalizeKey(driver.Name)
+	driverType := normalizeDriverKey(driver.Name)
 	if driverType == "" {
 		return errors.New("provider: driver name is empty")
 	}
@@ -49,7 +49,7 @@ func (r *Registry) Register(driver DriverDefinition) error {
 	return nil
 }
 
-func (r *Registry) Build(ctx context.Context, cfg config.ResolvedProviderConfig) (Provider, error) {
+func (r *Registry) Build(ctx context.Context, cfg RuntimeConfig) (Provider, error) {
 	driver, err := r.driver(cfg.Driver)
 	if err != nil {
 		return nil, err
@@ -57,7 +57,7 @@ func (r *Registry) Build(ctx context.Context, cfg config.ResolvedProviderConfig)
 	return driver.Build(ctx, cfg)
 }
 
-func (r *Registry) DiscoverModels(ctx context.Context, cfg config.ResolvedProviderConfig) ([]config.ModelDescriptor, error) {
+func (r *Registry) DiscoverModels(ctx context.Context, cfg RuntimeConfig) ([]providertypes.ModelDescriptor, error) {
 	driver, err := r.driver(cfg.Driver)
 	if err != nil {
 		return nil, err
@@ -73,11 +73,11 @@ func (r *Registry) Supports(driverType string) bool {
 	return err == nil
 }
 
-// DriverCapabilities 返回指定 driver 的能力声明；driver 不存在时返回对应错误。
-func (r *Registry) DriverCapabilities(driverType string) (DriverCapabilities, error) {
+// DriverTransportCapabilities 返回指定 driver 的传输能力声明；driver 不存在时返回对应错误。
+func (r *Registry) DriverTransportCapabilities(driverType string) (DriverTransportCapabilities, error) {
 	driver, err := r.driver(driverType)
 	if err != nil {
-		return DriverCapabilities{}, err
+		return DriverTransportCapabilities{}, err
 	}
 	return driver.Capabilities, nil
 }
@@ -86,7 +86,7 @@ func (r *Registry) driver(driverType string) (DriverDefinition, error) {
 	if r == nil {
 		return DriverDefinition{}, ErrDriverNotFound
 	}
-	driver, ok := r.drivers[config.NormalizeKey(driverType)]
+	driver, ok := r.drivers[normalizeDriverKey(driverType)]
 	if !ok {
 		return DriverDefinition{}, fmt.Errorf("%w: %s", ErrDriverNotFound, strings.TrimSpace(driverType))
 	}
@@ -97,4 +97,9 @@ func (r *Registry) ensureDrivers() {
 	if r.drivers == nil {
 		r.drivers = map[string]DriverDefinition{}
 	}
+}
+
+// normalizeDriverKey 统一规范化 driver 名称，保证注册与查询稳定匹配。
+func normalizeDriverKey(driverType string) string {
+	return strings.ToLower(strings.TrimSpace(driverType))
 }

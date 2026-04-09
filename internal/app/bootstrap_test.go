@@ -78,6 +78,51 @@ func TestNewProgramNormalizesInvalidCurrentModelOnStartup(t *testing.T) {
 	}
 }
 
+func TestBuildRuntimeRejectsUnsupportedSelectedProviderDriverOnStartup(t *testing.T) {
+	disableBuiltinProviderAPIKeys(t)
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	configDir := filepath.Join(home, ".neocode")
+	providerDir := filepath.Join(configDir, "providers", "company-gateway")
+	if err := os.MkdirAll(providerDir, 0o755); err != nil {
+		t.Fatalf("mkdir provider dir: %v", err)
+	}
+
+	configPath := filepath.Join(configDir, "config.yaml")
+	rawConfig := []byte("selected_provider: company-gateway\ncurrent_model: claude-3-7-sonnet\nshell: powershell\n")
+	if err := os.WriteFile(configPath, rawConfig, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	rawProvider := []byte(
+		"name: company-gateway\n" +
+			"driver: anthropic\n" +
+			"api_key_env: COMPANY_GATEWAY_API_KEY\n" +
+			"anthropic:\n" +
+			"  base_url: https://api.anthropic.example/v1\n" +
+			"  api_version: 2023-06-01\n",
+	)
+	if err := os.WriteFile(filepath.Join(providerDir, "provider.yaml"), rawProvider, 0o644); err != nil {
+		t.Fatalf("write provider config: %v", err)
+	}
+
+	_, err := BuildRuntime(context.Background(), BootstrapOptions{})
+	if !errors.Is(err, config.ErrDriverUnsupported) {
+		t.Fatalf("expected ErrDriverUnsupported, got %v", err)
+	}
+
+	data, readErr := os.ReadFile(configPath)
+	if readErr != nil {
+		t.Fatalf("read config: %v", readErr)
+	}
+	if !strings.Contains(string(data), "selected_provider: company-gateway") {
+		t.Fatalf("expected selected_provider to remain unchanged, got:\n%s", string(data))
+	}
+}
+
 func TestBuildToolRegistryUsesWebFetchConfig(t *testing.T) {
 	t.Parallel()
 
