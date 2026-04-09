@@ -30,6 +30,7 @@ func OpenAIProvider() ProviderConfig {
 		BaseURL:   OpenAIDefaultBaseURL,
 		Model:     OpenAIDefaultModel,
 		APIKeyEnv: OpenAIDefaultAPIKeyEnv,
+		Source:    ProviderSourceBuiltin,
 	}
 }
 
@@ -41,6 +42,7 @@ func GeminiProvider() ProviderConfig {
 		BaseURL:   GeminiDefaultBaseURL,
 		Model:     GeminiDefaultModel,
 		APIKeyEnv: GeminiDefaultAPIKeyEnv,
+		Source:    ProviderSourceBuiltin,
 	}
 }
 
@@ -52,6 +54,7 @@ func OpenLLProvider() ProviderConfig {
 		BaseURL:   OpenLLDefaultBaseURL,
 		Model:     OpenLLDefaultModel,
 		APIKeyEnv: OpenLLDefaultAPIKeyEnv,
+		Source:    ProviderSourceBuiltin,
 	}
 }
 
@@ -63,6 +66,7 @@ func QiniuProvider() ProviderConfig {
 		BaseURL:   QiniuDefaultBaseURL,
 		Model:     QiniuDefaultModel,
 		APIKeyEnv: QiniuDefaultAPIKeyEnv,
+		Source:    ProviderSourceBuiltin,
 	}
 }
 

@@ -55,7 +55,7 @@ func (s *jsonStore) Load(ctx context.Context, identity config.ProviderIdentity) 
 		return ModelCatalog{}, err
 	}
 
-	normalized, err := config.NewProviderIdentity(identity.Driver, identity.BaseURL)
+	normalized, err := config.NormalizeProviderIdentity(identity)
 	if err != nil {
 		return ModelCatalog{}, fmt.Errorf("provider: normalize model catalog key: %w", err)
 	}
@@ -86,7 +86,7 @@ func (s *jsonStore) Save(ctx context.Context, catalog ModelCatalog) error {
 	}
 
 	normalized := normalizeCatalog(catalog)
-	identity, err := config.NewProviderIdentity(normalized.Identity.Driver, normalized.Identity.BaseURL)
+	identity, err := config.NormalizeProviderIdentity(normalized.Identity)
 	if err != nil {
 		return fmt.Errorf("provider: normalize model catalog key: %w", err)
 	}

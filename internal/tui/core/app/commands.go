@@ -145,9 +145,8 @@ func mapProviderItems(items []config.ProviderCatalogItem) []selectionItem {
 	mapped := make([]selectionItem, 0, len(items))
 	for _, item := range items {
 		mapped = append(mapped, selectionItem{
-			id:          item.ID,
-			name:        item.Name,
-			description: item.Description,
+			id:   item.ID,
+			name: item.Name,
 		})
 	}
 	return mapped

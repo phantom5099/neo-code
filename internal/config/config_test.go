@@ -23,6 +23,7 @@ func testDefaultProviderConfig() ProviderConfig {
 		BaseURL:   testBaseURL,
 		Model:     testModel,
 		APIKeyEnv: testAPIKeyEnv,
+		Source:    ProviderSourceBuiltin,
 	}
 }
 
@@ -575,6 +576,30 @@ func TestProviderConfigValidateFailures(t *testing.T) {
 			expectErr: "driver is empty",
 		},
 		{
+			name: "legacy openai driver rejected for custom provider",
+			provider: ProviderConfig{
+				Name:      "custom-openai",
+				Driver:    "openai",
+				BaseURL:   "https://example.com/v1",
+				Model:     "gpt-4.1",
+				APIKeyEnv: "CUSTOM_API_KEY",
+				Source:    ProviderSourceCustom,
+			},
+			expectErr: "no longer supported",
+		},
+		{
+			name: "custom provider must not define model",
+			provider: ProviderConfig{
+				Name:      "custom-openai",
+				Driver:    "openaicompat",
+				BaseURL:   "https://example.com/v1",
+				Model:     "gpt-4.1",
+				APIKeyEnv: "CUSTOM_API_KEY",
+				Source:    ProviderSourceCustom,
+			},
+			expectErr: "must not define model",
+		},
+		{
 			name: "missing base url",
 			provider: ProviderConfig{
 				Name:   testProviderName,
@@ -735,7 +760,7 @@ func TestLoaderUsesUpdatedBuiltinProviderWhenUserHasNoOverride(t *testing.T) {
 	}
 }
 
-func TestApplyDefaultsReplacesProvidersWithBuiltinSnapshot(t *testing.T) {
+func TestApplyDefaultsPreservesCustomProvidersAlongsideBuiltinSnapshot(t *testing.T) {
 	t.Parallel()
 
 	current := Config{
@@ -743,20 +768,24 @@ func TestApplyDefaultsReplacesProvidersWithBuiltinSnapshot(t *testing.T) {
 			Name:      "openai-alt",
 			Driver:    "custom",
 			BaseURL:   "https://example.com/v1",
-			Model:     "custom-model",
 			APIKeyEnv: "CUSTOM_API_KEY",
+			Source:    ProviderSourceCustom,
 		}},
 		SelectedProvider: "openai-alt",
-		CurrentModel:     "custom-model",
+		CurrentModel:     "server-discovered-model",
 	}
 
 	current.ApplyDefaultsFrom(*testDefaultConfig())
 
-	if len(current.Providers) != 1 {
-		t.Fatalf("expected builtin provider snapshot, got %+v", current.Providers)
+	if len(current.Providers) != 2 {
+		t.Fatalf("expected builtin and custom providers to coexist, got %+v", current.Providers)
 	}
-	if _, err := current.ProviderByName("openai-alt"); err == nil {
-		t.Fatalf("expected custom provider to be dropped, got %+v", current.Providers)
+	customProvider, err := current.ProviderByName("openai-alt")
+	if err != nil {
+		t.Fatalf("expected custom provider to be preserved, got %+v", current.Providers)
+	}
+	if customProvider.Source != ProviderSourceCustom {
+		t.Fatalf("expected custom provider source, got %+v", customProvider)
 	}
 	provider, err := current.ProviderByName(testProviderName)
 	if err != nil {
@@ -765,11 +794,45 @@ func TestApplyDefaultsReplacesProvidersWithBuiltinSnapshot(t *testing.T) {
 	if provider.BaseURL != testBaseURL || provider.Model != testModel || provider.APIKeyEnv != testAPIKeyEnv {
 		t.Fatalf("expected builtin provider metadata, got %+v", provider)
 	}
-	if current.SelectedProvider != testProviderName {
-		t.Fatalf("expected selected provider to reset to builtin %q, got %q", testProviderName, current.SelectedProvider)
+	if provider.Source != ProviderSourceBuiltin {
+		t.Fatalf("expected builtin provider source, got %+v", provider)
 	}
-	if current.CurrentModel != testModel {
-		t.Fatalf("expected current model to reset with selected builtin provider, got %q", current.CurrentModel)
+	if current.SelectedProvider != "openai-alt" {
+		t.Fatalf("expected selected provider to stay on custom provider, got %q", current.SelectedProvider)
+	}
+	if current.CurrentModel != "server-discovered-model" {
+		t.Fatalf("expected current model to preserve discovered model, got %q", current.CurrentModel)
+	}
+}
+
+func TestApplyDefaultsKeepsDuplicateCustomProviderNamesForValidation(t *testing.T) {
+	t.Parallel()
+
+	current := Config{
+		Providers: []ProviderConfig{
+			{
+				Name:      "company-gateway",
+				Driver:    "openaicompat",
+				BaseURL:   "https://example-a.com/v1",
+				APIKeyEnv: "COMPANY_GATEWAY_A_API_KEY",
+				Source:    ProviderSourceCustom,
+			},
+			{
+				Name:      "company-gateway",
+				Driver:    "openaicompat",
+				BaseURL:   "https://example-b.com/v1",
+				APIKeyEnv: "COMPANY_GATEWAY_B_API_KEY",
+				Source:    ProviderSourceCustom,
+			},
+		},
+		SelectedProvider: testProviderName,
+		CurrentModel:     testModel,
+	}
+
+	current.ApplyDefaultsFrom(*testDefaultConfig())
+
+	if err := current.Validate(); err == nil || !strings.Contains(err.Error(), "duplicate provider name") {
+		t.Fatalf("expected duplicate custom provider name error, got %v", err)
 	}
 }
 
@@ -1267,6 +1330,27 @@ func TestDescriptorFromRawModel(t *testing.T) {
 			},
 			wantOK: true,
 		},
+		{
+			name: "capabilities map becomes hints",
+			raw: map[string]any{
+				"id":                 "gpt-4o-mini",
+				"max_context_tokens": 64000,
+				"capabilities": map[string]any{
+					"tool_call":   true,
+					"image_input": false,
+				},
+			},
+			want: ModelDescriptor{
+				ID:            "gpt-4o-mini",
+				Name:          "gpt-4o-mini",
+				ContextWindow: 64000,
+				CapabilityHints: ModelCapabilityHints{
+					ToolCalling: ModelCapabilityStateSupported,
+					ImageInput:  ModelCapabilityStateUnsupported,
+				},
+			},
+			wantOK: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1294,6 +1378,9 @@ func TestDescriptorFromRawModel(t *testing.T) {
 			}
 			if got.MaxOutputTokens != tt.want.MaxOutputTokens {
 				t.Fatalf("expected MaxOutputTokens=%d, got %d", tt.want.MaxOutputTokens, got.MaxOutputTokens)
+			}
+			if got.CapabilityHints != tt.want.CapabilityHints {
+				t.Fatalf("expected CapabilityHints=%+v, got %+v", tt.want.CapabilityHints, got.CapabilityHints)
 			}
 		})
 	}
@@ -1375,41 +1462,46 @@ func TestFirstPositiveInt(t *testing.T) {
 	}
 }
 
-func TestBoolMapValue(t *testing.T) {
+func TestModelCapabilityHintsFromValue(t *testing.T) {
 	t.Parallel()
 
-	result := boolMapValue(map[string]any{"a": true, "b": "notbool", "c": false})
-	if len(result) != 2 {
-		t.Fatalf("expected 2 entries, got %d", len(result))
+	result := modelCapabilityHintsFromValue(map[string]any{
+		"tool_call":   true,
+		"image_input": false,
+		"ignored":     "notbool",
+	})
+	if result.ToolCalling != ModelCapabilityStateSupported {
+		t.Fatalf("expected tool calling supported, got %+v", result)
 	}
-	if !result["a"] {
-		t.Fatalf("expected a=true")
+	if result.ImageInput != ModelCapabilityStateUnsupported {
+		t.Fatalf("expected image input unsupported, got %+v", result)
 	}
-	if result["c"] {
-		t.Fatalf("expected c=false")
-	}
-
-	if result := boolMapValue("not a map"); result != nil {
-		t.Fatalf("expected nil for non-map, got %v", result)
+	if result := modelCapabilityHintsFromValue("not a map"); result != (ModelCapabilityHints{}) {
+		t.Fatalf("expected empty hints for non-map, got %+v", result)
 	}
 }
 
-func TestMergeStringBoolMaps(t *testing.T) {
+func TestMergeModelCapabilityHints(t *testing.T) {
 	t.Parallel()
 
-	primary := map[string]bool{"a": true}
-	secondary := map[string]bool{"b": false, "a": false}
-
-	result := mergeStringBoolMaps(primary, secondary)
-	if !result["a"] {
-		t.Fatalf("expected a=true (primary should win)")
+	primary := ModelCapabilityHints{
+		ToolCalling: ModelCapabilityStateSupported,
 	}
-	if result["b"] {
-		t.Fatalf("expected b=false")
+	secondary := ModelCapabilityHints{
+		ToolCalling:   ModelCapabilityStateUnsupported,
+		ImageInput:    ModelCapabilityStateUnsupported,
+		ReasoningMode: ModelReasoningModeConfigurable,
 	}
 
-	if result := mergeStringBoolMaps(nil, nil); result != nil {
-		t.Fatalf("expected nil for both empty")
+	result := mergeModelCapabilityHints(primary, secondary)
+	if result.ToolCalling != ModelCapabilityStateSupported {
+		t.Fatalf("expected primary tool calling to win, got %+v", result)
+	}
+	if result.ImageInput != ModelCapabilityStateUnsupported {
+		t.Fatalf("expected image input to be backfilled, got %+v", result)
+	}
+	if result.ReasoningMode != ModelReasoningModeConfigurable {
+		t.Fatalf("expected reasoning mode to be backfilled, got %+v", result)
 	}
 }
 

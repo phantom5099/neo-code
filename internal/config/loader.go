@@ -107,6 +107,11 @@ func (l *Loader) Load(ctx context.Context) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config: parse config file: %w", err)
 	}
+	customProviders, err := loadCustomProviders(l.baseDir)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Providers = customProviders
 	cfg.ApplyDefaultsFrom(l.defaults)
 	if err := cfg.Validate(); err != nil {
 		return nil, err

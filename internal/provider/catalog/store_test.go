@@ -33,8 +33,8 @@ func TestJSONStoreRoundTrip(t *testing.T) {
 				Description:     "Fast flagship",
 				ContextWindow:   128000,
 				MaxOutputTokens: 16384,
-				Capabilities: map[string]bool{
-					"tool_call": true,
+				CapabilityHints: config.ModelCapabilityHints{
+					ToolCalling: config.ModelCapabilityStateSupported,
 				},
 			},
 		},
@@ -63,8 +63,63 @@ func TestJSONStoreRoundTrip(t *testing.T) {
 	if got.Models[0].ID != expected.Models[0].ID || got.Models[0].Name != expected.Models[0].Name {
 		t.Fatalf("expected model %+v, got %+v", expected.Models[0], got.Models[0])
 	}
-	if !got.Models[0].Capabilities["tool_call"] {
-		t.Fatalf("expected capabilities to round-trip, got %+v", got.Models[0].Capabilities)
+	if got.Models[0].CapabilityHints.ToolCalling != config.ModelCapabilityStateSupported {
+		t.Fatalf("expected capability hints to round-trip, got %+v", got.Models[0].CapabilityHints)
+	}
+}
+
+func TestJSONStoreSeparatesDriverSpecificIdentityKeys(t *testing.T) {
+	t.Parallel()
+
+	store := newJSONStore(t.TempDir())
+	responsesIdentity := config.ProviderIdentity{
+		Driver:   "openaicompat",
+		BaseURL:  "https://API.EXAMPLE.COM/v1/",
+		APIStyle: " Responses ",
+	}
+	chatIdentity := config.ProviderIdentity{
+		Driver:   "openaicompat",
+		BaseURL:  "https://api.example.com/v1",
+		APIStyle: "chat_completions",
+	}
+
+	if err := store.Save(context.Background(), ModelCatalog{
+		Identity: responsesIdentity,
+		Models: []config.ModelDescriptor{
+			{ID: "responses-model", Name: "Responses Model"},
+		},
+	}); err != nil {
+		t.Fatalf("save responses catalog: %v", err)
+	}
+	if err := store.Save(context.Background(), ModelCatalog{
+		Identity: chatIdentity,
+		Models: []config.ModelDescriptor{
+			{ID: "chat-model", Name: "Chat Model"},
+		},
+	}); err != nil {
+		t.Fatalf("save chat catalog: %v", err)
+	}
+
+	responsesCatalog, err := store.Load(context.Background(), responsesIdentity)
+	if err != nil {
+		t.Fatalf("load responses catalog: %v", err)
+	}
+	if len(responsesCatalog.Models) != 1 || responsesCatalog.Models[0].ID != "responses-model" {
+		t.Fatalf("expected responses catalog to stay isolated, got %+v", responsesCatalog.Models)
+	}
+	if responsesCatalog.Identity.APIStyle != "responses" {
+		t.Fatalf("expected normalized api_style=responses, got %+v", responsesCatalog.Identity)
+	}
+
+	chatCatalog, err := store.Load(context.Background(), chatIdentity)
+	if err != nil {
+		t.Fatalf("load chat catalog: %v", err)
+	}
+	if len(chatCatalog.Models) != 1 || chatCatalog.Models[0].ID != "chat-model" {
+		t.Fatalf("expected chat catalog to stay isolated, got %+v", chatCatalog.Models)
+	}
+	if chatCatalog.Identity.APIStyle != "chat_completions" {
+		t.Fatalf("expected normalized api_style=chat_completions, got %+v", chatCatalog.Identity)
 	}
 }
 

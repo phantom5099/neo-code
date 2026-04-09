@@ -71,7 +71,7 @@ func (s *Service) listProviderModels(
 		return nil, err
 	}
 
-	return s.modelsForProvider(ctx, providerCfg, options), nil
+	return s.modelsForProvider(ctx, providerCfg, options)
 }
 
 func (s *Service) validate() error {
@@ -96,25 +96,41 @@ type catalogSnapshot struct {
 	identity config.ProviderIdentity
 }
 
-func (s *Service) modelsForProvider(ctx context.Context, providerCfg config.ProviderConfig, options queryOptions) []config.ModelDescriptor {
-	defaultModels := config.DescriptorsFromIDs([]string{providerCfg.Model})
+func (s *Service) modelsForProvider(ctx context.Context, providerCfg config.ProviderConfig, options queryOptions) ([]config.ModelDescriptor, error) {
+	configuredModels := config.MergeModelDescriptors(providerCfg.Models)
+	defaultModels := providerDefaultModels(providerCfg)
 	snapshot := s.catalogSnapshot(ctx, providerCfg)
 
 	models := snapshot.models
-	modelsOK := snapshot.ok
-	if !modelsOK && options.allowSyncRefresh {
-		discovered, ok := s.discoverAndPersist(ctx, providerCfg)
-		if ok {
+	catalogOK := snapshot.ok
+	performedSyncRefresh := false
+	if !catalogOK && options.allowSyncRefresh {
+		discovered, err := s.discoverAndPersist(ctx, providerCfg)
+		if err != nil {
+			if len(defaultModels) == 0 {
+				return nil, err
+			}
+		} else {
 			models = discovered
-			modelsOK = true
+			catalogOK = true
+			performedSyncRefresh = true
 		}
 	}
 
-	if options.queueRefresh && (!modelsOK || snapshot.expired) {
+	if options.queueRefresh && snapshot.expired {
+		s.queueRefresh(providerCfg, snapshot.identity)
+	}
+	if options.queueRefresh && !snapshot.ok && !performedSyncRefresh {
 		s.queueRefresh(providerCfg, snapshot.identity)
 	}
 
-	return config.MergeModelDescriptors(models, defaultModels)
+	if !catalogOK {
+		if len(defaultModels) == 0 {
+			return nil, nil
+		}
+		return config.MergeModelDescriptors(configuredModels, defaultModels), nil
+	}
+	return config.MergeModelDescriptors(configuredModels, models, defaultModels), nil
 }
 
 func (s *Service) catalogSnapshot(ctx context.Context, providerCfg config.ProviderConfig) catalogSnapshot {
@@ -147,29 +163,29 @@ func (s *Service) loadCatalog(ctx context.Context, providerCfg config.ProviderCo
 	return s.store.Load(ctx, identity)
 }
 
-func (s *Service) discoverAndPersist(ctx context.Context, providerCfg config.ProviderConfig) ([]config.ModelDescriptor, bool) {
+func (s *Service) discoverAndPersist(ctx context.Context, providerCfg config.ProviderConfig) ([]config.ModelDescriptor, error) {
 	if !s.registry.Supports(providerCfg.Driver) {
-		return nil, false
+		return nil, nil
 	}
 
 	resolved, err := providerCfg.Resolve()
 	if err != nil {
-		return nil, false
+		return nil, err
 	}
 
 	discovered, err := s.registry.DiscoverModels(ctx, resolved)
 	if err != nil {
-		return nil, false
+		return nil, err
 	}
 
 	discovered = config.MergeModelDescriptors(discovered)
 	if s.store == nil {
-		return discovered, true
+		return discovered, nil
 	}
 
 	identity, err := providerCfg.Identity()
 	if err != nil {
-		return discovered, true
+		return discovered, nil
 	}
 
 	now := s.now()
@@ -180,7 +196,7 @@ func (s *Service) discoverAndPersist(ctx context.Context, providerCfg config.Pro
 		ExpiresAt:     now.Add(s.catalogTTL),
 		Models:        discovered,
 	})
-	return discovered, true
+	return discovered, nil
 }
 
 func (s *Service) queueRefresh(providerCfg config.ProviderConfig, identity config.ProviderIdentity) {
@@ -211,4 +227,12 @@ func (s *Service) queueRefresh(providerCfg config.ProviderConfig, identity confi
 		defer cancel()
 		_, _ = s.discoverAndPersist(ctx, providerCfg)
 	}()
+}
+
+// providerDefaultModels 仅为内建 provider 暴露代码定义的默认模型，自定义 provider 必须完全依赖远程发现结果。
+func providerDefaultModels(providerCfg config.ProviderConfig) []config.ModelDescriptor {
+	if providerCfg.Source == config.ProviderSourceCustom {
+		return nil
+	}
+	return config.DescriptorsFromIDs([]string{providerCfg.Model})
 }

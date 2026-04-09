@@ -3,6 +3,7 @@ package catalog
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -38,6 +39,65 @@ func TestListProviderModelsFallsBackToDefaultModelWithoutDiscovery(t *testing.T)
 	}
 	if len(models) != 1 || models[0].ID != config.OpenAIDefaultModel {
 		t.Fatalf("expected default model fallback, got %+v", models)
+	}
+}
+
+func TestListProviderModelsCustomProviderDoesNotFallbackWithoutDiscovery(t *testing.T) {
+	t.Parallel()
+
+	service := NewService("", provider.NewRegistry(), newMemoryStore())
+	models, err := service.ListProviderModels(context.Background(), customGatewayProvider())
+	if err != nil {
+		t.Fatalf("ListProviderModels() error = %v", err)
+	}
+	if len(models) != 0 {
+		t.Fatalf("expected no models for custom provider without cache or discovery, got %+v", models)
+	}
+}
+
+func TestListProviderModelsMergesConfiguredMetadataAfterDiscovery(t *testing.T) {
+	t.Setenv(testAPIKeyEnv, "test-key")
+
+	registry := newRegistry(t, config.OpenAIName, func(ctx context.Context, cfg config.ResolvedProviderConfig) ([]config.ModelDescriptor, error) {
+		return []config.ModelDescriptor{{
+			ID:              "deepseek-coder",
+			Name:            "Server DeepSeek",
+			ContextWindow:   32768,
+			MaxOutputTokens: 4096,
+		}}, nil
+	})
+
+	service := NewService("", registry, newMemoryStore())
+	providerCfg := config.OpenAIProvider()
+	providerCfg.Models = []config.ModelDescriptor{{
+		ID:              "deepseek-coder",
+		Name:            "DeepSeek Coder",
+		ContextWindow:   131072,
+		MaxOutputTokens: 8192,
+		CapabilityHints: config.ModelCapabilityHints{
+			ToolCalling: config.ModelCapabilityStateSupported,
+		},
+	}}
+	providerCfg.Model = "deepseek-coder"
+
+	models, err := service.ListProviderModels(context.Background(), providerCfg)
+	if err != nil {
+		t.Fatalf("ListProviderModels() error = %v", err)
+	}
+	if len(models) != 1 {
+		t.Fatalf("expected merged configured/discovered result, got %+v", models)
+	}
+	if models[0].Name != "DeepSeek Coder" {
+		t.Fatalf("expected configured model name to win, got %+v", models[0])
+	}
+	if models[0].ContextWindow != 131072 {
+		t.Fatalf("expected configured context window to win, got %+v", models[0])
+	}
+	if models[0].MaxOutputTokens != 8192 {
+		t.Fatalf("expected configured max output tokens to win, got %+v", models[0])
+	}
+	if models[0].CapabilityHints.ToolCalling != config.ModelCapabilityStateSupported {
+		t.Fatalf("expected configured capability hints to win, got %+v", models[0].CapabilityHints)
 	}
 }
 
@@ -90,6 +150,19 @@ func TestListProviderModelsSnapshotReturnsDefaultAndRefreshesInBackgroundOnMiss(
 		t.Fatalf("Load() refreshed catalog error = %v", err)
 	}
 	t.Fatalf("expected refreshed catalog to contain gpt-4o, got %+v", modelCatalog.Models)
+}
+
+func TestListProviderModelsReturnsDiscoveryErrorOnCacheMiss(t *testing.T) {
+	t.Setenv(testAPIKeyEnv, "")
+
+	service := NewService("", newRegistry(t, "openaicompat", func(ctx context.Context, cfg config.ResolvedProviderConfig) ([]config.ModelDescriptor, error) {
+		return nil, nil
+	}), newMemoryStore())
+
+	_, err := service.ListProviderModels(context.Background(), customGatewayProvider())
+	if err == nil || !strings.Contains(err.Error(), "OPENAI_API_KEY") {
+		t.Fatalf("expected discovery-time api key error, got %v", err)
+	}
 }
 
 func TestListProviderModelsDiscoversAndCachesOnMiss(t *testing.T) {
@@ -288,8 +361,9 @@ func TestListProviderModelsCachedUsesFreshCatalogWithoutDiscovery(t *testing.T) 
 func TestDiscoverAndPersistFailurePaths(t *testing.T) {
 	t.Run("unsupported driver", func(t *testing.T) {
 		service := NewService("", provider.NewRegistry(), newMemoryStore())
-		if discovered, ok := service.discoverAndPersist(context.Background(), config.OpenAIProvider()); ok || discovered != nil {
-			t.Fatalf("expected unsupported driver to skip discovery, got ok=%v models=%+v", ok, discovered)
+		discovered, err := service.discoverAndPersist(context.Background(), config.OpenAIProvider())
+		if err != nil || discovered != nil {
+			t.Fatalf("expected unsupported driver to skip discovery, got err=%v models=%+v", err, discovered)
 		}
 	})
 
@@ -306,8 +380,9 @@ func TestDiscoverAndPersistFailurePaths(t *testing.T) {
 			APIKeyEnv: "",
 		}
 
-		if discovered, ok := service.discoverAndPersist(context.Background(), providerCfg); ok || discovered != nil {
-			t.Fatalf("expected resolve failure to skip discovery, got ok=%v models=%+v", ok, discovered)
+		discovered, err := service.discoverAndPersist(context.Background(), providerCfg)
+		if err == nil || discovered != nil {
+			t.Fatalf("expected resolve failure to surface as error, got err=%v models=%+v", err, discovered)
 		}
 	})
 
@@ -317,8 +392,9 @@ func TestDiscoverAndPersistFailurePaths(t *testing.T) {
 			return nil, errors.New("discover failed")
 		}), newMemoryStore())
 
-		if discovered, ok := service.discoverAndPersist(context.Background(), config.OpenAIProvider()); ok || discovered != nil {
-			t.Fatalf("expected discovery error to skip persistence, got ok=%v models=%+v", ok, discovered)
+		discovered, err := service.discoverAndPersist(context.Background(), config.OpenAIProvider())
+		if err == nil || discovered != nil {
+			t.Fatalf("expected discovery error to skip persistence, got err=%v models=%+v", err, discovered)
 		}
 	})
 
@@ -328,9 +404,9 @@ func TestDiscoverAndPersistFailurePaths(t *testing.T) {
 			return []config.ModelDescriptor{{ID: "gpt-4.1", Name: "GPT-4.1"}}, nil
 		}), nil)
 
-		discovered, ok := service.discoverAndPersist(context.Background(), config.OpenAIProvider())
-		if !ok {
-			t.Fatal("expected discovery without store to succeed")
+		discovered, err := service.discoverAndPersist(context.Background(), config.OpenAIProvider())
+		if err != nil {
+			t.Fatalf("expected discovery without store to succeed, got %v", err)
 		}
 		if !containsModelDescriptorID(discovered, "gpt-4.1") {
 			t.Fatalf("expected discovered model to be returned, got %+v", discovered)
@@ -403,6 +479,16 @@ func newRegistry(t *testing.T, name string, discover provider.DiscoveryFunc) *pr
 		t.Fatalf("register driver: %v", err)
 	}
 	return registry
+}
+
+func customGatewayProvider() config.ProviderConfig {
+	return config.ProviderConfig{
+		Name:      "company-gateway",
+		Driver:    "openaicompat",
+		BaseURL:   "https://llm.example.com/v1",
+		APIKeyEnv: testAPIKeyEnv,
+		Source:    config.ProviderSourceCustom,
+	}
 }
 
 func containsModelDescriptorID(models []config.ModelDescriptor, modelID string) bool {

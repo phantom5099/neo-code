@@ -69,6 +69,44 @@ go run ./cmd/neocode
 - `/provider` — 切换内建模型提供商
 - `/model` — 切换模型
 
+## Provider 配置
+
+NeoCode 当前将运行时全局配置与自定义 provider 定义拆开管理：
+
+- `~/.neocode/config.yaml` 只保存 `selected_provider`、`current_model`、`shell`、工具与上下文等全局配置
+- 内建 provider 继续由代码提供，不写入 `config.yaml`
+- 自定义 provider 统一放在 `~/.neocode/providers/<provider-name>/` 目录中
+
+目录结构示例：
+
+```text
+~/.neocode/
+  config.yaml
+  providers/
+    company-gateway/
+      provider.yaml
+```
+
+`provider.yaml` 用来描述连接与驱动信息；custom provider 的模型列表只允许来自远程发现，不会读取目录中的 `models.yaml`。例如：
+
+```yaml
+# ~/.neocode/providers/company-gateway/provider.yaml
+name: company-gateway
+driver: openaicompat
+api_key_env: COMPANY_GATEWAY_API_KEY
+
+openai_compatible:
+  base_url: https://llm.example.com/v1
+  api_style: chat_completions
+```
+
+说明：
+
+- 自定义 provider 名称不能与内建 provider 或其他自定义 provider 重复
+- 自定义 provider 的旧 `driver: openai` 命名已不再接受
+- custom provider 不允许声明 `default_model`
+- custom provider 的模型列表仅来自远程发现；目录中的 `models.yaml` 不会被读取
+
 ## 架构概览
 
 ```
@@ -191,7 +229,7 @@ MIT
 
 ## Manual Compact
 
-NeoCode 支持通过 `/compact` 手动压缩当前会话上下文。配置项见 `docs/guides/configuration.md`，流程和摘要约定见 `docs/context-compact.md`。
+NeoCode 支持通过 `/compact` 手动压缩当前会话上下文。当前相关迁移背景与摘要生成设计可参考 `docs/phase2-runtime-migration.md`。
 
 ## CLI Workdir
 
