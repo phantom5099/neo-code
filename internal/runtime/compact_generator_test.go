@@ -164,6 +164,39 @@ func TestCompactSummaryGeneratorRejectsMalformedStreamEvent(t *testing.T) {
 	}
 }
 
+func TestCompactSummaryGeneratorRejectsCompletionWithoutMessageDone(t *testing.T) {
+	t.Parallel()
+
+	manager := newRuntimeConfigManager(t)
+	resolvedProvider, err := resolvedProviderForTests(manager.Get(), config.OpenAIName)
+	if err != nil {
+		t.Fatalf("resolve provider: %v", err)
+	}
+
+	scripted := &scriptedProvider{
+		chatFn: func(ctx context.Context, req providertypes.GenerateRequest, events chan<- providertypes.StreamEvent) error {
+			select {
+			case events <- providertypes.NewTextDeltaStreamEvent("[compact_summary]\npartial"):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			return nil
+		},
+	}
+	generator := newCompactSummaryGenerator(&scriptedProviderFactory{provider: scripted}, resolvedProvider.ToRuntimeConfig(), "session-model")
+
+	_, err = generator.Generate(context.Background(), contextcompact.SummaryInput{
+		Mode:   contextcompact.ModeManual,
+		Config: manager.Get().Context.Compact,
+	})
+	if !errors.Is(err, provider.ErrStreamInterrupted) {
+		t.Fatalf("expected ErrStreamInterrupted, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "without message_done") {
+		t.Fatalf("expected missing message_done error, got %v", err)
+	}
+}
+
 func TestCompactSummaryGeneratorMalformedStreamEventDoesNotDeadlock(t *testing.T) {
 	t.Parallel()
 

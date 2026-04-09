@@ -20,6 +20,9 @@ func TestNewRegistry(t *testing.T) {
 	if !registry.Supports(openai.DriverName) {
 		t.Fatalf("expected registry to include %q driver", openai.DriverName)
 	}
+	if !registry.Supports(openai.CompatibleDriverName) {
+		t.Fatalf("expected registry to include %q driver", openai.CompatibleDriverName)
+	}
 }
 
 func TestRegister(t *testing.T) {
@@ -45,6 +48,9 @@ func TestRegister(t *testing.T) {
 		}
 		if !registry.Supports(openai.DriverName) {
 			t.Fatalf("expected registry to include %q driver", openai.DriverName)
+		}
+		if !registry.Supports(openai.CompatibleDriverName) {
+			t.Fatalf("expected registry to include %q driver", openai.CompatibleDriverName)
 		}
 	})
 }

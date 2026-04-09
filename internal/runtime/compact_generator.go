@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	agentcontext "neo-code/internal/context"
@@ -103,6 +104,9 @@ func (g *compactSummaryGenerator) Generate(ctx context.Context, input contextcom
 	}
 	if streamErr != nil {
 		return "", streamErr
+	}
+	if !acc.messageDone {
+		return "", fmt.Errorf("%w: provider stream ended without message_done event", provider.ErrStreamInterrupted)
 	}
 
 	message, err := acc.buildMessage()

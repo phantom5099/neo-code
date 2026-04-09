@@ -836,6 +836,39 @@ func TestApplyDefaultsKeepsDuplicateCustomProviderNamesForValidation(t *testing.
 	}
 }
 
+func TestApplyDefaultsKeepsIdenticalDuplicateCustomProviderNamesForValidation(t *testing.T) {
+	t.Parallel()
+
+	current := Config{
+		Providers: []ProviderConfig{
+			{
+				Name:      "company-gateway",
+				Driver:    "openaicompat",
+				BaseURL:   "https://example.com/v1",
+				APIKeyEnv: "COMPANY_GATEWAY_API_KEY",
+				APIStyle:  "responses",
+				Source:    ProviderSourceCustom,
+			},
+			{
+				Name:      "company-gateway",
+				Driver:    "openaicompat",
+				BaseURL:   "https://example.com/v1",
+				APIKeyEnv: "COMPANY_GATEWAY_API_KEY",
+				APIStyle:  "responses",
+				Source:    ProviderSourceCustom,
+			},
+		},
+		SelectedProvider: testProviderName,
+		CurrentModel:     testModel,
+	}
+
+	current.ApplyDefaultsFrom(*testDefaultConfig())
+
+	if err := current.Validate(); err == nil || !strings.Contains(err.Error(), "duplicate provider name") {
+		t.Fatalf("expected duplicate custom provider name error, got %v", err)
+	}
+}
+
 func TestApplyDefaultsPreservesDynamicCurrentModel(t *testing.T) {
 	t.Parallel()
 

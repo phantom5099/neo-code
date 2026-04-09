@@ -3110,7 +3110,7 @@ func TestCallProviderWithRetryReturnsCombinedForwardError(t *testing.T) {
 	}
 }
 
-func TestServiceRunRejectsDriverWithoutToolTransport(t *testing.T) {
+func TestServiceRunRejectsDriverWithoutToolTransportWhenRequestExposesTools(t *testing.T) {
 	t.Parallel()
 
 	manager := newRuntimeConfigManager(t)
@@ -3145,6 +3145,52 @@ func TestServiceRunRejectsDriverWithoutToolTransport(t *testing.T) {
 	if scripted.callCount != 0 {
 		t.Fatalf("expected provider Generate() to be skipped, got %d", scripted.callCount)
 	}
+}
+
+func TestServiceRunAllowsDriverWithoutToolTransportWhenRequestHasNoTools(t *testing.T) {
+	t.Parallel()
+
+	manager := newRuntimeConfigManager(t)
+	store := newMemoryStore()
+	toolManager := &stubToolManager{}
+
+	scripted := &scriptedProvider{
+		streams: [][]providertypes.StreamEvent{
+			{providertypes.NewTextDeltaStreamEvent("plain answer")},
+		},
+	}
+	factory := &scriptedProviderFactory{
+		provider: scripted,
+		capabilities: provider.DriverTransportCapabilities{
+			Streaming:     true,
+			ToolTransport: false,
+		},
+	}
+
+	service := NewWithFactory(manager, toolManager, store, factory, &stubContextBuilder{})
+	err := service.Run(context.Background(), UserInput{
+		RunID:   "run-driver-no-tool-transport-no-tools",
+		Content: "hello",
+	})
+	if err != nil {
+		t.Fatalf("expected no-tools request to succeed, got %v", err)
+	}
+	if factory.calls != 1 {
+		t.Fatalf("expected provider build once, got %d", factory.calls)
+	}
+	if scripted.callCount != 1 {
+		t.Fatalf("expected provider Generate() once, got %d", scripted.callCount)
+	}
+	if len(scripted.requests) != 1 {
+		t.Fatalf("expected one provider request, got %d", len(scripted.requests))
+	}
+	if len(scripted.requests[0].Tools) != 0 {
+		t.Fatalf("expected provider request without tools, got %+v", scripted.requests[0].Tools)
+	}
+
+	events := collectRuntimeEvents(service.Events())
+	assertEventSequence(t, events, []EventType{EventUserMessage, EventAgentChunk, EventAgentDone})
+	assertNoEventType(t, events, EventError)
 }
 
 func TestServiceRunPropagatesDriverNotFoundFromCapabilities(t *testing.T) {

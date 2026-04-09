@@ -31,6 +31,24 @@ func TestDriver(t *testing.T) {
 	}
 }
 
+func TestCompatibleDriver(t *testing.T) {
+	t.Parallel()
+
+	driver := CompatibleDriver()
+	if driver.Name != CompatibleDriverName {
+		t.Fatalf("expected driver name %q, got %q", CompatibleDriverName, driver.Name)
+	}
+	if driver.Build == nil {
+		t.Fatal("expected Build function to be non-nil")
+	}
+	if driver.Discover == nil {
+		t.Fatal("expected Discover function to be non-nil")
+	}
+	if !driver.Capabilities.Streaming || !driver.Capabilities.ToolTransport || !driver.Capabilities.ModelDiscovery {
+		t.Fatalf("expected compatible driver capabilities to mirror openai driver, got %+v", driver.Capabilities)
+	}
+}
+
 func TestWithTransport(t *testing.T) {
 	t.Parallel()
 

@@ -726,7 +726,8 @@ func (s *Service) callProviderWithRetry(
 			return nil, err
 		}
 		runtimeCfg := resolvedProvider.ToRuntimeConfig()
-		if err := ensureDriverTransportCapabilities(s.providerFactory, runtimeCfg, true, true); err != nil {
+		requireToolTransport := len(req.Tools) > 0
+		if err := ensureDriverTransportCapabilities(s.providerFactory, runtimeCfg, true, requireToolTransport); err != nil {
 			return nil, err
 		}
 

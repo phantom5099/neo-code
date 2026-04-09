@@ -19,5 +19,8 @@ func register(registry *provider.Registry) error {
 	if registry == nil {
 		return errors.New("builtin provider registry is nil")
 	}
-	return registry.Register(openai.Driver())
+	if err := registry.Register(openai.Driver()); err != nil {
+		return err
+	}
+	return registry.Register(openai.CompatibleDriver())
 }

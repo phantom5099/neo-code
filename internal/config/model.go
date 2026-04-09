@@ -819,45 +819,7 @@ func shouldMergeProviderDefinition(existing ProviderConfig, candidate ProviderCo
 	if candidate.Source == ProviderSourceBuiltin {
 		return false
 	}
-	return sameProviderDefinition(existing, candidate)
-}
-
-// sameProviderDefinition 判断两个 provider 是否是同一条定义的重复快照。
-func sameProviderDefinition(left ProviderConfig, right ProviderConfig) bool {
-	if NormalizeProviderName(left.Name) != NormalizeProviderName(right.Name) {
-		return false
-	}
-	if NormalizeProviderDriver(left.Driver) != NormalizeProviderDriver(right.Driver) {
-		return false
-	}
-	if normalizedBaseURLOrRaw(left.BaseURL) != normalizedBaseURLOrRaw(right.BaseURL) {
-		return false
-	}
-	if NormalizeKey(left.Model) != NormalizeKey(right.Model) {
-		return false
-	}
-	if NormalizeKey(left.APIKeyEnv) != NormalizeKey(right.APIKeyEnv) {
-		return false
-	}
-	if NormalizeProviderAPIStyle(left.APIStyle) != NormalizeProviderAPIStyle(right.APIStyle) {
-		return false
-	}
-	if NormalizeProviderDeploymentMode(left.DeploymentMode) != NormalizeProviderDeploymentMode(right.DeploymentMode) {
-		return false
-	}
-	if NormalizeProviderAPIVersion(left.APIVersion) != NormalizeProviderAPIVersion(right.APIVersion) {
-		return false
-	}
-	return providertypes.EqualModelDescriptors(left.Models, right.Models)
-}
-
-// normalizedBaseURLOrRaw 优先返回规范化 base_url，解析失败时退回原始值以保持比较稳定。
-func normalizedBaseURLOrRaw(baseURL string) string {
-	normalized, err := NormalizeProviderBaseURL(baseURL)
-	if err == nil {
-		return normalized
-	}
-	return strings.TrimSpace(baseURL)
+	return false
 }
 
 func defaultSelectedProviderName(providers []ProviderConfig, fallback string) string {
