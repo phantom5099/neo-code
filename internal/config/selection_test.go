@@ -170,6 +170,31 @@ func TestSelectionServiceSelectProviderAndSetCurrentModel(t *testing.T) {
 	}
 }
 
+func TestSelectionServiceSetCurrentModelRejectsUnsupportedDriver(t *testing.T) {
+	t.Parallel()
+
+	defaults := DefaultConfig()
+	defaults.Providers = []ProviderConfig{{
+		Name:      OpenAIName,
+		Driver:    "missing-driver",
+		BaseURL:   OpenAIDefaultBaseURL,
+		Model:     OpenAIDefaultModel,
+		APIKeyEnv: OpenAIDefaultAPIKeyEnv,
+		Source:    ProviderSourceBuiltin,
+	}}
+	defaults.SelectedProvider = OpenAIName
+	defaults.CurrentModel = OpenAIDefaultModel
+
+	manager := newSelectionTestManager(t, defaults)
+	supporters := &selectiveDriverSupporter{supported: map[string]bool{"openaicompat": true}}
+	service := NewSelectionService(manager, supporters, newCatalogStub())
+
+	_, err := service.SetCurrentModel(context.Background(), OpenAIDefaultModel)
+	if !errors.Is(err, ErrDriverUnsupported) {
+		t.Fatalf("expected ErrDriverUnsupported, got %v", err)
+	}
+}
+
 func TestSelectionServiceSelectProviderRequiresDiscoveryOnCacheMiss(t *testing.T) {
 	t.Parallel()
 

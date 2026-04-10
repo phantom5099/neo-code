@@ -241,6 +241,46 @@ shell: powershell
 	}
 }
 
+func TestLoaderAllowsSelectedCustomProviderWithEmptyCurrentModel(t *testing.T) {
+	t.Parallel()
+
+	loader := NewLoader(t.TempDir(), testDefaultConfig())
+	customDir := filepath.Join(loader.BaseDir(), providersDirName, "company-gateway")
+	if err := os.MkdirAll(customDir, 0o755); err != nil {
+		t.Fatalf("mkdir custom provider dir: %v", err)
+	}
+
+	rawConfig := `
+selected_provider: company-gateway
+shell: powershell
+`
+	if err := os.WriteFile(loader.ConfigPath(), []byte(strings.TrimSpace(rawConfig)+"\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	providerYAML := `
+name: company-gateway
+driver: openaicompat
+api_key_env: COMPANY_GATEWAY_API_KEY
+openai_compatible:
+  base_url: https://llm.example.com/v1
+`
+	if err := os.WriteFile(filepath.Join(customDir, customProviderConfigName), []byte(strings.TrimSpace(providerYAML)+"\n"), 0o644); err != nil {
+		t.Fatalf("write provider.yaml: %v", err)
+	}
+
+	cfg, err := loader.Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.SelectedProvider != "company-gateway" {
+		t.Fatalf("expected selected provider %q, got %q", "company-gateway", cfg.SelectedProvider)
+	}
+	if cfg.CurrentModel != "" {
+		t.Fatalf("expected empty current model before discovery, got %q", cfg.CurrentModel)
+	}
+}
+
 func TestLoaderLoadsCustomProvidersFromProvidersDirectory(t *testing.T) {
 	t.Parallel()
 

@@ -528,6 +528,33 @@ func TestConfigValidateFailures(t *testing.T) {
 	}
 }
 
+func TestConfigValidateAllowsEmptyCurrentModelForSelectedCustomProvider(t *testing.T) {
+	t.Parallel()
+
+	workdir := filepath.Clean(t.TempDir())
+	cfg := Config{
+		Providers: []ProviderConfig{
+			testDefaultProviderConfig(),
+			{
+				Name:      "company-gateway",
+				Driver:    "openaicompat",
+				BaseURL:   "https://llm.example.com/v1",
+				APIKeyEnv: "COMPANY_GATEWAY_API_KEY",
+				Source:    ProviderSourceCustom,
+			},
+		},
+		SelectedProvider: "company-gateway",
+		CurrentModel:     "",
+		Workdir:          workdir,
+		Shell:            "powershell",
+	}
+	cfg.ApplyDefaultsFrom(*testDefaultConfig())
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected selected custom provider with empty current_model to validate, got %v", err)
+	}
+}
+
 func TestMCPConfigApplyDefaultsAndClone(t *testing.T) {
 	t.Parallel()
 

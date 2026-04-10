@@ -211,6 +211,9 @@ func (s *SelectionService) SetCurrentModel(ctx context.Context, modelID string) 
 	if err != nil {
 		return ProviderSelection{}, err
 	}
+	if !s.supporters.Supports(selected.Driver) {
+		return ProviderSelection{}, ErrDriverUnsupported
+	}
 
 	input, err := catalogInputFromProvider(selected)
 	if err != nil {

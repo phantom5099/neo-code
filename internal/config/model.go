@@ -247,7 +247,7 @@ func (c *Config) Validate() error {
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(c.CurrentModel) == "" {
+	if strings.TrimSpace(c.CurrentModel) == "" && selected.Source != ProviderSourceCustom {
 		return errors.New("config: current_model is empty")
 	}
 	if strings.TrimSpace(c.Workdir) == "" {
