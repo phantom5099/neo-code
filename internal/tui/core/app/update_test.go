@@ -92,10 +92,6 @@ func (s *stubRuntime) LoadSession(ctx context.Context, id string) (agentsession.
 	return agentsession.NewWithWorkdir("draft", ""), nil
 }
 
-func (s *stubRuntime) SetSessionWorkdir(ctx context.Context, sessionID string, workdir string) (agentsession.Session, error) {
-	return agentsession.NewWithWorkdir("draft", workdir), nil
-}
-
 func newTestApp(t *testing.T) (App, *stubRuntime) {
 	t.Helper()
 
@@ -1209,23 +1205,8 @@ func TestRunSlashCommandSelectionModelRefreshError(t *testing.T) {
 	}
 }
 
-func TestRunSlashCommandSelectionWorkspaceAndLocal(t *testing.T) {
+func TestRunSlashCommandSelectionLocalCommand(t *testing.T) {
 	app, _ := newTestApp(t)
-	app.state.ActiveSessionID = ""
-	app.state.CurrentWorkdir = t.TempDir()
-
-	workspaceCmd := app.runSlashCommandSelection("/cwd")
-	if workspaceCmd == nil {
-		t.Fatalf("expected workspace slash cmd")
-	}
-	workspaceMsg := workspaceCmd()
-	workspaceResult, ok := workspaceMsg.(sessionWorkdirResultMsg)
-	if !ok {
-		t.Fatalf("expected sessionWorkdirResultMsg, got %T", workspaceMsg)
-	}
-	if workspaceResult.Err != nil {
-		t.Fatalf("expected no workspace error, got %v", workspaceResult.Err)
-	}
 
 	localCmd := app.runSlashCommandSelection(slashCommandStatus)
 	if localCmd == nil {

@@ -18,7 +18,6 @@ import (
 	providertypes "neo-code/internal/provider/types"
 	agentruntime "neo-code/internal/runtime"
 	"neo-code/internal/tools"
-	tuicommands "neo-code/internal/tui/core/commands"
 	tuistatus "neo-code/internal/tui/core/status"
 	tuiutils "neo-code/internal/tui/core/utils"
 	tuiworkspace "neo-code/internal/tui/core/workspace"
@@ -186,25 +185,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			a.appendActivity("command", typed.Notice, "", false)
 		}
-		return a, tea.Batch(cmds...)
-	case sessionWorkdirResultMsg:
-		if typed.Err != nil {
-			a.state.ExecutionError = typed.Err.Error()
-			a.state.StatusText = typed.Err.Error()
-			a.appendActivity("workspace", "Workspace command failed", typed.Err.Error(), true)
-			return a, tea.Batch(cmds...)
-		}
-
-		a.state.ExecutionError = ""
-		a.state.StatusText = typed.Notice
-		a.state.CurrentWorkdir = strings.TrimSpace(typed.Workdir)
-		if err := a.refreshFileCandidates(); err != nil {
-			a.state.ExecutionError = err.Error()
-			a.state.StatusText = err.Error()
-			a.appendActivity("workspace", "Failed to refresh workspace files", err.Error(), true)
-			return a, tea.Batch(cmds...)
-		}
-		a.appendActivity("workspace", typed.Notice, "", false)
 		return a, tea.Batch(cmds...)
 	case workspaceCommandResultMsg:
 		if typed.Command == "" && typed.Err != nil {
@@ -392,12 +372,6 @@ func (a App) updateInputPanel(msg tea.Msg, typed tea.KeyMsg, cmds []tea.Cmd) (te
 			}
 
 			if strings.HasPrefix(input, slashPrefix) {
-				if isWorkspaceSlashCommand(input) {
-					a.state.StatusText = statusApplyingCommand
-					a.state.ExecutionError = ""
-					cmds = append(cmds, runSessionWorkdirCommand(a.runtime, a.state.ActiveSessionID, a.state.CurrentWorkdir, input))
-					return a, tea.Batch(cmds...)
-				}
 				a.state.StatusText = statusApplyingCommand
 				cmds = append(cmds, runLocalCommand(a.configManager, a.providerSvc, a.currentStatusSnapshot(), input))
 				return a, tea.Batch(cmds...)
@@ -1715,9 +1689,6 @@ func (a *App) runSlashCommandSelection(command string) tea.Cmd {
 	default:
 		a.state.StatusText = statusApplyingCommand
 		a.state.ExecutionError = ""
-		if isWorkspaceSlashCommand(command) {
-			return runSessionWorkdirCommand(a.runtime, a.state.ActiveSessionID, a.state.CurrentWorkdir, command)
-		}
 		return runLocalCommand(a.configManager, a.providerSvc, a.currentStatusSnapshot(), command)
 	}
 }
@@ -1810,30 +1781,6 @@ func runResolvePermission(
 			}
 		},
 	)
-}
-
-func runSessionWorkdirCommand(
-	runtime agentruntime.Runtime,
-	sessionID string,
-	currentWorkdir string,
-	raw string,
-) tea.Cmd {
-	return func() tea.Msg {
-		result := tuicommands.ExecuteSessionWorkdirCommand(
-			runtime,
-			sessionID,
-			currentWorkdir,
-			raw,
-			parseWorkspaceSlashCommand,
-			tuiworkspace.ResolveWorkspacePath,
-			tuiworkspace.SelectSessionWorkdir,
-		)
-		return sessionWorkdirResultMsg{
-			Notice:  result.Notice,
-			Workdir: result.Workdir,
-			Err:     result.Err,
-		}
-	}
 }
 
 // runCompact 鍦ㄧ嫭绔嬪懡浠や腑瑙﹀彂 runtime compact锛屽苟鎶婄粨鏋滃洖浼犵粰 TUI銆
