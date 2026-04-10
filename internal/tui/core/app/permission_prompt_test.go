@@ -66,13 +66,13 @@ func TestFormatPermissionPromptLines(t *testing.T) {
 		Submitting: true,
 	})
 	joined := strings.Join(lines, "\n")
-	if !strings.Contains(joined, "权限审批") {
+	if !strings.Contains(joined, "Permission request") {
 		t.Fatalf("expected prompt header, got %q", joined)
 	}
 	if !strings.Contains(joined, "> Allow session") {
 		t.Fatalf("expected selected option marker, got %q", joined)
 	}
-	if !strings.Contains(joined, "正在提交审批结果") {
+	if !strings.Contains(joined, "Submitting permission decision") {
 		t.Fatalf("expected submitting hint, got %q", joined)
 	}
 }
@@ -91,7 +91,7 @@ func TestRenderPermissionPrompt(t *testing.T) {
 		},
 	}
 	rendered := app.renderPermissionPrompt()
-	if !strings.Contains(rendered, "权限审批") {
+	if !strings.Contains(rendered, "Permission request") {
 		t.Fatalf("expected rendered permission prompt, got %q", rendered)
 	}
 
@@ -135,6 +135,19 @@ func TestParsePermissionPayloadHelpers(t *testing.T) {
 	}
 }
 
+func TestSanitizePermissionDisplayText(t *testing.T) {
+	got := sanitizePermissionDisplayText("bash\x1b[31m\n./demo\t\u202egit status")
+	if strings.ContainsRune(got, '\x1b') {
+		t.Fatalf("expected escape characters to be removed, got %q", got)
+	}
+	if strings.Contains(got, "\u202e") {
+		t.Fatalf("expected format control characters to be removed, got %q", got)
+	}
+	if !strings.Contains(got, "bash [31m ./demo git status") {
+		t.Fatalf("expected printable content to remain, got %q", got)
+	}
+}
+
 func TestRenderPromptWithPendingPermission(t *testing.T) {
 	input := textarea.New()
 	input.SetValue("normal message")
@@ -152,7 +165,7 @@ func TestRenderPromptWithPendingPermission(t *testing.T) {
 		},
 	}
 	rendered := app.renderPrompt(80)
-	if !strings.Contains(rendered, "权限审批") {
+	if !strings.Contains(rendered, "Permission request") {
 		t.Fatalf("expected permission prompt rendering branch, got %q", rendered)
 	}
 

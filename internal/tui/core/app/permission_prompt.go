@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"unicode"
 
 	"github.com/charmbracelet/lipgloss"
 
@@ -19,17 +20,17 @@ type permissionPromptOption struct {
 var permissionPromptOptions = []permissionPromptOption{
 	{
 		Label:    "Allow once",
-		Hint:     "仅本次放行",
+		Hint:     "Approve this request once",
 		Decision: agentruntime.PermissionResolutionAllowOnce,
 	},
 	{
 		Label:    "Allow session",
-		Hint:     "本会话同类请求持续放行",
+		Hint:     "Approve similar requests for this session",
 		Decision: agentruntime.PermissionResolutionAllowSession,
 	},
 	{
 		Label:    "Reject",
-		Hint:     "拒绝本次请求（可记忆拒绝）",
+		Hint:     "Reject this request",
 		Decision: agentruntime.PermissionResolutionReject,
 	},
 }
@@ -64,9 +65,9 @@ func permissionPromptOptionAt(selected int) permissionPromptOption {
 // parsePermissionShortcut 将快捷输入映射为审批决策。
 func parsePermissionShortcut(input string) (agentruntime.PermissionResolutionDecision, bool) {
 	switch strings.ToLower(strings.TrimSpace(input)) {
-	case "y", "yes", "once", "allow_once":
+	case "y", "yes", "once":
 		return agentruntime.PermissionResolutionAllowOnce, true
-	case "a", "always", "allow_session":
+	case "a", "always":
 		return agentruntime.PermissionResolutionAllowSession, true
 	case "n", "no", "reject", "deny":
 		return agentruntime.PermissionResolutionReject, true
@@ -77,22 +78,27 @@ func parsePermissionShortcut(input string) (agentruntime.PermissionResolutionDec
 
 // formatPermissionPromptLines 构造权限审批面板展示文本。
 func formatPermissionPromptLines(state permissionPromptState) []string {
+	normalizedIdx := normalizePermissionPromptSelection(state.Selected)
 	lines := []string{
-		fmt.Sprintf("权限审批：%s (%s)", fallbackText(state.Request.ToolName, "unknown_tool"), fallbackText(state.Request.Operation, "unknown")),
-		fmt.Sprintf("目标：%s", fallbackText(state.Request.Target, "(empty)")),
-		"使用 ↑/↓ 选择，Enter 确认（快捷键：y=once, a=session, n=reject）",
+		fmt.Sprintf(
+			"Permission request: %s (%s)",
+			fallbackText(sanitizePermissionDisplayText(state.Request.ToolName), "unknown_tool"),
+			fallbackText(sanitizePermissionDisplayText(state.Request.Operation), "unknown"),
+		),
+		fmt.Sprintf("Target: %s", fallbackText(sanitizePermissionDisplayText(state.Request.Target), "(empty)")),
+		"Use Up/Down to choose, Enter to confirm (shortcuts: y=once, a=session, n=reject)",
 	}
 
 	for index, item := range permissionPromptOptions {
 		prefix := "  "
-		if normalizePermissionPromptSelection(state.Selected) == index {
+		if normalizedIdx == index {
 			prefix = "> "
 		}
 		lines = append(lines, fmt.Sprintf("%s%s  - %s", prefix, item.Label, item.Hint))
 	}
 
 	if state.Submitting {
-		lines = append(lines, "正在提交审批结果...")
+		lines = append(lines, "Submitting permission decision...")
 	}
 	return lines
 }
@@ -104,6 +110,59 @@ func fallbackText(value string, fallback string) string {
 		return fallback
 	}
 	return trimmed
+}
+
+// sanitizePermissionDisplayText 清理模型可控的终端展示文本，避免控制字符污染审批界面。
+func sanitizePermissionDisplayText(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return ""
+	}
+
+	var builder strings.Builder
+	lastWasSpace := false
+	for _, r := range value {
+		if unicode.IsControl(r) || unicode.In(r, unicode.Cf) {
+			if !lastWasSpace {
+				builder.WriteByte(' ')
+				lastWasSpace = true
+			}
+			continue
+		}
+		builder.WriteRune(r)
+		lastWasSpace = unicode.IsSpace(r)
+	}
+
+	return strings.TrimSpace(builder.String())
+}
+
+// parsePermissionRequestPayload 解析权限请求事件载荷。
+func parsePermissionRequestPayload(payload any) (agentruntime.PermissionRequestPayload, bool) {
+	switch typed := payload.(type) {
+	case agentruntime.PermissionRequestPayload:
+		return typed, true
+	case *agentruntime.PermissionRequestPayload:
+		if typed == nil {
+			return agentruntime.PermissionRequestPayload{}, false
+		}
+		return *typed, true
+	default:
+		return agentruntime.PermissionRequestPayload{}, false
+	}
+}
+
+// parsePermissionResolvedPayload 解析权限决议事件载荷。
+func parsePermissionResolvedPayload(payload any) (agentruntime.PermissionResolvedPayload, bool) {
+	switch typed := payload.(type) {
+	case agentruntime.PermissionResolvedPayload:
+		return typed, true
+	case *agentruntime.PermissionResolvedPayload:
+		if typed == nil {
+			return agentruntime.PermissionResolvedPayload{}, false
+		}
+		return *typed, true
+	default:
+		return agentruntime.PermissionResolvedPayload{}, false
+	}
 }
 
 // renderPermissionPrompt 渲染审批输入框内容，替代普通输入框文本编辑状态。

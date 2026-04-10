@@ -55,6 +55,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, tea.Batch(cmds...)
 	case RuntimeMsg:
 		transcriptDirty := a.handleRuntimeEvent(typed.Event)
+		if a.deferredEventCmd != nil {
+			cmds = append(cmds, a.deferredEventCmd)
+			a.deferredEventCmd = nil
+		}
 		_ = a.refreshSessions()
 		a.syncActiveSessionTitle()
 		if transcriptDirty {
@@ -97,16 +101,18 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.syncActiveSessionTitle()
 		return a, tea.Batch(cmds...)
 	case permissionResolutionFinishedMsg:
-		if a.pendingPermission != nil && strings.EqualFold(a.pendingPermission.Request.RequestID, typed.RequestID) {
+		if a.pendingPermission != nil && a.pendingPermission.Request.RequestID == typed.RequestID {
 			if typed.Err != nil {
 				a.pendingPermission.Submitting = false
 				a.state.ExecutionError = typed.Err.Error()
 				a.state.StatusText = typed.Err.Error()
 				a.appendActivity("permission", "Permission decision submit failed", typed.Err.Error(), true)
 			} else {
+				a.pendingPermission = nil
 				a.state.ExecutionError = ""
-				a.state.StatusText = "Permission decision submitted"
+				a.state.StatusText = statusPermissionSubmitted
 				a.appendActivity("permission", "Permission decision submitted", string(typed.Decision), false)
+				a.refreshPermissionPromptLayout()
 			}
 		}
 		return a, tea.Batch(cmds...)
@@ -449,11 +455,11 @@ func (a *App) updatePendingPermissionInput(typed tea.KeyMsg) (tea.Cmd, bool) {
 	switch {
 	case key.Matches(typed, a.keys.ScrollUp):
 		a.pendingPermission.Selected = normalizePermissionPromptSelection(a.pendingPermission.Selected - 1)
-		a.state.StatusText = "Permission required: choose decision and press Enter"
+		a.state.StatusText = statusPermissionRequired
 		return nil, true
 	case key.Matches(typed, a.keys.ScrollDown):
 		a.pendingPermission.Selected = normalizePermissionPromptSelection(a.pendingPermission.Selected + 1)
-		a.state.StatusText = "Permission required: choose decision and press Enter"
+		a.state.StatusText = statusPermissionRequired
 		return nil, true
 	case key.Matches(typed, a.keys.Send):
 		option := permissionPromptOptionAt(a.pendingPermission.Selected)
@@ -480,7 +486,7 @@ func (a *App) submitPermissionDecision(decision agentruntime.PermissionResolutio
 	}
 
 	a.pendingPermission.Submitting = true
-	a.state.StatusText = "Submitting permission decision..."
+	a.state.StatusText = statusPermissionSubmitting
 	a.appendActivity("permission", "Submitting permission decision", string(decision), false)
 
 	return runResolvePermission(a.runtime, requestID, decision)
@@ -1011,41 +1017,25 @@ func runtimeEventProviderRetryHandler(a *App, event agentruntime.RuntimeEvent) b
 	return false
 }
 
-// parsePermissionRequestPayload 解析权限请求事件载荷。
-func parsePermissionRequestPayload(payload any) (agentruntime.PermissionRequestPayload, bool) {
-	switch typed := payload.(type) {
-	case agentruntime.PermissionRequestPayload:
-		return typed, true
-	case *agentruntime.PermissionRequestPayload:
-		if typed == nil {
-			return agentruntime.PermissionRequestPayload{}, false
-		}
-		return *typed, true
-	default:
-		return agentruntime.PermissionRequestPayload{}, false
-	}
-}
-
-// parsePermissionResolvedPayload 解析权限决议事件载荷。
-func parsePermissionResolvedPayload(payload any) (agentruntime.PermissionResolvedPayload, bool) {
-	switch typed := payload.(type) {
-	case agentruntime.PermissionResolvedPayload:
-		return typed, true
-	case *agentruntime.PermissionResolvedPayload:
-		if typed == nil {
-			return agentruntime.PermissionResolvedPayload{}, false
-		}
-		return *typed, true
-	default:
-		return agentruntime.PermissionResolvedPayload{}, false
-	}
-}
-
 // runtimeEventPermissionRequestHandler 处理 permission_request 事件并激活审批面板。
 func runtimeEventPermissionRequestHandler(a *App, event agentruntime.RuntimeEvent) bool {
 	payload, ok := parsePermissionRequestPayload(event.Payload)
 	if !ok {
 		return false
+	}
+
+	if a.pendingPermission != nil {
+		currentRequestID := strings.TrimSpace(a.pendingPermission.Request.RequestID)
+		nextRequestID := strings.TrimSpace(payload.RequestID)
+		if currentRequestID != "" && currentRequestID != nextRequestID && !a.pendingPermission.Submitting {
+			a.deferredEventCmd = runResolvePermission(a.runtime, currentRequestID, agentruntime.PermissionResolutionReject)
+			a.appendActivity(
+				"permission",
+				"Auto-rejected superseded permission request",
+				currentRequestID,
+				false,
+			)
+		}
 	}
 
 	a.pendingPermission = &permissionPromptState{
@@ -1055,7 +1045,7 @@ func runtimeEventPermissionRequestHandler(a *App, event agentruntime.RuntimeEven
 	}
 	a.focus = panelInput
 	a.applyFocus()
-	a.state.StatusText = "Permission required: choose decision and press Enter"
+	a.state.StatusText = statusPermissionRequired
 	a.state.ExecutionError = ""
 	a.appendActivity(
 		"permission",
@@ -1074,7 +1064,7 @@ func runtimeEventPermissionResolvedHandler(a *App, event agentruntime.RuntimeEve
 		return false
 	}
 
-	if a.pendingPermission != nil && strings.EqualFold(a.pendingPermission.Request.RequestID, payload.RequestID) {
+	if a.pendingPermission != nil && a.pendingPermission.Request.RequestID == payload.RequestID {
 		a.pendingPermission = nil
 	}
 	a.state.StatusText = fmt.Sprintf("Permission %s", fallbackText(payload.ResolvedAs, "resolved"))

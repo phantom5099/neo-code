@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -34,12 +35,15 @@ func (s *stubCompactor) Compact(ctx context.Context, input agentruntime.CompactI
 }
 
 type stubPermissionResolver struct {
-	lastInput agentruntime.PermissionResolutionInput
-	err       error
+	lastInput   agentruntime.PermissionResolutionInput
+	err         error
+	deadline    time.Time
+	hasDeadline bool
 }
 
 func (s *stubPermissionResolver) ResolvePermission(ctx context.Context, input agentruntime.PermissionResolutionInput) error {
 	s.lastInput = input
+	s.deadline, s.hasDeadline = ctx.Deadline()
 	return s.err
 }
 
@@ -143,6 +147,9 @@ func TestRunResolvePermissionCmd(t *testing.T) {
 	}
 	if resolver.lastInput.RequestID != "perm-1" || resolver.lastInput.Decision != agentruntime.PermissionResolutionAllowSession {
 		t.Fatalf("unexpected resolver input: %+v", resolver.lastInput)
+	}
+	if !resolver.hasDeadline {
+		t.Fatalf("expected permission resolver context to carry a deadline")
 	}
 }
 

@@ -2,11 +2,14 @@ package services
 
 import (
 	"context"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	agentruntime "neo-code/internal/runtime"
 )
+
+const permissionResolveTimeout = 10 * time.Second
 
 // Runner 定义执行 runtime run 所需最小能力。
 type Runner interface {
@@ -69,7 +72,10 @@ func RunResolvePermissionCmd(
 	doneMsg func(agentruntime.PermissionResolutionInput, error) tea.Msg,
 ) tea.Cmd {
 	return func() tea.Msg {
-		err := runtime.ResolvePermission(context.Background(), input)
+		ctx, cancel := context.WithTimeout(context.Background(), permissionResolveTimeout)
+		defer cancel()
+
+		err := runtime.ResolvePermission(ctx, input)
 		return doneMsg(input, err)
 	}
 }

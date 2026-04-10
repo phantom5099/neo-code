@@ -86,6 +86,7 @@ type appComponents struct {
 type appRuntimeState struct {
 	codeCopyBlocks    map[int]string
 	pendingCopyID     int
+	deferredEventCmd  tea.Cmd
 	nowFn             func() time.Time
 	lastInputEditAt   time.Time
 	lastPasteLikeAt   time.Time
