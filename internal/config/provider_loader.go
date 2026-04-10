@@ -11,9 +11,8 @@ import (
 )
 
 const (
-	providersDirName                = "providers"
-	customProviderConfigName        = "provider.yaml"
-	defaultOpenAICompatibleAPIStyle = "chat_completions"
+	providersDirName         = "providers"
+	customProviderConfigName = "provider.yaml"
 )
 
 type customProviderFile struct {

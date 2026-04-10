@@ -23,6 +23,7 @@ func testDefaultProviderConfig() ProviderConfig {
 		BaseURL:   testBaseURL,
 		Model:     testModel,
 		APIKeyEnv: testAPIKeyEnv,
+		APIStyle:  defaultOpenAICompatibleAPIStyle,
 		Source:    ProviderSourceBuiltin,
 	}
 }

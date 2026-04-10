@@ -20,6 +20,8 @@ const (
 	QiniuDefaultBaseURL   = "https://api.qnaigc.com/v1"
 	QiniuDefaultModel     = "openai/gpt-5"
 	QiniuDefaultAPIKeyEnv = "QINIU_API_KEY"
+
+	defaultOpenAICompatibleAPIStyle = "chat_completions"
 )
 
 const OpenaiCompatDriver = "openaicompat"
@@ -32,6 +34,7 @@ func OpenAIProvider() ProviderConfig {
 		BaseURL:   OpenAIDefaultBaseURL,
 		Model:     OpenAIDefaultModel,
 		APIKeyEnv: OpenAIDefaultAPIKeyEnv,
+		APIStyle:  defaultOpenAICompatibleAPIStyle,
 		Source:    ProviderSourceBuiltin,
 	}
 }
@@ -44,6 +47,7 @@ func GeminiProvider() ProviderConfig {
 		BaseURL:   GeminiDefaultBaseURL,
 		Model:     GeminiDefaultModel,
 		APIKeyEnv: GeminiDefaultAPIKeyEnv,
+		APIStyle:  defaultOpenAICompatibleAPIStyle,
 		Source:    ProviderSourceBuiltin,
 	}
 }
@@ -56,6 +60,7 @@ func OpenLLProvider() ProviderConfig {
 		BaseURL:   OpenLLDefaultBaseURL,
 		Model:     OpenLLDefaultModel,
 		APIKeyEnv: OpenLLDefaultAPIKeyEnv,
+		APIStyle:  defaultOpenAICompatibleAPIStyle,
 		Source:    ProviderSourceBuiltin,
 	}
 }
@@ -68,6 +73,7 @@ func QiniuProvider() ProviderConfig {
 		BaseURL:   QiniuDefaultBaseURL,
 		Model:     QiniuDefaultModel,
 		APIKeyEnv: QiniuDefaultAPIKeyEnv,
+		APIStyle:  defaultOpenAICompatibleAPIStyle,
 		Source:    ProviderSourceBuiltin,
 	}
 }

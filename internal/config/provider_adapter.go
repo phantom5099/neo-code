@@ -1,6 +1,8 @@
 package config
 
 import (
+	"strings"
+
 	"neo-code/internal/provider"
 	providertypes "neo-code/internal/provider/types"
 )
@@ -22,10 +24,14 @@ func normalizeProviderDriver(driver string) string {
 
 // providerIdentityFromConfig 根据 provider 配置构造用于去重与缓存的规范化连接身份。
 func providerIdentityFromConfig(cfg ProviderConfig) (provider.ProviderIdentity, error) {
+	apiStyle := cfg.APIStyle
+	if normalizeProviderDriver(cfg.Driver) == OpenaiCompatDriver && strings.TrimSpace(apiStyle) == "" {
+		apiStyle = defaultOpenAICompatibleAPIStyle
+	}
 	return provider.NormalizeProviderIdentity(provider.ProviderIdentity{
 		Driver:         cfg.Driver,
 		BaseURL:        cfg.BaseURL,
-		APIStyle:       cfg.APIStyle,
+		APIStyle:       apiStyle,
 		DeploymentMode: cfg.DeploymentMode,
 		APIVersion:     cfg.APIVersion,
 	})

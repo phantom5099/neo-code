@@ -95,6 +95,34 @@ func TestNewProviderCatalogInputBuiltinIncludesDefaultsAndLazyDiscovery(t *testi
 	}
 }
 
+func TestNewProviderCatalogInputDefaultsOpenAICompatibleIdentityAPIStyle(t *testing.T) {
+	t.Setenv("CATALOG_PROVIDER_API_KEY", "secret-key")
+
+	input, err := NewProviderCatalogInput(ProviderConfig{
+		Name:      "company-gateway",
+		Driver:    "openaicompat",
+		BaseURL:   "https://API.EXAMPLE.COM/v1/",
+		Model:     "server-default",
+		APIKeyEnv: "CATALOG_PROVIDER_API_KEY",
+		Source:    ProviderSourceBuiltin,
+	})
+	if err != nil {
+		t.Fatalf("NewProviderCatalogInput() error = %v", err)
+	}
+
+	if input.Identity.APIStyle != defaultOpenAICompatibleAPIStyle {
+		t.Fatalf("expected default api_style %q, got %+v", defaultOpenAICompatibleAPIStyle, input.Identity)
+	}
+
+	runtimeConfig, err := input.ResolveDiscoveryConfig()
+	if err != nil {
+		t.Fatalf("ResolveDiscoveryConfig() error = %v", err)
+	}
+	if runtimeConfig.APIStyle != "" {
+		t.Fatalf("expected runtime config to preserve original empty api_style, got %+v", runtimeConfig)
+	}
+}
+
 func TestNewProviderCatalogInputCustomOmitsDefaultModels(t *testing.T) {
 	t.Setenv("CATALOG_PROVIDER_API_KEY", "secret-key")
 

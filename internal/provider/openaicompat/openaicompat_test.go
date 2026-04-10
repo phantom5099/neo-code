@@ -602,46 +602,6 @@ func TestConsumeStream_ContextCancellationAtEOFWithoutDoneReturnsCanceled(t *tes
 	}
 }
 
-func TestConsumeStream_ContextCancellationOnReadErrorReturnsCanceled(t *testing.T) {
-	t.Setenv(config.OpenAIDefaultAPIKeyEnv, "test-key")
-
-	p, err := New(resolvedConfig("", ""))
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	body := &cancelThenErrorReader{cancel: cancel, err: io.ErrClosedPipe}
-	err = p.consumeStream(ctx, body, make(chan providertypes.StreamEvent, 1))
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context.Canceled, got %v", err)
-	}
-}
-
-func TestConsumeStream_ContextCancellationAtEOFWithoutDoneReturnsCanceled(t *testing.T) {
-	t.Setenv(config.OpenAIDefaultAPIKeyEnv, "test-key")
-
-	p, err := New(resolvedConfig("", ""))
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	sseData := `data: {"id":"a","choices":[{"delta":{"content":"hello"}}]}
-
-`
-	body := &cancelOnEOFReader{
-		reader: strings.NewReader(sseData),
-		cancel: cancel,
-	}
-	events := make(chan providertypes.StreamEvent, 8)
-
-	err = p.consumeStream(ctx, body, events)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context.Canceled, got %v", err)
-	}
-}
-
 func TestConsumeStream_FinishReasonAccumulation(t *testing.T) {
 	t.Setenv(config.OpenAIDefaultAPIKeyEnv, "test-key")
 

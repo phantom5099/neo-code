@@ -159,6 +159,13 @@ func (s *Service) discoverAndPersist(ctx context.Context, input provider.Catalog
 	if !s.registry.Supports(driverType) {
 		return nil, nil
 	}
+	caps, err := s.registry.DriverTransportCapabilities(driverType)
+	if err != nil {
+		return nil, err
+	}
+	if !caps.ModelDiscovery {
+		return nil, nil
+	}
 
 	if input.ResolveDiscoveryConfig == nil {
 		return nil, errors.New("provider catalog: discovery config resolver is nil")
@@ -193,6 +200,10 @@ func (s *Service) discoverAndPersist(ctx context.Context, input provider.Catalog
 func (s *Service) queueRefresh(input provider.CatalogInput) {
 	driverType := strings.TrimSpace(input.Identity.Driver)
 	if s.store == nil || !s.registry.Supports(driverType) {
+		return
+	}
+	caps, err := s.registry.DriverTransportCapabilities(driverType)
+	if err != nil || !caps.ModelDiscovery {
 		return
 	}
 	identity := input.Identity
