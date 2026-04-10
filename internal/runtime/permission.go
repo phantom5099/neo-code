@@ -104,8 +104,7 @@ func (s *Service) executeToolCallWithPermission(ctx context.Context, input permi
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			s.emit(ctx, EventToolChunk, input.RunID, input.SessionID, string(chunk))
-			return nil
+			return s.emit(ctx, EventToolChunk, input.RunID, input.SessionID, string(chunk))
 		},
 	}
 
