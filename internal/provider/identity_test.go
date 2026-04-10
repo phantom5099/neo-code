@@ -1,9 +1,6 @@
 package provider
 
-import (
-	"errors"
-	"testing"
-)
+import "testing"
 
 func TestProviderIdentityKeyIncludesDriverSpecificFields(t *testing.T) {
 	t.Parallel()
@@ -117,14 +114,20 @@ func TestNormalizeProviderIdentityAnthropicAndUnknownDriver(t *testing.T) {
 		t.Fatalf("expected normalized api version, got %+v", anthropicIdentity)
 	}
 
-	_, err = NormalizeProviderIdentity(ProviderIdentity{
+	fallbackIdentity, err := NormalizeProviderIdentity(ProviderIdentity{
 		Driver:         " custom ",
 		BaseURL:        "https://API.EXAMPLE.COM/v1/",
 		APIStyle:       "responses",
 		DeploymentMode: "vertex",
 		APIVersion:     "2023-06-01",
 	})
-	if !errors.Is(err, ErrDriverNotFound) {
-		t.Fatalf("expected ErrDriverNotFound for unknown driver, got %v", err)
+	if err != nil {
+		t.Fatalf("NormalizeProviderIdentity() fallback error = %v", err)
+	}
+	if fallbackIdentity.Driver != "custom" || fallbackIdentity.BaseURL != "https://api.example.com/v1" {
+		t.Fatalf("expected fallback identity to normalize driver and base URL, got %+v", fallbackIdentity)
+	}
+	if fallbackIdentity.APIStyle != "" || fallbackIdentity.DeploymentMode != "" || fallbackIdentity.APIVersion != "" {
+		t.Fatalf("expected fallback identity to drop protocol-specific fields, got %+v", fallbackIdentity)
 	}
 }

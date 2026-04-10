@@ -148,6 +148,6 @@ func NormalizeProviderIdentity(identity ProviderIdentity) (ProviderIdentity, err
 			APIVersion: NormalizeProviderAPIVersion(identity.APIVersion),
 		}, nil
 	default:
-		return ProviderIdentity{}, fmt.Errorf("%w: %s", ErrDriverNotFound, normalizedDriver)
+		return NewProviderIdentity(identity.Driver, identity.BaseURL)
 	}
 }

@@ -572,17 +572,6 @@ func TestProviderConfigValidateFailures(t *testing.T) {
 			expectErr: "must not define model",
 		},
 		{
-			name: "unsupported driver",
-			provider: ProviderConfig{
-				Name:      "custom-openai",
-				Driver:    "custom",
-				BaseURL:   "https://example.com/v1",
-				APIKeyEnv: "CUSTOM_API_KEY",
-				Source:    ProviderSourceCustom,
-			},
-			expectErr: `driver "custom" is not supported`,
-		},
-		{
 			name: "missing base url",
 			provider: ProviderConfig{
 				Name:   testProviderName,
@@ -620,6 +609,21 @@ func TestProviderConfigValidateFailures(t *testing.T) {
 				t.Fatalf("expected error containing %q, got %v", tt.expectErr, err)
 			}
 		})
+	}
+}
+
+func TestProviderConfigValidateAllowsStructurallyValidCustomDriver(t *testing.T) {
+	t.Parallel()
+
+	err := (ProviderConfig{
+		Name:      "custom-openai",
+		Driver:    "custom-driver",
+		BaseURL:   "https://example.com/v1",
+		APIKeyEnv: "CUSTOM_API_KEY",
+		Source:    ProviderSourceCustom,
+	}).Validate()
+	if err != nil {
+		t.Fatalf("expected custom driver to pass structural validation, got %v", err)
 	}
 }
 

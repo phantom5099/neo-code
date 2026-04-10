@@ -397,8 +397,8 @@ openai_compatible:
 	}
 
 	_, err := loader.Load(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "does not support default_model") {
-		t.Fatalf("expected default_model rejection, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "field default_model not found") {
+		t.Fatalf("expected unknown field rejection for default_model, got %v", err)
 	}
 }
 
@@ -634,7 +634,7 @@ func TestResolveCustomProviderSettingsByDriver(t *testing.T) {
 			},
 		},
 		{
-			name: "gemini uses deployment mode only from gemini block",
+			name: "gemini uses base_url only from gemini block",
 			file: customProviderFile{
 				Driver:  "gemini",
 				BaseURL: " https://gateway.example.com ",
@@ -647,7 +647,7 @@ func TestResolveCustomProviderSettingsByDriver(t *testing.T) {
 				},
 			},
 			want: customProviderSettings{
-				BaseURL:        "https://gateway.example.com",
+				BaseURL:        "https://gemini.example.com",
 				DeploymentMode: "vertex",
 			},
 		},
@@ -668,7 +668,8 @@ func TestResolveCustomProviderSettingsByDriver(t *testing.T) {
 		{
 			name: "unknown driver ignores protocol blocks",
 			file: customProviderFile{
-				Driver: "custom-driver",
+				Driver:  "custom-driver",
+				BaseURL: " https://custom.example.com/v1 ",
 				Gemini: customGeminiProviderFile{
 					BaseURL: " https://gemini.example.com/v1beta ",
 				},
@@ -676,7 +677,9 @@ func TestResolveCustomProviderSettingsByDriver(t *testing.T) {
 					BaseURL: "https://anthropic.example.com/v1",
 				},
 			},
-			want: customProviderSettings{},
+			want: customProviderSettings{
+				BaseURL: "https://custom.example.com/v1",
+			},
 		},
 	}
 
@@ -692,7 +695,7 @@ func TestResolveCustomProviderSettingsByDriver(t *testing.T) {
 	}
 }
 
-func TestLoaderRejectsUnknownCustomProviderDriver(t *testing.T) {
+func TestLoaderLoadsUnknownCustomProviderDriverUsingTopLevelBaseURL(t *testing.T) {
 	t.Parallel()
 
 	loader := NewLoader(t.TempDir(), testDefaultConfig())
@@ -704,6 +707,7 @@ func TestLoaderRejectsUnknownCustomProviderDriver(t *testing.T) {
 	providerYAML := `
 name: company-gateway
 driver: custom-driver
+base_url: https://custom.example.com/v1
 api_key_env: COMPANY_GATEWAY_API_KEY
 gemini:
   base_url: https://gemini.example.com/v1beta
@@ -712,9 +716,23 @@ gemini:
 		t.Fatalf("write provider.yaml: %v", err)
 	}
 
-	_, err := loader.Load(context.Background())
-	if err == nil || !strings.Contains(err.Error(), `driver "custom-driver" is not supported`) {
-		t.Fatalf("expected unsupported driver error, got %v", err)
+	cfg, err := loader.Load(context.Background())
+	if err != nil {
+		t.Fatalf("expected unknown custom driver with top-level base_url to load, got %v", err)
+	}
+
+	customProvider, err := cfg.ProviderByName("company-gateway")
+	if err != nil {
+		t.Fatalf("ProviderByName(company-gateway) error = %v", err)
+	}
+	if customProvider.Driver != "custom-driver" {
+		t.Fatalf("expected custom driver to be preserved, got %q", customProvider.Driver)
+	}
+	if customProvider.BaseURL != "https://custom.example.com/v1" {
+		t.Fatalf("expected top-level base_url to be used, got %q", customProvider.BaseURL)
+	}
+	if customProvider.APIStyle != "" || customProvider.DeploymentMode != "" || customProvider.APIVersion != "" {
+		t.Fatalf("expected protocol-specific fields to stay empty for unknown driver, got %+v", customProvider)
 	}
 }
 

@@ -20,7 +20,6 @@ const (
 type customProviderFile struct {
 	Name             string                      `yaml:"name"`
 	Driver           string                      `yaml:"driver"`
-	DefaultModel     string                      `yaml:"default_model"`
 	APIKeyEnv        string                      `yaml:"api_key_env"`
 	BaseURL          string                      `yaml:"base_url,omitempty"`
 	OpenAICompatible customOpenAICompatibleFile  `yaml:"openai_compatible,omitempty"`
@@ -105,12 +104,6 @@ func loadCustomProvider(providerDir string) (ProviderConfig, error) {
 	if err := decoder.Decode(&file); err != nil {
 		return ProviderConfig{}, fmt.Errorf("config: parse %s: %w", providerPath, err)
 	}
-	if strings.TrimSpace(file.DefaultModel) != "" {
-		return ProviderConfig{}, fmt.Errorf(
-			"config: custom provider %q does not support default_model; models must come from remote discovery",
-			filepath.Base(providerDir),
-		)
-	}
 
 	settings := resolveCustomProviderSettings(file)
 	cfg := ProviderConfig{
@@ -136,27 +129,22 @@ func loadCustomProvider(providerDir string) (ProviderConfig, error) {
 }
 
 // resolveCustomProviderSettings 根据 driver 只提取当前协议真正生效的配置字段，避免误吃其他协议块的值。
+// 已知 driver 仅从协议块读取 base_url；未知 driver 使用顶层 base_url 作为唯一入口。
 func resolveCustomProviderSettings(file customProviderFile) customProviderSettings {
-	settings := customProviderSettings{
-		BaseURL: strings.TrimSpace(file.BaseURL),
-	}
+	settings := customProviderSettings{}
 
 	switch normalizeProviderDriver(file.Driver) {
 	case provider.DriverOpenAICompat:
-		if settings.BaseURL == "" {
-			settings.BaseURL = strings.TrimSpace(file.OpenAICompatible.BaseURL)
-		}
+		settings.BaseURL = strings.TrimSpace(file.OpenAICompatible.BaseURL)
 		settings.APIStyle = strings.TrimSpace(file.OpenAICompatible.APIStyle)
 	case provider.DriverGemini:
-		if settings.BaseURL == "" {
-			settings.BaseURL = strings.TrimSpace(file.Gemini.BaseURL)
-		}
+		settings.BaseURL = strings.TrimSpace(file.Gemini.BaseURL)
 		settings.DeploymentMode = strings.TrimSpace(file.Gemini.DeploymentMode)
 	case provider.DriverAnthropic:
-		if settings.BaseURL == "" {
-			settings.BaseURL = strings.TrimSpace(file.Anthropic.BaseURL)
-		}
+		settings.BaseURL = strings.TrimSpace(file.Anthropic.BaseURL)
 		settings.APIVersion = strings.TrimSpace(file.Anthropic.APIVersion)
+	default:
+		settings.BaseURL = strings.TrimSpace(file.BaseURL)
 	}
 
 	return settings
