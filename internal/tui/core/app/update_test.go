@@ -1291,9 +1291,11 @@ func TestHandleImmediateSlashCommandDefault(t *testing.T) {
 }
 
 func TestFormatPermissionPromptToolOnly(t *testing.T) {
-	got := formatPermissionPrompt(agentruntime.PermissionRequestPayload{ToolName: "bash"})
-	if got != "bash" {
-		t.Fatalf("expected tool-only prompt, got %q", got)
+	lines := formatPermissionPromptLines(permissionPromptState{
+		Request: agentruntime.PermissionRequestPayload{ToolName: "bash"},
+	})
+	if len(lines) == 0 || !strings.Contains(lines[0], "Permission request: bash") {
+		t.Fatalf("expected tool-only prompt header, got %#v", lines)
 	}
 }
 
