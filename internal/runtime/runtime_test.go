@@ -3367,6 +3367,216 @@ func TestServiceRunAutoCompactsAndResetsSessionTokens(t *testing.T) {
 	assertNoEventType(t, events, EventCompactError)
 }
 
+func TestServiceRunReactivelyCompactsOnContextTooLong(t *testing.T) {
+	t.Parallel()
+
+	manager := newRuntimeConfigManager(t)
+	store := newMemoryStore()
+	session := agentsession.New("reactive-compact")
+	session.ID = "session-reactive-compact"
+	session.TokenInputTotal = 220
+	session.TokenOutputTotal = 70
+	session.Messages = []providertypes.Message{
+		{Role: providertypes.RoleUser, Content: "older request"},
+		{Role: providertypes.RoleAssistant, Content: "older answer"},
+	}
+	store.sessions[session.ID] = cloneSession(session)
+
+	registry := tools.NewRegistry()
+	registry.Register(&stubTool{name: "filesystem_read_file", content: "default"})
+
+	builder := &stubContextBuilder{
+		buildFn: func(ctx context.Context, input agentcontext.BuildInput) (agentcontext.BuildResult, error) {
+			return agentcontext.BuildResult{
+				SystemPrompt: "reactive compact prompt",
+				Messages:     append([]providertypes.Message(nil), input.Messages...),
+			}, nil
+		},
+	}
+
+	callCount := 0
+	scripted := &scriptedProvider{
+		chatFn: func(ctx context.Context, req providertypes.ChatRequest, events chan<- providertypes.StreamEvent) error {
+			callCount++
+			if callCount == 1 {
+				return &provider.ProviderError{
+					StatusCode: 400,
+					Code:       provider.ErrorCodeContextTooLong,
+					Message:    "maximum context length exceeded",
+					Retryable:  false,
+				}
+			}
+			select {
+			case events <- providertypes.NewTextDeltaStreamEvent("recovered"):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			select {
+			case events <- providertypes.NewMessageDoneStreamEvent("stop", nil):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			return nil
+		},
+	}
+
+	service := NewWithFactory(manager, registry, store, &scriptedProviderFactory{provider: scripted}, builder)
+	service.compactRunner = &stubCompactRunner{
+		result: contextcompact.Result{
+			Messages: []providertypes.Message{
+				{Role: providertypes.RoleAssistant, Content: "[compact_summary]\ndone:\n- archived\n\nin_progress:\n- continue"},
+				{Role: providertypes.RoleUser, Content: "continue"},
+			},
+			Applied: true,
+			Metrics: contextcompact.Metrics{
+				BeforeChars: 120,
+				AfterChars:  48,
+				SavedRatio:  0.6,
+				TriggerMode: string(contextcompact.ModeReactive),
+			},
+			TranscriptID:   "transcript_reactive",
+			TranscriptPath: "/tmp/reactive.jsonl",
+		},
+	}
+
+	if err := service.Run(context.Background(), UserInput{
+		SessionID: session.ID,
+		RunID:     "run-reactive-compact",
+		Content:   "continue",
+	}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	compactRunner := service.compactRunner.(*stubCompactRunner)
+	if len(compactRunner.calls) != 1 {
+		t.Fatalf("expected reactive compact to run once, got %d", len(compactRunner.calls))
+	}
+	if compactRunner.calls[0].Mode != contextcompact.ModeReactive {
+		t.Fatalf("expected compact mode %q, got %q", contextcompact.ModeReactive, compactRunner.calls[0].Mode)
+	}
+	if len(builder.builds) != 2 {
+		t.Fatalf("expected 2 build attempts, got %d", len(builder.builds))
+	}
+	if builder.builds[0].Metadata.SessionInputTokens != 220 {
+		t.Fatalf("expected first build to see pre-compact input tokens, got %d", builder.builds[0].Metadata.SessionInputTokens)
+	}
+	if builder.builds[1].Metadata.SessionInputTokens != 0 {
+		t.Fatalf("expected second build to see reset input tokens, got %d", builder.builds[1].Metadata.SessionInputTokens)
+	}
+	if scripted.callCount != 2 {
+		t.Fatalf("expected provider to be called twice, got %d", scripted.callCount)
+	}
+
+	saved, err := store.Load(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("load compacted session: %v", err)
+	}
+	if saved.TokenInputTotal != 0 || saved.TokenOutputTotal != 0 {
+		t.Fatalf("expected persisted token totals to reset, got input=%d output=%d", saved.TokenInputTotal, saved.TokenOutputTotal)
+	}
+	if len(saved.Messages) != 3 {
+		t.Fatalf("expected compacted transcript plus final assistant reply, got %+v", saved.Messages)
+	}
+	if saved.Messages[2].Content != "recovered" {
+		t.Fatalf("expected final assistant reply %q, got %q", "recovered", saved.Messages[2].Content)
+	}
+
+	events := collectRuntimeEvents(service.Events())
+	assertEventSequence(t, events, []EventType{
+		EventUserMessage,
+		EventCompactStart,
+		EventCompactDone,
+		EventAgentDone,
+	})
+	assertNoEventType(t, events, EventCompactError)
+
+	foundReactiveDone := false
+	for _, event := range events {
+		if event.Type != EventCompactDone {
+			continue
+		}
+		payload, ok := event.Payload.(CompactDonePayload)
+		if !ok {
+			t.Fatalf("expected CompactDonePayload, got %T", event.Payload)
+		}
+		if payload.TriggerMode != string(contextcompact.ModeReactive) {
+			t.Fatalf("expected trigger mode %q, got %q", contextcompact.ModeReactive, payload.TriggerMode)
+		}
+		foundReactiveDone = true
+	}
+	if !foundReactiveDone {
+		t.Fatalf("expected reactive compact_done event in %+v", events)
+	}
+}
+
+func TestServiceRunReactiveCompactRetriesOnlyOnce(t *testing.T) {
+	t.Parallel()
+
+	manager := newRuntimeConfigManager(t)
+	store := newMemoryStore()
+	registry := tools.NewRegistry()
+	registry.Register(&stubTool{name: "filesystem_read_file", content: "default"})
+
+	scripted := &scriptedProvider{
+		chatFn: func(ctx context.Context, req providertypes.ChatRequest, events chan<- providertypes.StreamEvent) error {
+			return &provider.ProviderError{
+				StatusCode: 400,
+				Code:       provider.ErrorCodeContextTooLong,
+				Message:    "prompt is too long",
+				Retryable:  false,
+			}
+		},
+	}
+
+	service := NewWithFactory(manager, registry, store, &scriptedProviderFactory{provider: scripted}, &stubContextBuilder{})
+	service.compactRunner = &stubCompactRunner{
+		err: errors.New("compact failed"),
+	}
+
+	err := service.Run(context.Background(), UserInput{
+		RunID:   "run-reactive-compact-once",
+		Content: "continue",
+	})
+	if err == nil || !containsError(err, "prompt is too long") {
+		t.Fatalf("expected final context-too-long error, got %v", err)
+	}
+
+	compactRunner := service.compactRunner.(*stubCompactRunner)
+	if len(compactRunner.calls) != 1 {
+		t.Fatalf("expected reactive compact to run once, got %d", len(compactRunner.calls))
+	}
+	if scripted.callCount != 2 {
+		t.Fatalf("expected provider to be called exactly twice, got %d", scripted.callCount)
+	}
+
+	events := collectRuntimeEvents(service.Events())
+	assertEventSequence(t, events, []EventType{
+		EventUserMessage,
+		EventCompactStart,
+		EventCompactError,
+		EventError,
+	})
+	assertNoEventType(t, events, EventCompactDone)
+
+	foundReactiveError := false
+	for _, event := range events {
+		if event.Type != EventCompactError {
+			continue
+		}
+		payload, ok := event.Payload.(CompactErrorPayload)
+		if !ok {
+			t.Fatalf("expected CompactErrorPayload, got %T", event.Payload)
+		}
+		if payload.TriggerMode != string(contextcompact.ModeReactive) {
+			t.Fatalf("expected trigger mode %q, got %q", contextcompact.ModeReactive, payload.TriggerMode)
+		}
+		foundReactiveError = true
+	}
+	if !foundReactiveError {
+		t.Fatalf("expected reactive compact_error event in %+v", events)
+	}
+}
+
 func TestRestoreSessionTokens(t *testing.T) {
 	t.Parallel()
 

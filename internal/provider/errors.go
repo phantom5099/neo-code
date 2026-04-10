@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 // 通用领域错误。
@@ -20,16 +21,28 @@ var (
 type ProviderErrorCode string
 
 const (
-	ErrorCodeAuthFailed ProviderErrorCode = "auth_failed"   // 认证失败（401）
-	ErrorCodeForbidden  ProviderErrorCode = "forbidden"     // 权限不足（403）
-	ErrorCodeNotFound   ProviderErrorCode = "not_found"     // 资源不存在（404）
-	ErrorCodeClient     ProviderErrorCode = "client_error"  // 客户端请求错误（4xx，排除上述分类）
-	ErrorCodeRateLimit  ProviderErrorCode = "rate_limited"  // 限流（429）
-	ErrorCodeServer     ProviderErrorCode = "server_error"  // 服务端错误（5xx）
-	ErrorCodeTimeout    ProviderErrorCode = "timeout"       // 超时
-	ErrorCodeNetwork    ProviderErrorCode = "network_error" // 网络错误（连接拒绝、DNS 失败等）
-	ErrorCodeUnknown    ProviderErrorCode = "unknown"       // 未知错误
+	ErrorCodeAuthFailed     ProviderErrorCode = "auth_failed"      // 认证失败（401）
+	ErrorCodeForbidden      ProviderErrorCode = "forbidden"        // 权限不足（403）
+	ErrorCodeNotFound       ProviderErrorCode = "not_found"        // 资源不存在（404）
+	ErrorCodeClient         ProviderErrorCode = "client_error"     // 客户端请求错误（4xx，排除上述分类）
+	ErrorCodeRateLimit      ProviderErrorCode = "rate_limited"     // 限流（429）
+	ErrorCodeServer         ProviderErrorCode = "server_error"     // 服务端错误（5xx）
+	ErrorCodeTimeout        ProviderErrorCode = "timeout"          // 超时
+	ErrorCodeNetwork        ProviderErrorCode = "network_error"    // 网络错误（连接拒绝、DNS 失败等）
+	ErrorCodeContextTooLong ProviderErrorCode = "context_too_long" // 上下文超出模型窗口
+	ErrorCodeUnknown        ProviderErrorCode = "unknown"          // 未知错误
 )
+
+var contextTooLongFragments = []string{
+	"context length",
+	"context_length_exceeded",
+	"context window",
+	"maximum context length",
+	"maximum prompt length",
+	"prompt is too long",
+	"requested too many tokens",
+	"too many tokens",
+}
 
 // ProviderError 是 provider 层的领域错误类型。
 type ProviderError struct {
@@ -78,6 +91,9 @@ func classifyStatus(statusCode int) ProviderErrorCode {
 // NewProviderErrorFromStatus 根据 HTTP 状态码和消息构造 ProviderError。
 func NewProviderErrorFromStatus(statusCode int, message string) *ProviderError {
 	code := classifyStatus(statusCode)
+	if matchesContextTooLong(message) {
+		code = ErrorCodeContextTooLong
+	}
 	return &ProviderError{
 		StatusCode: statusCode,
 		Code:       code,
@@ -104,4 +120,38 @@ func NewTimeoutProviderError(message string) *ProviderError {
 		Message:    message,
 		Retryable:  true, // 超时默认可重试
 	}
+}
+
+// IsContextTooLong 判断 provider 错误是否表示请求上下文超出模型窗口。
+// 优先识别 typed error，必要时再回退到消息文本匹配，兼容不同厂商或额外包装层。
+func IsContextTooLong(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var pErr *ProviderError
+	if errors.As(err, &pErr) {
+		if pErr.Code == ErrorCodeContextTooLong {
+			return true
+		}
+		if matchesContextTooLong(pErr.Message) {
+			return true
+		}
+	}
+
+	return matchesContextTooLong(err.Error())
+}
+
+// matchesContextTooLong 统一收敛常见“上下文过长”报错片段，减少 runtime 对厂商文案的感知。
+func matchesContextTooLong(message string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(message))
+	if normalized == "" {
+		return false
+	}
+	for _, fragment := range contextTooLongFragments {
+		if strings.Contains(normalized, fragment) {
+			return true
+		}
+	}
+	return false
 }

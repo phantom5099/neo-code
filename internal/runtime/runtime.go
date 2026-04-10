@@ -211,6 +211,7 @@ func (s *Service) Run(ctx context.Context, input UserInput) error {
 	s.emit(ctx, EventUserMessage, input.RunID, session.ID, userMessage)
 
 	autoCompacted := false
+	reactiveRetried := false
 
 	for attempt := 0; ; attempt++ {
 		if err := ctx.Err(); err != nil {
@@ -251,12 +252,9 @@ func (s *Service) Run(ctx context.Context, input UserInput) error {
 		if builtContext.ShouldAutoCompact && !autoCompacted {
 			autoCompacted = true
 			var compactResult contextcompact.Result
-			session, compactResult, _ = s.runCompactForSession(ctx, input.RunID, session, cfg, false)
+			session, compactResult, _ = s.runCompactForSession(ctx, input.RunID, session, cfg, contextcompact.ModeManual, false)
 			if compactResult.Applied {
-				s.sessionInputTokens = 0
-				s.sessionOutputTokens = 0
-				session.TokenInputTotal = 0
-				session.TokenOutputTotal = 0
+				s.resetSessionTokenTotals(&session)
 			}
 		}
 
@@ -274,6 +272,23 @@ func (s *Service) Run(ctx context.Context, input UserInput) error {
 			Tools:        toolSpecs,
 		})
 		if err != nil {
+			if provider.IsContextTooLong(err) && !reactiveRetried {
+				reactiveRetried = true
+				var compactResult contextcompact.Result
+				session, compactResult, _ = s.runCompactForSession(
+					ctx,
+					input.RunID,
+					session,
+					cfg,
+					contextcompact.ModeReactive,
+					false,
+				)
+				if compactResult.Applied {
+					s.resetSessionTokenTotals(&session)
+					autoCompacted = true
+				}
+				continue
+			}
 			return s.handleRunError(ctx, input.RunID, session.ID, err)
 		}
 		if err := ctx.Err(); err != nil {
