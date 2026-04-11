@@ -186,3 +186,66 @@ func TestFormatHelpers(t *testing.T) {
 		})
 	}
 }
+
+func TestFormatToolResultForModel(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		result ToolResult
+		want   []string
+	}{
+		{
+			name: "formats success result with stable metadata and content",
+			result: ToolResult{
+				ToolCallID: "call-1",
+				Name:       "filesystem_edit",
+				Content:    "ok",
+				Metadata: map[string]any{
+					"path":          "internal/context/prompt.go",
+					"replacement":   "line 1\nline 2",
+					"search_length": 12,
+					"truncated":     true,
+				},
+			},
+			want: []string{
+				"tool result",
+				"tool: filesystem_edit",
+				"status: ok",
+				"tool_call_id: call-1",
+				"truncated: true",
+				"meta.path: internal/context/prompt.go",
+				"meta.replacement: line 1\\nline 2",
+				"meta.search_length: 12",
+				"\ncontent:\nok",
+			},
+		},
+		{
+			name: "formats error result without content block when empty",
+			result: ToolResult{
+				Name:    "bash",
+				IsError: true,
+			},
+			want: []string{
+				"tool result",
+				"tool: bash",
+				"status: error",
+				"truncated: false",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := FormatToolResultForModel(tt.result)
+			for _, fragment := range tt.want {
+				if !strings.Contains(got, fragment) {
+					t.Fatalf("expected formatted result to contain %q, got %q", fragment, got)
+				}
+			}
+		})
+	}
+}

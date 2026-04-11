@@ -380,6 +380,7 @@ func TestServiceRun(t *testing.T) {
 				name:    "filesystem_edit",
 				content: "tool output",
 			},
+			contextBuilder:      &stubContextBuilder{},
 			expectProviderCalls: 2,
 			expectToolCalls:     1,
 			expectMessageRoles:  []string{"user", "assistant", "tool", "assistant"},
@@ -401,7 +402,12 @@ func TestServiceRun(t *testing.T) {
 				second := scripted.requests[1]
 				foundToolResult := false
 				for _, message := range second.Messages {
-					if message.Role == "tool" && message.ToolCallID == "call-1" && message.Content == "tool output" {
+					if message.Role == "tool" &&
+						message.ToolCallID == "call-1" &&
+						strings.Contains(message.Content, "tool result") &&
+						strings.Contains(message.Content, "tool: filesystem_edit") &&
+						strings.Contains(message.Content, "status: ok") &&
+						strings.Contains(message.Content, "content:\ntool output") {
 						foundToolResult = true
 						break
 					}
@@ -901,7 +907,7 @@ func TestServiceRunDefaultBuilderUsesGenericToolManagerMicroCompactPolicies(t *t
 		}},
 	}
 
-	service := NewWithFactory(manager, toolManager, store, &scriptedProviderFactory{provider: scripted}, nil)
+	service := NewWithFactory(manager, toolManager, store, &scriptedProviderFactory{provider: scripted}, &stubContextBuilder{})
 	if err := service.Run(context.Background(), UserInput{
 		SessionID: session.ID,
 		RunID:     "run-preserve-history-generic-manager",
@@ -986,6 +992,9 @@ func TestServiceRunUsesToolManager(t *testing.T) {
 		result: tools.ToolResult{
 			Name:    "filesystem_edit",
 			Content: "tool manager output",
+			Metadata: map[string]any{
+				"path": "main.go",
+			},
 		},
 	}
 
@@ -999,7 +1008,7 @@ func TestServiceRunUsesToolManager(t *testing.T) {
 		},
 	}
 
-	service := NewWithFactory(manager, toolManager, store, &scriptedProviderFactory{provider: scripted}, nil)
+	service := NewWithFactory(manager, toolManager, store, &scriptedProviderFactory{provider: scripted}, &stubContextBuilder{})
 	if err := service.Run(context.Background(), UserInput{RunID: "run-tool-manager", Content: "edit file"}); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -1020,7 +1029,11 @@ func TestServiceRunUsesToolManager(t *testing.T) {
 	session := onlySession(t, store)
 	foundToolMessage := false
 	for _, message := range session.Messages {
-		if message.Role == providertypes.RoleTool && message.Content == "tool manager output" {
+		if message.Role == providertypes.RoleTool &&
+			strings.Contains(message.Content, "tool result") &&
+			strings.Contains(message.Content, "tool: filesystem_edit") &&
+			strings.Contains(message.Content, "meta.path: main.go") &&
+			strings.Contains(message.Content, "content:\ntool manager output") {
 			foundToolMessage = true
 			break
 		}

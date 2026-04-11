@@ -366,7 +366,7 @@ func (s *Service) Run(ctx context.Context, input UserInput) error {
 
 			toolMessage := providertypes.Message{
 				Role:       providertypes.RoleTool,
-				Content:    result.Content,
+				Content:    tools.FormatToolResultForModel(result),
 				ToolCallID: call.ID,
 				IsError:    result.IsError,
 			}

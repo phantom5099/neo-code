@@ -94,15 +94,18 @@ func TestComposeSystemPromptSkipsEmptySections(t *testing.T) {
 	}
 }
 
-func TestDefaultToolUsagePromptEncouragesAskFlow(t *testing.T) {
+func TestDefaultToolUsagePromptIncludesPermissionAndAntiLoopGuidance(t *testing.T) {
 	t.Parallel()
 
 	sections := defaultSystemPromptSections()
 	var toolUsage string
+	var failureRecovery string
 	for _, section := range sections {
 		if section.title == "Tool Usage" {
 			toolUsage = section.content
-			break
+		}
+		if section.title == "Failure Recovery" {
+			failureRecovery = section.content
 		}
 	}
 	if toolUsage == "" {
@@ -113,5 +116,20 @@ func TestDefaultToolUsagePromptEncouragesAskFlow(t *testing.T) {
 	}
 	if !strings.Contains(toolUsage, "Do not self-reject") {
 		t.Fatalf("expected Tool Usage to discourage self-reject, got %q", toolUsage)
+	}
+	if !strings.Contains(toolUsage, "Do not repeat the same tool call with identical arguments") {
+		t.Fatalf("expected Tool Usage to include anti-loop guidance, got %q", toolUsage)
+	}
+	if !strings.Contains(toolUsage, "focused verification call") {
+		t.Fatalf("expected Tool Usage to limit write verification retries, got %q", toolUsage)
+	}
+	if !strings.Contains(toolUsage, "stop using tools and give the user the result") {
+		t.Fatalf("expected Tool Usage to tell the agent when to stop, got %q", toolUsage)
+	}
+	if !strings.Contains(toolUsage, "`status`, `truncated`, `tool_call_id`, `meta.*`, and `content`") {
+		t.Fatalf("expected Tool Usage to explain structured tool results, got %q", toolUsage)
+	}
+	if !strings.Contains(failureRecovery, "change something concrete") {
+		t.Fatalf("expected Failure Recovery to discourage identical retries, got %q", failureRecovery)
 	}
 }
