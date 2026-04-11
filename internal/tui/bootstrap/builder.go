@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"neo-code/internal/config"
+	"neo-code/internal/memo"
 	providertypes "neo-code/internal/provider/types"
 	agentruntime "neo-code/internal/runtime"
 )
@@ -18,12 +19,21 @@ type ProviderService interface {
 	SetCurrentModel(ctx context.Context, modelID string) (config.ProviderSelection, error)
 }
 
+// MemoService 定义 TUI 需要注入的 memo 交互能力。
+type MemoService interface {
+	List(ctx context.Context) ([]memo.Entry, error)
+	Add(ctx context.Context, entry memo.Entry) error
+	Remove(ctx context.Context, keyword string) (int, error)
+	Search(ctx context.Context, keyword string) ([]memo.Entry, error)
+}
+
 // Options 定义 bootstrap 装配输入。
 type Options struct {
 	Config          *config.Config
 	ConfigManager   *config.Manager
 	Runtime         agentruntime.Runtime
 	ProviderService ProviderService
+	MemoSvc         *memo.Service
 	Mode            Mode
 	Factory         ServiceFactory
 }
@@ -34,6 +44,7 @@ type Container struct {
 	ConfigManager   *config.Manager
 	Runtime         agentruntime.Runtime
 	ProviderService ProviderService
+	MemoSvc         *memo.Service
 	Mode            Mode
 }
 
@@ -78,6 +89,7 @@ func Build(options Options) (Container, error) {
 		ConfigManager:   options.ConfigManager,
 		Runtime:         runtimeSvc,
 		ProviderService: providerSvc,
+		MemoSvc:         options.MemoSvc,
 		Mode:            mode,
 	}, nil
 }

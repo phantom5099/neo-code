@@ -25,6 +25,9 @@ const (
 	slashCommandProvider  = "/provider"
 	slashCommandModelPick = "/model"
 	slashCommandCWD       = "/cwd"
+	slashCommandMemo      = "/memo"
+	slashCommandRemember  = "/remember"
+	slashCommandForget    = "/forget"
 
 	slashUsageHelp     = "/help"
 	slashUsageExit     = "/exit"
@@ -34,6 +37,9 @@ const (
 	slashUsageProvider = "/provider"
 	slashUsageModel    = "/model"
 	slashUsageWorkdir  = "/cwd"
+	slashUsageMemo     = "/memo"
+	slashUsageRemember = "/remember <text>"
+	slashUsageForget   = "/forget <keyword>"
 
 	commandMenuTitle       = "Suggestions"
 	providerPickerTitle    = "Select Provider"
@@ -110,6 +116,9 @@ var builtinSlashCommands = []slashCommand{
 	{Usage: slashUsageCompact, Description: "Compact the current session context"},
 	{Usage: slashUsageStatus, Description: "Show current session and agent status"},
 	{Usage: slashUsageWorkdir, Description: "Show or set current session workspace root (/cwd [path])"},
+	{Usage: slashUsageMemo, Description: "Show persistent memo index"},
+	{Usage: slashUsageRemember, Description: "Save a persistent memo (/remember <text>)"},
+	{Usage: slashUsageForget, Description: "Remove memos matching keyword (/forget <keyword>)"},
 	{Usage: slashUsageProvider, Description: "Open the interactive provider picker"},
 	{Usage: slashUsageModel, Description: "Open the interactive model picker"},
 	{Usage: slashUsageExit, Description: "Exit NeoCode"},

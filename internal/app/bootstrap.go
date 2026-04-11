@@ -12,6 +12,7 @@ import (
 
 	"neo-code/internal/config"
 	agentcontext "neo-code/internal/context"
+	"neo-code/internal/memo"
 	"neo-code/internal/provider/builtin"
 	providercatalog "neo-code/internal/provider/catalog"
 	agentruntime "neo-code/internal/runtime"
@@ -42,6 +43,7 @@ type RuntimeBundle struct {
 	ConfigManager     *config.Manager
 	Runtime           agentruntime.Runtime
 	ProviderSelection *config.SelectionService
+	MemoService       *memo.Service
 }
 
 // EnsureConsoleUTF8 负责在 Windows 控制台中尽量启用 UTF-8 编码。
@@ -87,12 +89,22 @@ func BuildRuntime(ctx context.Context, opts BootstrapOptions) (RuntimeBundle, er
 	}
 
 	sessionStore := agentsession.NewStore(loader.BaseDir(), cfg.Workdir)
+
+	var contextBuilder agentcontext.Builder = agentcontext.NewBuilderWithToolPolicies(toolRegistry)
+	var memoSvc *memo.Service
+	if cfg.Memo.Enabled {
+		memoStore := memo.NewFileStore(loader.BaseDir(), cfg.Workdir)
+		memoSource := memo.NewContextSource(memoStore)
+		contextBuilder = agentcontext.NewBuilderWithMemo(toolRegistry, memoSource)
+		memoSvc = memo.NewService(memoStore, nil, cfg.Memo, nil)
+	}
+
 	runtimeSvc := agentruntime.NewWithFactory(
 		manager,
 		toolManager,
 		sessionStore,
 		providerRegistry,
-		agentcontext.NewBuilderWithToolPolicies(toolRegistry),
+		contextBuilder,
 	)
 
 	return RuntimeBundle{
@@ -100,6 +112,7 @@ func BuildRuntime(ctx context.Context, opts BootstrapOptions) (RuntimeBundle, er
 		ConfigManager:     manager,
 		Runtime:           runtimeSvc,
 		ProviderSelection: providerSelection,
+		MemoService:       memoSvc,
 	}, nil
 }
 
@@ -110,7 +123,7 @@ func NewProgram(ctx context.Context, opts BootstrapOptions) (*tea.Program, error
 		return nil, err
 	}
 
-	tuiApp, err := tui.New(&bundle.Config, bundle.ConfigManager, bundle.Runtime, bundle.ProviderSelection)
+	tuiApp, err := tui.NewWithMemo(&bundle.Config, bundle.ConfigManager, bundle.Runtime, bundle.ProviderSelection, bundle.MemoService)
 	if err != nil {
 		return nil, err
 	}
