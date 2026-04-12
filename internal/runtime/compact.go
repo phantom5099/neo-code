@@ -12,13 +12,13 @@ import (
 	agentsession "neo-code/internal/session"
 )
 
-// CompactInput 描述一次手动 compact 请求所需的最小输入。
+// CompactInput 描述一次手动 compact 请求的最小输入。
 type CompactInput struct {
 	SessionID string
 	RunID     string
 }
 
-// CompactResult 汇总 compact 执行后的外部可见结果。
+// CompactResult 汇总一次 compact 完成后的外部可见结果，统一作为返回值和事件 payload 使用。
 type CompactResult struct {
 	Applied        bool
 	BeforeChars    int
@@ -29,46 +29,8 @@ type CompactResult struct {
 	TranscriptPath string
 }
 
-// CompactDonePayload 是 compact 完成事件向上层暴露的摘要信息。
-type CompactDonePayload struct {
-	Applied        bool    `json:"applied"`
-	BeforeChars    int     `json:"before_chars"`
-	AfterChars     int     `json:"after_chars"`
-	SavedRatio     float64 `json:"saved_ratio"`
-	TriggerMode    string  `json:"trigger_mode"`
-	TranscriptID   string  `json:"transcript_id"`
-	TranscriptPath string  `json:"transcript_path"`
-}
-
-// CompactErrorPayload 是 compact 失败事件向上层暴露的错误信息。
-type CompactErrorPayload struct {
-	TriggerMode string `json:"trigger_mode"`
-	Message     string `json:"message"`
-}
-
-// Compact 串行执行手动 compact，并返回本次压缩的统计结果。
-func (s *Service) Compact(ctx context.Context, input CompactInput) (CompactResult, error) {
-	if err := ctx.Err(); err != nil {
-		return CompactResult{}, err
-	}
-	if strings.TrimSpace(input.SessionID) == "" {
-		return CompactResult{}, errors.New("runtime: compact session_id is empty")
-	}
-
-	s.operationMu.Lock()
-	defer s.operationMu.Unlock()
-
-	cfg := s.configManager.Get()
-	session, err := s.sessionStore.Load(ctx, input.SessionID)
-	if err != nil {
-		return CompactResult{}, err
-	}
-
-	session, result, err := s.runCompactForSession(ctx, input.RunID, session, cfg, contextcompact.ModeManual, true)
-	if err != nil {
-		return CompactResult{}, err
-	}
-
+// fromCompactResult 将 contextcompact.Result 映射为 runtime.CompactResult。
+func fromCompactResult(result contextcompact.Result) CompactResult {
 	return CompactResult{
 		Applied:        result.Applied,
 		BeforeChars:    result.Metrics.BeforeChars,
@@ -77,7 +39,49 @@ func (s *Service) Compact(ctx context.Context, input CompactInput) (CompactResul
 		TriggerMode:    result.Metrics.TriggerMode,
 		TranscriptID:   result.TranscriptID,
 		TranscriptPath: result.TranscriptPath,
-	}, nil
+	}
+}
+
+// CompactErrorPayload 是 compact_error 事件对外暴露的错误信息。
+type CompactErrorPayload struct {
+	TriggerMode string `json:"trigger_mode"`
+	Message     string `json:"message"`
+}
+
+// compactErrorPolicy 描述 compact 失败后是立即中断还是仅记录事件后继续运行。
+type compactErrorPolicy uint8
+
+const (
+	compactErrorStrict compactErrorPolicy = iota
+	compactErrorBestEffort
+)
+
+// Compact 串行执行一次手动 compact，并返回本次压缩统计信息。
+// 会话级锁确保同一会话的 Run 和 Compact 互斥，不同会话可并行。
+func (s *Service) Compact(ctx context.Context, input CompactInput) (CompactResult, error) {
+	if err := ctx.Err(); err != nil {
+		return CompactResult{}, err
+	}
+	if strings.TrimSpace(input.SessionID) == "" {
+		return CompactResult{}, errors.New("runtime: compact session_id is empty")
+	}
+
+	sessionMu := s.acquireSessionLock(input.SessionID)
+	sessionMu.Lock()
+	defer sessionMu.Unlock()
+
+	cfg := s.configManager.Get()
+	session, err := s.sessionStore.Load(ctx, input.SessionID)
+	if err != nil {
+		return CompactResult{}, err
+	}
+
+	session, result, err := s.runCompactForSession(ctx, input.RunID, session, cfg, contextcompact.ModeManual, compactErrorStrict)
+	if err != nil {
+		return CompactResult{}, err
+	}
+
+	return fromCompactResult(result), nil
 }
 
 // runCompactForSession 负责发出 compact 事件、调用 runner，并在成功后回写会话。
@@ -87,7 +91,7 @@ func (s *Service) runCompactForSession(
 	session agentsession.Session,
 	cfg config.Config,
 	mode contextcompact.Mode,
-	failOnError bool,
+	errorPolicy compactErrorPolicy,
 ) (agentsession.Session, contextcompact.Result, error) {
 	runner := s.compactRunner
 	if runner == nil {
@@ -98,7 +102,7 @@ func (s *Service) runCompactForSession(
 				TriggerMode: string(mode),
 				Message:     err.Error(),
 			})
-			if failOnError {
+			if errorPolicy == compactErrorStrict {
 				return session, contextcompact.Result{}, err
 			}
 			return session, contextcompact.Result{}, nil
@@ -111,7 +115,7 @@ func (s *Service) runCompactForSession(
 	result, err := runner.Run(ctx, contextcompact.Input{
 		Mode:      mode,
 		SessionID: session.ID,
-		Workdir:   effectiveSessionWorkdir(session.Workdir, cfg.Workdir),
+		Workdir:   agentsession.EffectiveWorkdir(session.Workdir, cfg.Workdir),
 		Messages:  session.Messages,
 		Config:    cfg.Context.Compact,
 	})
@@ -120,7 +124,7 @@ func (s *Service) runCompactForSession(
 			TriggerMode: string(mode),
 			Message:     err.Error(),
 		})
-		if failOnError {
+		if errorPolicy == compactErrorStrict {
 			return session, contextcompact.Result{}, err
 		}
 		return session, contextcompact.Result{}, nil
@@ -137,39 +141,18 @@ func (s *Service) runCompactForSession(
 				Message:     err.Error(),
 			})
 			session.Messages = originalMessages
-			if failOnError {
+			if errorPolicy == compactErrorStrict {
 				return session, contextcompact.Result{}, err
 			}
 			return session, contextcompact.Result{}, nil
 		}
 	}
 
-	donePayload := CompactDonePayload{
-		Applied:        result.Applied,
-		BeforeChars:    result.Metrics.BeforeChars,
-		AfterChars:     result.Metrics.AfterChars,
-		SavedRatio:     result.Metrics.SavedRatio,
-		TriggerMode:    string(mode),
-		TranscriptID:   result.TranscriptID,
-		TranscriptPath: result.TranscriptPath,
-	}
-	s.emit(ctx, EventCompactDone, runID, session.ID, donePayload)
-
+	s.emit(ctx, EventCompactDone, runID, session.ID, fromCompactResult(result))
 	return session, result, nil
 }
 
-// resetSessionTokenTotals 在 compact 成功后同步清零内存计数器与会话累计 token。
-func (s *Service) resetSessionTokenTotals(session *agentsession.Session) {
-	s.sessionInputTokens = 0
-	s.sessionOutputTokens = 0
-	if session == nil {
-		return
-	}
-	session.TokenInputTotal = 0
-	session.TokenOutputTotal = 0
-}
-
-// defaultCompactRunner 为手动 compact 选择摘要生成器并构造默认 runner。
+// defaultCompactRunner 为 runtime 懒加载默认 compact runner。
 func (s *Service) defaultCompactRunner(session agentsession.Session, cfg config.Config) (contextcompact.Runner, error) {
 	resolvedProvider, model, err := resolveCompactProviderSelection(session, cfg)
 	if err != nil {
@@ -178,7 +161,7 @@ func (s *Service) defaultCompactRunner(session agentsession.Session, cfg config.
 	return contextcompact.NewRunner(newCompactSummaryGenerator(s.providerFactory, resolvedProvider.ToRuntimeConfig(), model)), nil
 }
 
-// resolveCompactProviderSelection 优先复用会话记录的 provider/model，缺失时回退到当前配置。
+// resolveCompactProviderSelection 优先复用会话最近成功运行时记录的 provider 与 model。
 func resolveCompactProviderSelection(session agentsession.Session, cfg config.Config) (config.ResolvedProviderConfig, string, error) {
 	sessionProvider := strings.TrimSpace(session.Provider)
 	sessionModel := strings.TrimSpace(session.Model)

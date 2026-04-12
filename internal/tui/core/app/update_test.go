@@ -14,6 +14,7 @@ import (
 	"neo-code/internal/memo"
 	providertypes "neo-code/internal/provider/types"
 	agentruntime "neo-code/internal/runtime"
+	approvalflow "neo-code/internal/runtime/approval"
 	agentsession "neo-code/internal/session"
 	"neo-code/internal/tools"
 	tuibootstrap "neo-code/internal/tui/bootstrap"
@@ -199,13 +200,13 @@ func TestAppUpdateBasic(t *testing.T) {
 }
 
 func TestParsePermissionShortcutFromKeyInput(t *testing.T) {
-	if decision, ok := parsePermissionShortcut("y"); !ok || decision != agentruntime.PermissionResolutionAllowOnce {
+	if decision, ok := parsePermissionShortcut("y"); !ok || decision != approvalflow.DecisionAllowOnce {
 		t.Fatalf("expected allow_once, got %v (ok=%v)", decision, ok)
 	}
-	if decision, ok := parsePermissionShortcut("a"); !ok || decision != agentruntime.PermissionResolutionAllowSession {
+	if decision, ok := parsePermissionShortcut("a"); !ok || decision != approvalflow.DecisionAllowSession {
 		t.Fatalf("expected allow_session, got %v (ok=%v)", decision, ok)
 	}
-	if decision, ok := parsePermissionShortcut("n"); !ok || decision != agentruntime.PermissionResolutionReject {
+	if decision, ok := parsePermissionShortcut("n"); !ok || decision != approvalflow.DecisionReject {
 		t.Fatalf("expected reject, got %v (ok=%v)", decision, ok)
 	}
 	if _, ok := parsePermissionShortcut("x"); ok {
@@ -280,7 +281,7 @@ func TestUpdatePermissionResolveFlow(t *testing.T) {
 	if len(runtime.resolveCalls) != 1 || runtime.resolveCalls[0].RequestID != "perm-3" {
 		t.Fatalf("expected ResolvePermission to be called")
 	}
-	if runtime.resolveCalls[0].Decision != agentruntime.PermissionResolutionAllowOnce {
+	if runtime.resolveCalls[0].Decision != approvalflow.DecisionAllowOnce {
 		t.Fatalf("unexpected decision forwarded: %s", runtime.resolveCalls[0].Decision)
 	}
 
@@ -303,7 +304,7 @@ func TestUpdatePermissionResolvedError(t *testing.T) {
 
 	model, _ := app.Update(permissionResolutionFinishedMsg{
 		RequestID: "perm-4",
-		Decision:  agentruntime.PermissionResolutionAllowOnce,
+		Decision:  approvalflow.DecisionAllowOnce,
 		Err:       errors.New("boom"),
 	})
 	app = model.(App)
@@ -318,7 +319,7 @@ func TestUpdatePermissionResolvedError(t *testing.T) {
 
 func TestRunResolvePermissionCommand(t *testing.T) {
 	runtime := newStubRuntime()
-	cmd := runResolvePermission(runtime, "perm-5", agentruntime.PermissionResolutionAllowSession)
+	cmd := runResolvePermission(runtime, "perm-5", approvalflow.DecisionAllowSession)
 	if cmd == nil {
 		t.Fatalf("expected command")
 	}
@@ -327,7 +328,7 @@ func TestRunResolvePermissionCommand(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected permissionResolutionFinishedMsg, got %T", msg)
 	}
-	if resolved.RequestID != "perm-5" || resolved.Decision != agentruntime.PermissionResolutionAllowSession {
+	if resolved.RequestID != "perm-5" || resolved.Decision != approvalflow.DecisionAllowSession {
 		t.Fatalf("unexpected resolved msg: %#v", resolved)
 	}
 	if len(runtime.resolveCalls) != 1 {
@@ -358,7 +359,7 @@ func TestUpdatePermissionResolutionFinishedMsgIgnoresMismatch(t *testing.T) {
 	}
 	model, cmd := app.Update(permissionResolutionFinishedMsg{
 		RequestID: "perm-8",
-		Decision:  agentruntime.PermissionResolutionAllowOnce,
+		Decision:  approvalflow.DecisionAllowOnce,
 	})
 	if model == nil {
 		t.Fatalf("expected model")
@@ -397,7 +398,7 @@ func TestUpdatePermissionRejectFlow(t *testing.T) {
 	msg := cmd()
 	next, _ := app.Update(msg)
 	app = next.(App)
-	if len(runtime.resolveCalls) != 1 || runtime.resolveCalls[0].Decision != agentruntime.PermissionResolutionReject {
+	if len(runtime.resolveCalls) != 1 || runtime.resolveCalls[0].Decision != approvalflow.DecisionReject {
 		t.Fatalf("expected reject decision to be submitted")
 	}
 	if app.state.StatusText != statusPermissionSubmitted {
@@ -1039,7 +1040,7 @@ func TestRuntimeEventProviderRetryHandler(t *testing.T) {
 
 func TestRuntimeEventCompactDoneHandler(t *testing.T) {
 	app, _ := newTestApp(t)
-	payload := agentruntime.CompactDonePayload{TriggerMode: "auto", SavedRatio: 0.5, BeforeChars: 10, AfterChars: 5, TranscriptPath: "path"}
+	payload := agentruntime.CompactResult{TriggerMode: "auto", SavedRatio: 0.5, BeforeChars: 10, AfterChars: 5, TranscriptPath: "path"}
 	handled := runtimeEventCompactDoneHandler(&app, agentruntime.RuntimeEvent{Payload: payload})
 	if !handled {
 		t.Fatalf("expected true")

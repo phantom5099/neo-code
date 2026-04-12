@@ -41,7 +41,7 @@ func TestResolveWorkdirForSessionAndNormalizeErrors(t *testing.T) {
 		t.Fatalf("expected empty workdir error, got %v", err)
 	}
 
-	_, err = normalizeExistingWorkdir(filepath.Join(base, "missing"))
+	_, err = agentsession.ResolveExistingDir(filepath.Join(base, "missing"))
 	if err == nil || !strings.Contains(err.Error(), "resolve workdir") {
 		t.Fatalf("expected missing path error, got %v", err)
 	}
@@ -50,7 +50,7 @@ func TestResolveWorkdirForSessionAndNormalizeErrors(t *testing.T) {
 	if err := os.WriteFile(filePath, []byte("x"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
-	_, err = normalizeExistingWorkdir(filePath)
+	_, err = agentsession.ResolveExistingDir(filePath)
 	if err == nil || !strings.Contains(err.Error(), "is not a directory") {
 		t.Fatalf("expected non-directory error, got %v", err)
 	}

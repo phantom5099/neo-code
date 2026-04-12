@@ -66,7 +66,7 @@
   - token 累积记录与事件发射
   - 自动压缩触发与重置逻辑
 - 修改 `context` 时，重点覆盖：
-  - Build 输入输出契约（含 Metadata 新字段、ShouldAutoCompact 决策）
+  - Build 输入输出契约（含 Metadata 新字段、AutoCompactSuggested 决策）
   - micro compact 策略
   - 消息裁剪边界
   - AGENTS.md 加载与截断

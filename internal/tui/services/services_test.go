@@ -13,6 +13,7 @@ import (
 	configstate "neo-code/internal/config/state"
 	providertypes "neo-code/internal/provider/types"
 	agentruntime "neo-code/internal/runtime"
+	approvalflow "neo-code/internal/runtime/approval"
 )
 
 type stubRunner struct {
@@ -120,7 +121,7 @@ func TestRunResolvePermissionCmd(t *testing.T) {
 	resolver := &stubPermissionResolver{err: errors.New("permission failed")}
 	input := agentruntime.PermissionResolutionInput{
 		RequestID: "perm-1",
-		Decision:  agentruntime.PermissionResolutionAllowSession,
+		Decision:  approvalflow.DecisionAllowSession,
 	}
 	msg := RunResolvePermissionCmd(
 		resolver,
@@ -140,13 +141,13 @@ func TestRunResolvePermissionCmd(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected wrapped permission result message, got %T %#v", msg, msg)
 	}
-	if got.Input.RequestID != "perm-1" || got.Input.Decision != agentruntime.PermissionResolutionAllowSession {
+	if got.Input.RequestID != "perm-1" || got.Input.Decision != approvalflow.DecisionAllowSession {
 		t.Fatalf("unexpected permission input forwarded: %+v", got.Input)
 	}
 	if got.Err == nil || got.Err.Error() != "permission failed" {
 		t.Fatalf("expected forwarded permission error, got %#v", got.Err)
 	}
-	if resolver.lastInput.RequestID != "perm-1" || resolver.lastInput.Decision != agentruntime.PermissionResolutionAllowSession {
+	if resolver.lastInput.RequestID != "perm-1" || resolver.lastInput.Decision != approvalflow.DecisionAllowSession {
 		t.Fatalf("unexpected resolver input: %+v", resolver.lastInput)
 	}
 	if !resolver.hasDeadline {

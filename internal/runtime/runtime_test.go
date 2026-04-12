@@ -14,7 +14,9 @@ import (
 	agentcontext "neo-code/internal/context"
 	contextcompact "neo-code/internal/context/compact"
 	"neo-code/internal/provider"
+	"neo-code/internal/provider/streaming"
 	providertypes "neo-code/internal/provider/types"
+	approvalflow "neo-code/internal/runtime/approval"
 	"neo-code/internal/security"
 	agentsession "neo-code/internal/session"
 	"neo-code/internal/tools"
@@ -1134,7 +1136,7 @@ waitRequest:
 
 	if err := service.ResolvePermission(context.Background(), PermissionResolutionInput{
 		RequestID: requestPayload.RequestID,
-		Decision:  PermissionResolutionAllowSession,
+		Decision:  approvalflow.DecisionAllowSession,
 	}); err != nil {
 		t.Fatalf("ResolvePermission() error = %v", err)
 	}
@@ -2051,9 +2053,10 @@ func TestServiceCompactManualFailureReturnsError(t *testing.T) {
 }
 
 func TestServiceCompactUsesSessionProviderAndModelWhenPresent(t *testing.T) {
-	t.Parallel()
-
 	geminiEnv := runtimeTestAPIKeyEnv(t) + "_GEMINI"
+	tempHome := t.TempDir()
+	setRuntimeEnv(t, "USERPROFILE", tempHome)
+	setRuntimeEnv(t, "HOME", tempHome)
 	manager := newRuntimeConfigManagerWithProviderEnvs(t, map[string]string{
 		config.GeminiName: geminiEnv,
 	})
@@ -2125,9 +2128,10 @@ func TestServiceCompactUsesSessionProviderAndModelWhenPresent(t *testing.T) {
 }
 
 func TestServiceCompactFallsBackToCurrentProviderWhenSessionMetadataMissing(t *testing.T) {
-	t.Parallel()
-
 	geminiEnv := runtimeTestAPIKeyEnv(t) + "_GEMINI"
+	tempHome := t.TempDir()
+	setRuntimeEnv(t, "USERPROFILE", tempHome)
+	setRuntimeEnv(t, "HOME", tempHome)
 	manager := newRuntimeConfigManagerWithProviderEnvs(t, map[string]string{
 		config.GeminiName: geminiEnv,
 	})
@@ -2579,6 +2583,14 @@ func setRuntimeProviderEnv(t *testing.T, key string, value string) {
 	}
 }
 
+func setRuntimeEnv(t *testing.T, key string, value string) {
+	t.Helper()
+	restoreRuntimeEnv(t, key)
+	if err := os.Setenv(key, value); err != nil {
+		t.Fatalf("set env %s: %v", key, err)
+	}
+}
+
 func restoreRuntimeEnv(t *testing.T, key string) {
 	t.Helper()
 	value, ok := os.LookupEnv(key)
@@ -2696,10 +2708,10 @@ func containsError(err error, target string) bool {
 
 func TestWorkdirHelperFunctions(t *testing.T) {
 	t.Run("effectiveSessionWorkdir prefers session value", func(t *testing.T) {
-		if got := effectiveSessionWorkdir("  /session ", "/default"); got != "/session" {
+		if got := agentsession.EffectiveWorkdir("  /session ", "/default"); got != "/session" {
 			t.Fatalf("expected session workdir, got %q", got)
 		}
-		if got := effectiveSessionWorkdir("", " /default "); got != "/default" {
+		if got := agentsession.EffectiveWorkdir("", " /default "); got != "/default" {
 			t.Fatalf("expected default workdir, got %q", got)
 		}
 	})
@@ -2737,7 +2749,7 @@ func TestWorkdirHelperFunctions(t *testing.T) {
 		if err := os.WriteFile(filePath, []byte("x"), 0o644); err != nil {
 			t.Fatalf("write file: %v", err)
 		}
-		_, err = normalizeExistingWorkdir(filePath)
+		_, err = agentsession.ResolveExistingDir(filePath)
 		if err == nil || !containsError(err, "is not a directory") {
 			t.Fatalf("expected non-directory error, got %v", err)
 		}
@@ -2813,58 +2825,14 @@ func TestProviderRetryBackoff(t *testing.T) {
 	}
 }
 
-func TestPermissionEventViewPayloadMapping(t *testing.T) {
-	t.Parallel()
-
-	view := permissionEventView{
-		toolName:   "webfetch",
-		actionType: string(security.ActionTypeRead),
-		operation:  "fetch",
-		targetType: string(security.TargetTypeURL),
-		target:     "https://example.com",
-		decision:   "ask",
-		reason:     "need approval",
-		ruleID:     "rule-1",
-		scope:      string(tools.SessionPermissionScopeAlways),
-		resolvedAs: "rejected",
-	}
-
-	requestPayload := view.toRequestPayload()
-	if requestPayload.ToolName != view.toolName ||
-		requestPayload.ActionType != view.actionType ||
-		requestPayload.Operation != view.operation ||
-		requestPayload.TargetType != view.targetType ||
-		requestPayload.Target != view.target ||
-		requestPayload.Decision != view.decision ||
-		requestPayload.Reason != view.reason ||
-		requestPayload.RuleID != view.ruleID ||
-		requestPayload.RememberScope != view.scope {
-		t.Fatalf("unexpected request payload: %+v", requestPayload)
-	}
-
-	resolvedPayload := view.toResolvedPayload()
-	if resolvedPayload.ToolName != view.toolName ||
-		resolvedPayload.ActionType != view.actionType ||
-		resolvedPayload.Operation != view.operation ||
-		resolvedPayload.TargetType != view.targetType ||
-		resolvedPayload.Target != view.target ||
-		resolvedPayload.Decision != view.decision ||
-		resolvedPayload.Reason != view.reason ||
-		resolvedPayload.RuleID != view.ruleID ||
-		resolvedPayload.RememberScope != view.scope ||
-		resolvedPayload.ResolvedAs != view.resolvedAs {
-		t.Fatalf("unexpected resolved payload: %+v", resolvedPayload)
-	}
-}
-
 func TestStreamAccumulatorBuildMessageRejectsMissingToolName(t *testing.T) {
 	t.Parallel()
 
-	acc := newStreamAccumulator()
-	acc.accumulateToolCallStart(0, "call-1", "")
-	acc.accumulateToolCallDelta(0, "call-1", "{}")
+	acc := streaming.NewAccumulator()
+	acc.AccumulateToolCallStart(0, "call-1", "")
+	acc.AccumulateToolCallDelta(0, "call-1", "{}")
 
-	_, err := acc.buildMessage()
+	_, err := acc.BuildMessage()
 	if err == nil || !containsError(err, "without name") {
 		t.Fatalf("expected missing tool name error, got %v", err)
 	}
@@ -2937,36 +2905,30 @@ func TestServiceRunFailsWhenAssistantSaveFails(t *testing.T) {
 func TestHandleProviderStreamEventErrorBranches(t *testing.T) {
 	t.Parallel()
 
-	acc := newStreamAccumulator()
+	acc := streaming.NewAccumulator()
 
-	err := handleProviderStreamEvent(
+	err := streaming.HandleEvent(
 		providertypes.StreamEvent{Type: providertypes.StreamEventToolCallStart},
 		acc,
-		nil,
-		nil,
-		nil,
+		streaming.Hooks{},
 	)
 	if err == nil || !containsError(err, "tool_call_start event payload is nil") {
 		t.Fatalf("expected tool_call_start payload error, got %v", err)
 	}
 
-	err = handleProviderStreamEvent(
+	err = streaming.HandleEvent(
 		providertypes.StreamEvent{Type: providertypes.StreamEventToolCallDelta},
 		acc,
-		nil,
-		nil,
-		nil,
+		streaming.Hooks{},
 	)
 	if err == nil || !containsError(err, "tool_call_delta event payload is nil") {
 		t.Fatalf("expected tool_call_delta payload error, got %v", err)
 	}
 
-	err = handleProviderStreamEvent(
+	err = streaming.HandleEvent(
 		providertypes.StreamEvent{Type: providertypes.StreamEventMessageDone},
 		acc,
-		nil,
-		nil,
-		nil,
+		streaming.Hooks{},
 	)
 	if err == nil || !containsError(err, "message_done event payload is nil") {
 		t.Fatalf("expected message_done payload error, got %v", err)
@@ -3013,15 +2975,20 @@ func TestCallProviderWithRetryReturnsCombinedForwardError(t *testing.T) {
 	}
 	service := NewWithFactory(manager, registry, store, &scriptedProviderFactory{provider: scripted}, nil)
 
-	_, err := service.callProviderWithRetry(
-		context.Background(),
-		"run-forward-error",
-		"session-forward-error",
-		providertypes.GenerateRequest{
+	state := newRunState("run-forward-error", agentsession.Session{ID: "session-forward-error"})
+	snapshot := turnSnapshot{
+		providerConfig: provider.RuntimeConfig{},
+		request: providertypes.GenerateRequest{
 			Model:        "test-model",
 			SystemPrompt: "prompt",
 			Messages:     []providertypes.Message{{Role: providertypes.RoleUser, Content: "hello"}},
 		},
+	}
+
+	_, err := service.callProviderWithRetry(
+		context.Background(),
+		&state,
+		snapshot,
 	)
 	if err == nil || !containsError(err, "provider stream handling failed after provider error") {
 		t.Fatalf("expected combined forward/provider error, got %v", err)
@@ -3194,9 +3161,9 @@ func TestServiceRunAutoCompactsAndResetsSessionTokens(t *testing.T) {
 	builder := &stubContextBuilder{
 		buildFn: func(ctx context.Context, input agentcontext.BuildInput) (agentcontext.BuildResult, error) {
 			return agentcontext.BuildResult{
-				SystemPrompt:      "auto compact prompt",
-				Messages:          append([]providertypes.Message(nil), input.Messages...),
-				ShouldAutoCompact: input.Metadata.SessionInputTokens >= input.Compact.AutoCompactThreshold,
+				SystemPrompt:         "auto compact prompt",
+				Messages:             append([]providertypes.Message(nil), input.Messages...),
+				AutoCompactSuggested: input.Metadata.SessionInputTokens >= input.Compact.AutoCompactThreshold,
 			}, nil
 		},
 	}
@@ -3282,13 +3249,6 @@ func TestServiceRunAutoCompactsAndResetsSessionTokens(t *testing.T) {
 		t.Fatalf("expected first provider request to use compacted latest answer, got %+v", scripted.requests[0].Messages)
 	}
 
-	if service.sessionInputTokens != 0 {
-		t.Fatalf("expected service input tokens to reset, got %d", service.sessionInputTokens)
-	}
-	if service.sessionOutputTokens != 0 {
-		t.Fatalf("expected service output tokens to reset, got %d", service.sessionOutputTokens)
-	}
-
 	saved, err := store.Load(context.Background(), session.ID)
 	if err != nil {
 		t.Fatalf("load compacted session: %v", err)
@@ -3319,9 +3279,9 @@ func TestServiceRunAutoCompactsAndResetsSessionTokens(t *testing.T) {
 		if event.Type != EventCompactDone {
 			continue
 		}
-		payload, ok := event.Payload.(CompactDonePayload)
+		payload, ok := event.Payload.(CompactResult)
 		if !ok {
-			t.Fatalf("expected CompactDonePayload, got %T", event.Payload)
+			t.Fatalf("expected CompactResult, got %T", event.Payload)
 		}
 		if payload.TriggerMode != string(contextcompact.ModeAuto) {
 			t.Fatalf("expected trigger mode %q, got %q", contextcompact.ModeAuto, payload.TriggerMode)
@@ -3361,9 +3321,9 @@ func TestServiceRunAutoCompactNoopDoesNotDisableReactiveRetry(t *testing.T) {
 	builder := &stubContextBuilder{
 		buildFn: func(ctx context.Context, input agentcontext.BuildInput) (agentcontext.BuildResult, error) {
 			return agentcontext.BuildResult{
-				SystemPrompt:      "auto compact prompt",
-				Messages:          append([]providertypes.Message(nil), input.Messages...),
-				ShouldAutoCompact: input.Metadata.SessionInputTokens >= input.Compact.AutoCompactThreshold,
+				SystemPrompt:         "auto compact prompt",
+				Messages:             append([]providertypes.Message(nil), input.Messages...),
+				AutoCompactSuggested: input.Metadata.SessionInputTokens >= input.Compact.AutoCompactThreshold,
 			}, nil
 		},
 	}
@@ -3579,9 +3539,9 @@ func TestServiceRunReactivelyCompactsOnContextTooLong(t *testing.T) {
 		if event.Type != EventCompactDone {
 			continue
 		}
-		payload, ok := event.Payload.(CompactDonePayload)
+		payload, ok := event.Payload.(CompactResult)
 		if !ok {
-			t.Fatalf("expected CompactDonePayload, got %T", event.Payload)
+			t.Fatalf("expected CompactResult, got %T", event.Payload)
 		}
 		if payload.TriggerMode != string(contextcompact.ModeReactive) {
 			t.Fatalf("expected trigger mode %q, got %q", contextcompact.ModeReactive, payload.TriggerMode)
@@ -3794,51 +3754,42 @@ func TestServiceRunDoesNotReactiveCompactOnPlainTextTokenThrottle(t *testing.T) 
 func TestRestoreSessionTokens(t *testing.T) {
 	t.Parallel()
 
-	service := &Service{
-		events: make(chan RuntimeEvent, 128),
-	}
 	session := agentsession.Session{
 		TokenInputTotal:  500,
 		TokenOutputTotal: 200,
 	}
 
-	service.restoreSessionTokens(session)
+	state := newRunState("", session)
 
-	if service.sessionInputTokens != 500 {
-		t.Fatalf("expected sessionInputTokens == 500, got %d", service.sessionInputTokens)
+	if state.tokenInputTotal != 500 {
+		t.Fatalf("expected sessionInputTokens == 500, got %d", state.tokenInputTotal)
 	}
-	if service.sessionOutputTokens != 200 {
-		t.Fatalf("expected sessionOutputTokens == 200, got %d", service.sessionOutputTokens)
+	if state.tokenOutputTotal != 200 {
+		t.Fatalf("expected sessionOutputTokens == 200, got %d", state.tokenOutputTotal)
 	}
 }
 
 func TestRestoreSessionTokensNewSession(t *testing.T) {
 	t.Parallel()
 
-	service := &Service{
-		events: make(chan RuntimeEvent, 128),
-	}
 	session := agentsession.Session{
 		TokenInputTotal:  0,
 		TokenOutputTotal: 0,
 	}
 
-	service.restoreSessionTokens(session)
+	state := newRunState("", session)
 
-	if service.sessionInputTokens != 0 {
-		t.Fatalf("expected sessionInputTokens == 0, got %d", service.sessionInputTokens)
+	if state.tokenInputTotal != 0 {
+		t.Fatalf("expected sessionInputTokens == 0, got %d", state.tokenInputTotal)
 	}
-	if service.sessionOutputTokens != 0 {
-		t.Fatalf("expected sessionOutputTokens == 0, got %d", service.sessionOutputTokens)
+	if state.tokenOutputTotal != 0 {
+		t.Fatalf("expected sessionOutputTokens == 0, got %d", state.tokenOutputTotal)
 	}
 }
 
 func TestAutoCompactThresholdEnabled(t *testing.T) {
 	t.Parallel()
 
-	service := &Service{
-		events: make(chan RuntimeEvent, 128),
-	}
 	cfg := config.Config{
 		Context: config.ContextConfig{
 			AutoCompact: config.AutoCompactConfig{
@@ -3848,7 +3799,7 @@ func TestAutoCompactThresholdEnabled(t *testing.T) {
 		},
 	}
 
-	threshold := service.autoCompactThreshold(cfg)
+	threshold := autoCompactThreshold(cfg)
 	if threshold != 50000 {
 		t.Fatalf("expected threshold == 50000, got %d", threshold)
 	}
@@ -3857,9 +3808,6 @@ func TestAutoCompactThresholdEnabled(t *testing.T) {
 func TestAutoCompactThresholdDisabled(t *testing.T) {
 	t.Parallel()
 
-	service := &Service{
-		events: make(chan RuntimeEvent, 128),
-	}
 	cfg := config.Config{
 		Context: config.ContextConfig{
 			AutoCompact: config.AutoCompactConfig{
@@ -3869,7 +3817,7 @@ func TestAutoCompactThresholdDisabled(t *testing.T) {
 		},
 	}
 
-	threshold := service.autoCompactThreshold(cfg)
+	threshold := autoCompactThreshold(cfg)
 	if threshold != 0 {
 		t.Fatalf("expected threshold == 0, got %d", threshold)
 	}
@@ -3878,9 +3826,6 @@ func TestAutoCompactThresholdDisabled(t *testing.T) {
 func TestAutoCompactThresholdZeroValue(t *testing.T) {
 	t.Parallel()
 
-	service := &Service{
-		events: make(chan RuntimeEvent, 128),
-	}
 	cfg := config.Config{
 		Context: config.ContextConfig{
 			AutoCompact: config.AutoCompactConfig{
@@ -3890,7 +3835,7 @@ func TestAutoCompactThresholdZeroValue(t *testing.T) {
 		},
 	}
 
-	threshold := service.autoCompactThreshold(cfg)
+	threshold := autoCompactThreshold(cfg)
 	if threshold != 0 {
 		t.Fatalf("expected threshold == 0, got %d", threshold)
 	}
@@ -3900,10 +3845,9 @@ func TestTokenUsageRecordedOnMessageDone(t *testing.T) {
 	t.Parallel()
 
 	service := &Service{
-		events:              make(chan RuntimeEvent, 128),
-		sessionInputTokens:  0,
-		sessionOutputTokens: 0,
+		events: make(chan RuntimeEvent, 128),
 	}
+	state := runState{}
 
 	events := collectRuntimeEvents(service.Events())
 
@@ -3913,35 +3857,32 @@ func TestTokenUsageRecordedOnMessageDone(t *testing.T) {
 		OutputTokens: 50,
 	})
 
-	// Handle the event with an onMessageDone callback that mimics forwardProviderEvents
-	err := handleProviderStreamEvent(
+	// 使用与运行时相同的流式事件处理器验证 usage 累积行为。
+	err := streaming.HandleEvent(
 		messageDoneEvent,
 		nil,
-		nil,
-		nil,
-		func(payload providertypes.MessageDonePayload) {
+		streaming.Hooks{OnMessageDone: func(payload providertypes.MessageDonePayload) {
 			if payload.Usage != nil {
-				service.sessionInputTokens += payload.Usage.InputTokens
-				service.sessionOutputTokens += payload.Usage.OutputTokens
+				state.recordUsage(payload.Usage.InputTokens, payload.Usage.OutputTokens)
 				service.emit(context.Background(), EventTokenUsage, "test-run-id", "test-session-id", TokenUsagePayload{
 					InputTokens:         payload.Usage.InputTokens,
 					OutputTokens:        payload.Usage.OutputTokens,
-					SessionInputTokens:  service.sessionInputTokens,
-					SessionOutputTokens: service.sessionOutputTokens,
+					SessionInputTokens:  state.tokenInputTotal,
+					SessionOutputTokens: state.tokenOutputTotal,
 				})
 			}
-		},
+		}},
 	)
 	if err != nil {
-		t.Fatalf("handleProviderStreamEvent error = %v", err)
+		t.Fatalf("streaming.HandleEvent error = %v", err)
 	}
 
 	// Verify the service counters are updated
-	if service.sessionInputTokens != 100 {
-		t.Fatalf("expected sessionInputTokens == 100, got %d", service.sessionInputTokens)
+	if state.tokenInputTotal != 100 {
+		t.Fatalf("expected sessionInputTokens == 100, got %d", state.tokenInputTotal)
 	}
-	if service.sessionOutputTokens != 50 {
-		t.Fatalf("expected sessionOutputTokens == 50, got %d", service.sessionOutputTokens)
+	if state.tokenOutputTotal != 50 {
+		t.Fatalf("expected sessionOutputTokens == 50, got %d", state.tokenOutputTotal)
 	}
 
 	// Verify EventTokenUsage was emitted with correct payload

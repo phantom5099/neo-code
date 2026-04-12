@@ -8,6 +8,7 @@ import (
 	"time"
 
 	providertypes "neo-code/internal/provider/types"
+	approvalflow "neo-code/internal/runtime/approval"
 	"neo-code/internal/security"
 	"neo-code/internal/tools"
 )
@@ -34,7 +35,7 @@ func TestResolvePermissionValidation(t *testing.T) {
 	}
 	if err := service.ResolvePermission(context.Background(), PermissionResolutionInput{
 		RequestID: "perm-not-found",
-		Decision:  PermissionResolutionAllowOnce,
+		Decision:  approvalflow.DecisionAllowOnce,
 	}); err == nil {
 		t.Fatalf("expected request not found error")
 	}
@@ -51,36 +52,23 @@ func TestResolvePermissionSuccess(t *testing.T) {
 		nil,
 	)
 
-	request := registerPendingPermission(service, permissionExecutionInput{
-		RunID:     "run-permission",
-		SessionID: "session-permission",
-		Call: providertypes.ToolCall{
-			ID:   "call-1",
-			Name: "webfetch",
-		},
-	}, security.Action{
-		Type: security.ActionTypeRead,
-		Payload: security.ActionPayload{
-			ToolName:   "webfetch",
-			Resource:   "webfetch",
-			Operation:  "fetch",
-			TargetType: security.TargetTypeURL,
-			Target:     "https://example.com",
-		},
-	})
-	defer clearPendingPermission(service, request.RequestID)
+	requestID, resultCh, err := service.approvalBroker.Open()
+	if err != nil {
+		t.Fatalf("open approval request: %v", err)
+	}
+	defer service.approvalBroker.Close(requestID)
 
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- service.ResolvePermission(context.Background(), PermissionResolutionInput{
-			RequestID: request.RequestID,
-			Decision:  PermissionResolutionAllowSession,
+			RequestID: requestID,
+			Decision:  approvalflow.DecisionAllowSession,
 		})
 	}()
 
 	select {
-	case resolved := <-request.ResultCh:
-		if resolved != PermissionResolutionAllowSession {
+	case resolved := <-resultCh:
+		if resolved != approvalflow.DecisionAllowSession {
 			t.Fatalf("expected allow session decision, got %q", resolved)
 		}
 	case <-time.After(2 * time.Second):
@@ -103,25 +91,15 @@ func TestResolvePermissionDuplicateSubmissionIsNonBlocking(t *testing.T) {
 		nil,
 	)
 
-	request := registerPendingPermission(service, permissionExecutionInput{
-		RunID:     "run-permission-dup",
-		SessionID: "session-permission-dup",
-		Call: providertypes.ToolCall{
-			ID:   "call-dup",
-			Name: "webfetch",
-		},
-	}, security.Action{
-		Type: security.ActionTypeRead,
-		Payload: security.ActionPayload{
-			ToolName: "webfetch",
-			Resource: "webfetch",
-		},
-	})
-	defer clearPendingPermission(service, request.RequestID)
+	requestID, _, err := service.approvalBroker.Open()
+	if err != nil {
+		t.Fatalf("open approval request: %v", err)
+	}
+	defer service.approvalBroker.Close(requestID)
 
 	if err := service.ResolvePermission(context.Background(), PermissionResolutionInput{
-		RequestID: request.RequestID,
-		Decision:  PermissionResolutionAllowOnce,
+		RequestID: requestID,
+		Decision:  approvalflow.DecisionAllowOnce,
 	}); err != nil {
 		t.Fatalf("first ResolvePermission() error = %v", err)
 	}
@@ -129,8 +107,8 @@ func TestResolvePermissionDuplicateSubmissionIsNonBlocking(t *testing.T) {
 	secondDone := make(chan error, 1)
 	go func() {
 		secondDone <- service.ResolvePermission(context.Background(), PermissionResolutionInput{
-			RequestID: request.RequestID,
-			Decision:  PermissionResolutionAllowSession,
+			RequestID: requestID,
+			Decision:  approvalflow.DecisionAllowSession,
 		})
 	}()
 
@@ -215,7 +193,7 @@ waitRequest:
 
 	if err := service.ResolvePermission(context.Background(), PermissionResolutionInput{
 		RequestID: requestPayload.RequestID,
-		Decision:  PermissionResolutionReject,
+		Decision:  approvalflow.DecisionReject,
 	}); err != nil {
 		t.Fatalf("ResolvePermission() error = %v", err)
 	}
@@ -251,26 +229,13 @@ waitRequest:
 func TestPermissionHelpers(t *testing.T) {
 	t.Parallel()
 
-	if got := normalizePermissionResolutionDecision(PermissionResolutionDecision("Y")); got != PermissionResolutionAllowOnce {
-		t.Fatalf("expected Y => allow_once, got %q", got)
-	}
-	if got := normalizePermissionResolutionDecision(PermissionResolutionDecision("a")); got != PermissionResolutionAllowSession {
-		t.Fatalf("expected a => allow_session, got %q", got)
-	}
-	if got := normalizePermissionResolutionDecision(PermissionResolutionDecision("n")); got != PermissionResolutionReject {
-		t.Fatalf("expected n => reject, got %q", got)
-	}
-	if got := normalizePermissionResolutionDecision(PermissionResolutionDecision("???")); got != "" {
-		t.Fatalf("expected unknown => empty, got %q", got)
-	}
-
-	if scope, err := rememberScopeFromDecision(PermissionResolutionAllowOnce); err != nil || scope != tools.SessionPermissionScopeOnce {
+	if scope, err := rememberScopeFromDecision(approvalflow.DecisionAllowOnce); err != nil || scope != tools.SessionPermissionScopeOnce {
 		t.Fatalf("expected once scope, got %q / %v", scope, err)
 	}
-	if scope, err := rememberScopeFromDecision(PermissionResolutionAllowSession); err != nil || scope != tools.SessionPermissionScopeAlways {
+	if scope, err := rememberScopeFromDecision(approvalflow.DecisionAllowSession); err != nil || scope != tools.SessionPermissionScopeAlways {
 		t.Fatalf("expected always scope, got %q / %v", scope, err)
 	}
-	if scope, err := rememberScopeFromDecision(PermissionResolutionReject); err != nil || scope != tools.SessionPermissionScopeReject {
+	if scope, err := rememberScopeFromDecision(approvalflow.DecisionReject); err != nil || scope != tools.SessionPermissionScopeReject {
 		t.Fatalf("expected reject scope, got %q / %v", scope, err)
 	}
 	if _, err := rememberScopeFromDecision(PermissionResolutionDecision("invalid")); err == nil {
@@ -284,8 +249,8 @@ func TestPermissionHelpers(t *testing.T) {
 			Resource: "filesystem_grep",
 		},
 	})
-	if category != "filesystem_read" {
-		t.Fatalf("expected filesystem_read category, got %q", category)
+	if category != permissionToolCategoryFilesystemRead {
+		t.Fatalf("expected %s category, got %q", permissionToolCategoryFilesystemRead, category)
 	}
 
 	category = permissionToolCategory(security.Action{
@@ -315,8 +280,8 @@ func TestPermissionHelpers(t *testing.T) {
 			Target: "mcp",
 		},
 	})
-	if category != "mcp" {
-		t.Fatalf("expected mcp fallback category, got %q", category)
+	if category != permissionToolCategoryMCP {
+		t.Fatalf("expected %s fallback category, got %q", permissionToolCategoryMCP, category)
 	}
 }
 
@@ -330,28 +295,18 @@ func TestResolvePermissionCanceledContext(t *testing.T) {
 		&scriptedProviderFactory{provider: &scriptedProvider{}},
 		nil,
 	)
-	request := registerPendingPermission(service, permissionExecutionInput{
-		RunID:     "run-canceled",
-		SessionID: "session-canceled",
-		Call: providertypes.ToolCall{
-			ID:   "call-canceled",
-			Name: "webfetch",
-		},
-	}, security.Action{
-		Type: security.ActionTypeRead,
-		Payload: security.ActionPayload{
-			ToolName: "webfetch",
-			Resource: "webfetch",
-		},
-	})
-	defer clearPendingPermission(service, request.RequestID)
-	request.ResultCh <- PermissionResolutionAllowOnce
+	requestID, resultCh, err := service.approvalBroker.Open()
+	if err != nil {
+		t.Fatalf("open approval request: %v", err)
+	}
+	defer service.approvalBroker.Close(requestID)
+	resultCh <- approvalflow.DecisionAllowOnce
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if err := service.ResolvePermission(ctx, PermissionResolutionInput{
-		RequestID: request.RequestID,
-		Decision:  PermissionResolutionAllowOnce,
+		RequestID: requestID,
+		Decision:  approvalflow.DecisionAllowOnce,
 	}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context canceled, got %v", err)
 	}

@@ -13,6 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	agentruntime "neo-code/internal/runtime"
+	approvalflow "neo-code/internal/runtime/approval"
 	agentsession "neo-code/internal/session"
 	tuistate "neo-code/internal/tui/state"
 )
@@ -123,10 +124,10 @@ func TestUpdatePendingPermissionInputSelectAndSubmit(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected permissionResolutionFinishedMsg, got %T", msg)
 	}
-	if done.RequestID != "perm-1" || done.Decision != agentruntime.PermissionResolutionAllowOnce {
+	if done.RequestID != "perm-1" || done.Decision != approvalflow.DecisionAllowOnce {
 		t.Fatalf("unexpected submitted decision: %+v", done)
 	}
-	if runtime.lastResolved.Decision != agentruntime.PermissionResolutionAllowOnce {
+	if runtime.lastResolved.Decision != approvalflow.DecisionAllowOnce {
 		t.Fatalf("runtime decision mismatch: %+v", runtime.lastResolved)
 	}
 }
@@ -156,7 +157,7 @@ func TestUpdatePendingPermissionInputShortcut(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected permissionResolutionFinishedMsg, got %T", msg)
 	}
-	if done.Decision != agentruntime.PermissionResolutionReject {
+	if done.Decision != approvalflow.DecisionReject {
 		t.Fatalf("expected reject decision, got %q", done.Decision)
 	}
 }
@@ -176,7 +177,7 @@ func TestUpdatePendingPermissionInputSubmittingConsumesInput(t *testing.T) {
 
 func TestSubmitPermissionDecisionValidation(t *testing.T) {
 	app := newPermissionTestApp(&permissionTestRuntime{})
-	if cmd := app.submitPermissionDecision(agentruntime.PermissionResolutionAllowOnce); cmd != nil {
+	if cmd := app.submitPermissionDecision(approvalflow.DecisionAllowOnce); cmd != nil {
 		t.Fatalf("expected nil cmd when no pending permission")
 	}
 
@@ -184,7 +185,7 @@ func TestSubmitPermissionDecisionValidation(t *testing.T) {
 		Request:  agentruntime.PermissionRequestPayload{RequestID: "  "},
 		Selected: 0,
 	}
-	if cmd := app.submitPermissionDecision(agentruntime.PermissionResolutionAllowOnce); cmd != nil {
+	if cmd := app.submitPermissionDecision(approvalflow.DecisionAllowOnce); cmd != nil {
 		t.Fatalf("expected nil cmd for empty request id")
 	}
 }
@@ -237,7 +238,7 @@ func TestUpdatePermissionResolutionFinishedMessage(t *testing.T) {
 
 	model, _ := app.Update(permissionResolutionFinishedMsg{
 		RequestID: "perm-5",
-		Decision:  agentruntime.PermissionResolutionAllowOnce,
+		Decision:  approvalflow.DecisionAllowOnce,
 		Err:       errors.New("network"),
 	})
 	next := model.(App)
@@ -259,7 +260,7 @@ func TestUpdatePermissionResolutionFinishedMessageSuccessClearsPendingPermission
 
 	model, _ := app.Update(permissionResolutionFinishedMsg{
 		RequestID: "perm-5-success",
-		Decision:  agentruntime.PermissionResolutionAllowOnce,
+		Decision:  approvalflow.DecisionAllowOnce,
 	})
 	next := model.(App)
 	if next.pendingPermission != nil {
@@ -313,10 +314,10 @@ func TestRuntimePermissionRequestHandlerAutoRejectsSupersededRequest(t *testing.
 	if !ok {
 		t.Fatalf("expected permissionResolutionFinishedMsg, got %T", msg)
 	}
-	if done.RequestID != "perm-old" || done.Decision != agentruntime.PermissionResolutionReject {
+	if done.RequestID != "perm-old" || done.Decision != approvalflow.DecisionReject {
 		t.Fatalf("unexpected auto-reject payload: %+v", done)
 	}
-	if runtime.lastResolved.RequestID != "perm-old" || runtime.lastResolved.Decision != agentruntime.PermissionResolutionReject {
+	if runtime.lastResolved.RequestID != "perm-old" || runtime.lastResolved.Decision != approvalflow.DecisionReject {
 		t.Fatalf("unexpected runtime resolve input: %+v", runtime.lastResolved)
 	}
 }
@@ -370,7 +371,7 @@ func TestHandleRuntimeEventQueuesDeferredCommand(t *testing.T) {
 	if _, ok := batch[0]().(permissionResolutionFinishedMsg); !ok {
 		t.Fatalf("expected deferred batch command to resolve permission")
 	}
-	if runtime.lastResolved.RequestID != "perm-old" || runtime.lastResolved.Decision != agentruntime.PermissionResolutionReject {
+	if runtime.lastResolved.RequestID != "perm-old" || runtime.lastResolved.Decision != approvalflow.DecisionReject {
 		t.Fatalf("expected deferred auto-reject to run, got %+v", runtime.lastResolved)
 	}
 }
@@ -394,7 +395,7 @@ func TestRuntimePermissionResolvedHandlerUsesExactRequestIDMatch(t *testing.T) {
 
 func TestRunResolvePermissionForwardsRuntimeError(t *testing.T) {
 	runtime := &permissionTestRuntime{resolveErr: errors.New("resolve failed")}
-	cmd := runResolvePermission(runtime, "perm-7", agentruntime.PermissionResolutionReject)
+	cmd := runResolvePermission(runtime, "perm-7", approvalflow.DecisionReject)
 	msg := cmd()
 	done, ok := msg.(permissionResolutionFinishedMsg)
 	if !ok {
@@ -403,7 +404,7 @@ func TestRunResolvePermissionForwardsRuntimeError(t *testing.T) {
 	if done.Err == nil || done.Err.Error() != "resolve failed" {
 		t.Fatalf("expected forwarded resolve error, got %#v", done.Err)
 	}
-	if runtime.lastResolved.RequestID != "perm-7" || runtime.lastResolved.Decision != agentruntime.PermissionResolutionReject {
+	if runtime.lastResolved.RequestID != "perm-7" || runtime.lastResolved.Decision != approvalflow.DecisionReject {
 		t.Fatalf("unexpected runtime resolve input: %+v", runtime.lastResolved)
 	}
 }
