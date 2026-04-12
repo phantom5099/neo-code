@@ -298,6 +298,26 @@ func TestPermissionHelpers(t *testing.T) {
 	if category != "webfetch" {
 		t.Fatalf("expected webfetch category, got %q", category)
 	}
+
+	category = permissionToolCategory(security.Action{
+		Type: security.ActionTypeMCP,
+		Payload: security.ActionPayload{
+			Target: "mcp.github.enterprise.create_issue",
+		},
+	})
+	if category != "mcp.github.enterprise" {
+		t.Fatalf("expected mcp.github.enterprise category, got %q", category)
+	}
+
+	category = permissionToolCategory(security.Action{
+		Type: security.ActionTypeMCP,
+		Payload: security.ActionPayload{
+			Target: "mcp",
+		},
+	})
+	if category != "mcp" {
+		t.Fatalf("expected mcp fallback category, got %q", category)
+	}
 }
 
 func TestResolvePermissionCanceledContext(t *testing.T) {

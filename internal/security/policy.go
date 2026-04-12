@@ -149,6 +149,7 @@ func NewRecommendedPolicyEngine() (*PolicyEngine, error) {
 		reasonAskSensitiveRead    = "reading sensitive path requires approval"
 		reasonAllowWebfetchDomain = "approved web domain"
 		reasonAskWebfetchDomain   = "external web domain requires approval"
+		reasonAskMCP              = "mcp tool requires approval"
 	)
 
 	rules := []PolicyRule{
@@ -211,6 +212,14 @@ func NewRecommendedPolicyEngine() (*PolicyEngine, error) {
 			ResourcePatterns:   []string{"webfetch"},
 			HostPatterns:       []string{"github.com", "*.github.com"},
 			RequireHostMissing: true,
+		},
+		{
+			ID:          "ask-all-mcp",
+			Priority:    720,
+			Decision:    DecisionAsk,
+			Reason:      reasonAskMCP,
+			ActionTypes: []ActionType{ActionTypeMCP},
+			TargetTypes: []TargetType{TargetTypeMCP},
 		},
 	}
 
@@ -391,11 +400,134 @@ func deriveToolCategory(action Action) string {
 		}
 	case ActionTypeBash:
 		return "bash"
+	case ActionTypeMCP:
+		if serverIdentity := mcpServerIdentity(action); serverIdentity != "" {
+			return serverIdentity
+		}
+		return "mcp"
 	}
 	if resource != "" {
 		return resource
 	}
 	return strings.ToLower(strings.TrimSpace(action.Payload.ToolName))
+}
+
+// newMCPServerPolicyRule 生成 MCP server 级规则模板；优先级按 deny > ask > allow 固定。
+func newMCPServerPolicyRule(id string, decision Decision, serverID string, reason string) PolicyRule {
+	serverIdentity := canonicalMCPServerIdentity(serverID)
+	return PolicyRule{
+		ID:             strings.TrimSpace(id),
+		Priority:       mcpPolicyPriority(decision),
+		Decision:       decision,
+		Reason:         strings.TrimSpace(reason),
+		ActionTypes:    []ActionType{ActionTypeMCP},
+		ToolCategories: []string{serverIdentity},
+		TargetTypes:    []TargetType{TargetTypeMCP},
+	}
+}
+
+// newMCPToolPolicyRule 生成 MCP tool 级规则模板；target/resource 均命中 mcp.<server>.<tool> identity。
+func newMCPToolPolicyRule(id string, decision Decision, serverID string, toolName string, reason string) PolicyRule {
+	toolIdentity := canonicalMCPToolIdentity(serverID, toolName)
+	serverIdentity := canonicalMCPServerIdentity(serverID)
+	return PolicyRule{
+		ID:               strings.TrimSpace(id),
+		Priority:         mcpPolicyPriority(decision),
+		Decision:         decision,
+		Reason:           strings.TrimSpace(reason),
+		ActionTypes:      []ActionType{ActionTypeMCP},
+		ResourcePatterns: []string{toolIdentity},
+		ToolCategories:   []string{serverIdentity},
+		TargetTypes:      []TargetType{TargetTypeMCP},
+	}
+}
+
+// mcpPolicyPriority 返回 MCP 权限规则的固定优先级，确保 deny > ask > allow。
+func mcpPolicyPriority(decision Decision) int {
+	switch decision {
+	case DecisionDeny:
+		return 830
+	case DecisionAsk:
+		return 820
+	case DecisionAllow:
+		return 810
+	default:
+		return 0
+	}
+}
+
+// mcpServerIdentity 从 action 中提取 MCP server identity：mcp.<server>。
+func mcpServerIdentity(action Action) string {
+	if action.Type != ActionTypeMCP {
+		return ""
+	}
+	candidates := []string{
+		strings.TrimSpace(action.Payload.Target),
+		strings.TrimSpace(action.Payload.Resource),
+		strings.TrimSpace(action.Payload.ToolName),
+	}
+	for _, candidate := range candidates {
+		if identity := canonicalMCPServerIdentity(candidate); identity != "" {
+			return identity
+		}
+	}
+	return ""
+}
+
+// CanonicalMCPServerIdentity 将输入标识归一为 MCP server 级 identity（mcp.<server>）。
+func CanonicalMCPServerIdentity(raw string) string {
+	return canonicalMCPServerIdentity(raw)
+}
+
+// canonicalMCPServerIdentity 将 server 标识归一为 mcp.<server> 形式。
+//
+// 命名约定 (naming contract)：
+//   - 以 "mcp." 开头的输入被视为完整的 tool identity（mcp.<server>.<tool>）；
+//     函数将从中提取 server 部分并返回 mcp.<server>。
+//   - 不带 "mcp." 前缀的输入被视为纯 server 名称，函数直接补全为 mcp.<server>。
+//   - 调用方传入纯 server 名称时 **不应** 携带 "mcp." 前缀；
+//     如需从 tool identity 提取 server，传入完整 mcp.<server>.<tool> 即可。
+func canonicalMCPServerIdentity(raw string) string {
+	trimmed := strings.ToLower(strings.TrimSpace(raw))
+	if trimmed == "" || trimmed == "mcp" || trimmed == "mcp." {
+		return ""
+	}
+	if strings.HasPrefix(trimmed, "mcp.") {
+		body := strings.TrimPrefix(trimmed, "mcp.")
+		// MCP 工具 identity 采用 mcp.<server>.<tool>，server 允许包含 "."；
+		// 因此按最后一个 "." 分隔 server 与 tool，避免将 server 错误截断到第二段。
+		lastDot := strings.LastIndex(body, ".")
+		if lastDot == -1 {
+			return "mcp." + body
+		}
+		if lastDot == 0 || lastDot == len(body)-1 {
+			return ""
+		}
+		return "mcp." + body[:lastDot]
+	}
+	return "mcp." + trimmed
+}
+
+// canonicalMCPToolIdentity 将 server/tool 标识归一为 mcp.<server>.<tool>。
+//
+// tool 名称不得包含 "."；含 "." 的 toolName 会返回空串并被视为非法输入。
+// 这可防止 server/tool 边界解析歧义，例如：
+//
+//	server="github", toolName="enterprise.create_issue"
+//	→ 若允许，拼接后 identity 为 mcp.github.enterprise.create_issue
+//	→ canonicalMCPServerIdentity 将错误地提取 server 为 mcp.github.enterprise
+//	  而非正确的 mcp.github，导致权限绕过。
+func canonicalMCPToolIdentity(serverID string, toolName string) string {
+	serverIdentity := canonicalMCPServerIdentity(serverID)
+	tool := strings.ToLower(strings.TrimSpace(toolName))
+	if serverIdentity == "" || tool == "" {
+		return ""
+	}
+	// Reject tool names containing "." to prevent ambiguous server/tool boundary parsing.
+	if strings.Contains(tool, ".") {
+		return ""
+	}
+	return serverIdentity + "." + tool
 }
 
 func classifySensitivePath(normalizedTargetPath string) bool {

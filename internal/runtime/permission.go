@@ -286,6 +286,12 @@ func permissionToolCategory(action security.Action) string {
 		if strings.HasPrefix(resource, "filesystem_") {
 			return "filesystem_write"
 		}
+	case security.ActionTypeMCP:
+		target := strings.ToLower(strings.TrimSpace(action.Payload.Target))
+		if serverIdentity := security.CanonicalMCPServerIdentity(target); serverIdentity != "" {
+			return serverIdentity
+		}
+		return "mcp"
 	}
 	if resource != "" {
 		return resource

@@ -74,11 +74,12 @@ func buildPermissionAction(input ToolCallInput) (security.Action, error) {
 		action.Payload.SandboxTarget = action.Payload.Target
 	default:
 		if strings.HasPrefix(strings.ToLower(toolName), "mcp.") {
+			toolIdentity := normalizeMCPToolIdentity(toolName)
 			action.Type = security.ActionTypeMCP
 			action.Payload.Operation = "invoke"
 			action.Payload.TargetType = security.TargetTypeMCP
-			action.Payload.Target = mcpServerTarget(toolName)
-			action.Payload.Resource = toolName
+			action.Payload.Target = toolIdentity
+			action.Payload.Resource = toolIdentity
 			return action, nil
 		}
 		return security.Action{}, fmt.Errorf("tools: unsupported permission mapping for %q", input.Name)
@@ -87,12 +88,14 @@ func buildPermissionAction(input ToolCallInput) (security.Action, error) {
 	return action, nil
 }
 
+// normalizeMCPToolIdentity 将 MCP 工具名归一为稳定的全量 identity：mcp.<server>.<tool>。
+func normalizeMCPToolIdentity(toolName string) string {
+	return strings.ToLower(strings.TrimSpace(toolName))
+}
+
+// mcpServerTarget 从 MCP 工具全名中提取 server 级 identity：mcp.<server>。
 func mcpServerTarget(toolName string) string {
-	parts := strings.Split(strings.TrimSpace(toolName), ".")
-	if len(parts) < 2 {
-		return ""
-	}
-	return parts[1]
+	return security.CanonicalMCPServerIdentity(normalizeMCPToolIdentity(toolName))
 }
 
 func extractStringArgument(raw []byte, key string) string {
