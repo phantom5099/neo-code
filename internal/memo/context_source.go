@@ -15,6 +15,7 @@ import (
 type memoContextSource struct {
 	store      Store
 	mu         sync.RWMutex
+	cacheReady bool
 	cachedText string
 	cacheTime  time.Time
 	ttl        time.Duration
@@ -85,6 +86,7 @@ func (s *memoContextSource) loadCached(ctx context.Context) (string, error) {
 	}
 
 	text := RenderIndex(index)
+	s.cacheReady = true
 	s.cachedText = text
 	s.cacheTime = time.Now()
 	return text, nil
@@ -92,13 +94,14 @@ func (s *memoContextSource) loadCached(ctx context.Context) (string, error) {
 
 // isCacheValid 判断当前缓存是否仍在有效期内。
 func (s *memoContextSource) isCacheValid(now time.Time) bool {
-	return s.cachedText != "" && now.Sub(s.cacheTime) < s.ttl
+	return s.cacheReady && now.Sub(s.cacheTime) < s.ttl
 }
 
 // InvalidateCache 使缓存失效，用于记忆变更后立即生效。
 func (s *memoContextSource) InvalidateCache() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.cacheReady = false
 	s.cachedText = ""
 	s.cacheTime = time.Time{}
 }

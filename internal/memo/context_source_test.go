@@ -14,6 +14,7 @@ import (
 type stubStore struct {
 	index            *Index
 	err              error
+	loadIndexCalls   int
 	saveIndexErr     error
 	saveTopicErr     error
 	deleteTopicErr   error
@@ -24,6 +25,7 @@ type stubStore struct {
 }
 
 func (s *stubStore) LoadIndex(_ context.Context) (*Index, error) {
+	s.loadIndexCalls++
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -121,6 +123,31 @@ func TestContextSourceCache(t *testing.T) {
 	sections2, _ := source.Sections(ctx, agentcontext.BuildInput{})
 	if !strings.Contains(sections2[0].Content, "first") {
 		t.Error("cached load should still contain 'first'")
+	}
+}
+
+func TestContextSourceCacheCachesEmptyIndex(t *testing.T) {
+	store := &stubStore{index: &Index{Entries: []Entry{}}}
+	source := NewContextSource(store, WithCacheTTL(10*time.Second))
+	ctx := context.Background()
+
+	sections1, err := source.Sections(ctx, agentcontext.BuildInput{})
+	if err != nil {
+		t.Fatalf("Sections first call error: %v", err)
+	}
+	if len(sections1) != 0 {
+		t.Fatalf("sections first call = %d, want 0", len(sections1))
+	}
+
+	sections2, err := source.Sections(ctx, agentcontext.BuildInput{})
+	if err != nil {
+		t.Fatalf("Sections second call error: %v", err)
+	}
+	if len(sections2) != 0 {
+		t.Fatalf("sections second call = %d, want 0", len(sections2))
+	}
+	if store.loadIndexCalls != 1 {
+		t.Fatalf("LoadIndex calls = %d, want 1", store.loadIndexCalls)
 	}
 }
 

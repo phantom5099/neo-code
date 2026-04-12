@@ -274,5 +274,3 @@ func cloneIndex(index *Index) *Index {
 	copy(cloned.Entries, index.Entries)
 	return cloned
 }
-
-// sanitizeTitle 将记忆标题归一化为安全的单行文本，避免破坏索引格式和提示词结构。
