@@ -286,6 +286,15 @@ func permissionToolCategory(action security.Action) string {
 		if strings.HasPrefix(resource, "filesystem_") {
 			return "filesystem_write"
 		}
+	case security.ActionTypeMCP:
+		target := strings.ToLower(strings.TrimSpace(action.Payload.Target))
+		if strings.HasPrefix(target, "mcp.") {
+			parts := strings.Split(target, ".")
+			if len(parts) >= 2 && parts[1] != "" {
+				return "mcp." + parts[1]
+			}
+		}
+		return "mcp"
 	}
 	if resource != "" {
 		return resource

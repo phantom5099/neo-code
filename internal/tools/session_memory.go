@@ -152,9 +152,8 @@ func sessionPermissionCategory(action security.Action) string {
 	case security.ActionTypeBash:
 		return "bash"
 	case security.ActionTypeMCP:
-		target := strings.ToLower(strings.TrimSpace(action.Payload.Target))
-		if target != "" {
-			return "mcp:" + target
+		if serverIdentity := mcpServerTarget(action.Payload.Target); serverIdentity != "" {
+			return serverIdentity
 		}
 		return "mcp"
 	}
@@ -180,6 +179,8 @@ func sessionPermissionTargetScope(action security.Action) string {
 		return normalizePermissionPathTarget(filepath.Dir(target))
 	case security.TargetTypeDirectory:
 		return normalizePermissionPathTarget(target)
+	case security.TargetTypeMCP:
+		return normalizeMCPToolIdentity(target)
 	default:
 		return strings.ToLower(target)
 	}

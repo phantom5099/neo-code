@@ -149,6 +149,7 @@ func NewRecommendedPolicyEngine() (*PolicyEngine, error) {
 		reasonAskSensitiveRead    = "reading sensitive path requires approval"
 		reasonAllowWebfetchDomain = "approved web domain"
 		reasonAskWebfetchDomain   = "external web domain requires approval"
+		reasonAskMCP              = "mcp tool requires approval"
 	)
 
 	rules := []PolicyRule{
@@ -211,6 +212,14 @@ func NewRecommendedPolicyEngine() (*PolicyEngine, error) {
 			ResourcePatterns:   []string{"webfetch"},
 			HostPatterns:       []string{"github.com", "*.github.com"},
 			RequireHostMissing: true,
+		},
+		{
+			ID:          "ask-all-mcp",
+			Priority:    720,
+			Decision:    DecisionAsk,
+			Reason:      reasonAskMCP,
+			ActionTypes: []ActionType{ActionTypeMCP},
+			TargetTypes: []TargetType{TargetTypeMCP},
 		},
 	}
 
@@ -391,11 +400,110 @@ func deriveToolCategory(action Action) string {
 		}
 	case ActionTypeBash:
 		return "bash"
+	case ActionTypeMCP:
+		if serverIdentity := mcpServerIdentity(action); serverIdentity != "" {
+			return serverIdentity
+		}
+		return "mcp"
 	}
 	if resource != "" {
 		return resource
 	}
 	return strings.ToLower(strings.TrimSpace(action.Payload.ToolName))
+}
+
+// newMCPServerPolicyRule 生成 MCP server 级规则模板；优先级按 deny > ask > allow 固定。
+func newMCPServerPolicyRule(id string, decision Decision, serverID string, reason string) PolicyRule {
+	serverIdentity := canonicalMCPServerIdentity(serverID)
+	return PolicyRule{
+		ID:             strings.TrimSpace(id),
+		Priority:       mcpPolicyPriority(decision),
+		Decision:       decision,
+		Reason:         strings.TrimSpace(reason),
+		ActionTypes:    []ActionType{ActionTypeMCP},
+		ToolCategories: []string{serverIdentity},
+		TargetTypes:    []TargetType{TargetTypeMCP},
+	}
+}
+
+// newMCPToolPolicyRule 生成 MCP tool 级规则模板；target/resource 均命中 mcp.<server>.<tool> identity。
+func newMCPToolPolicyRule(id string, decision Decision, serverID string, toolName string, reason string) PolicyRule {
+	toolIdentity := canonicalMCPToolIdentity(serverID, toolName)
+	serverIdentity := canonicalMCPServerIdentity(serverID)
+	return PolicyRule{
+		ID:               strings.TrimSpace(id),
+		Priority:         mcpPolicyPriority(decision),
+		Decision:         decision,
+		Reason:           strings.TrimSpace(reason),
+		ActionTypes:      []ActionType{ActionTypeMCP},
+		ResourcePatterns: []string{toolIdentity},
+		ToolCategories:   []string{serverIdentity},
+		TargetTypes:      []TargetType{TargetTypeMCP},
+	}
+}
+
+// mcpPolicyPriority 返回 MCP 权限规则的固定优先级，确保 deny > ask > allow。
+func mcpPolicyPriority(decision Decision) int {
+	switch decision {
+	case DecisionDeny:
+		return 830
+	case DecisionAsk:
+		return 820
+	case DecisionAllow:
+		return 810
+	default:
+		return 0
+	}
+}
+
+// mcpServerIdentity 从 action 中提取 MCP server identity：mcp.<server>。
+func mcpServerIdentity(action Action) string {
+	if action.Type != ActionTypeMCP {
+		return ""
+	}
+	candidates := []string{
+		strings.TrimSpace(action.Payload.Target),
+		strings.TrimSpace(action.Payload.Resource),
+		strings.TrimSpace(action.Payload.ToolName),
+	}
+	for _, candidate := range candidates {
+		if identity := canonicalMCPServerIdentity(candidate); identity != "" {
+			return identity
+		}
+	}
+	return ""
+}
+
+// canonicalMCPServerIdentity 将 server 标识归一为 mcp.<server> 形式。
+func canonicalMCPServerIdentity(raw string) string {
+	trimmed := strings.ToLower(strings.TrimSpace(raw))
+	if trimmed == "" {
+		return ""
+	}
+	if strings.HasPrefix(trimmed, "mcp.") {
+		parts := strings.Split(trimmed, ".")
+		if len(parts) >= 2 && parts[1] != "" {
+			return "mcp." + parts[1]
+		}
+		return ""
+	}
+	return "mcp." + trimmed
+}
+
+// canonicalMCPToolIdentity 将 server/tool 标识归一为 mcp.<server>.<tool>。
+func canonicalMCPToolIdentity(serverID string, toolName string) string {
+	serverIdentity := canonicalMCPServerIdentity(serverID)
+	tool := strings.ToLower(strings.TrimSpace(toolName))
+	if serverIdentity == "" || tool == "" {
+		return ""
+	}
+	if strings.HasPrefix(tool, serverIdentity+".") {
+		return tool
+	}
+	if strings.HasPrefix(tool, "mcp.") {
+		return tool
+	}
+	return serverIdentity + "." + tool
 }
 
 func classifySensitivePath(normalizedTargetPath string) bool {
