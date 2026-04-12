@@ -288,11 +288,8 @@ func permissionToolCategory(action security.Action) string {
 		}
 	case security.ActionTypeMCP:
 		target := strings.ToLower(strings.TrimSpace(action.Payload.Target))
-		if strings.HasPrefix(target, "mcp.") {
-			parts := strings.Split(target, ".")
-			if len(parts) >= 2 && parts[1] != "" {
-				return "mcp." + parts[1]
-			}
+		if serverIdentity := security.CanonicalMCPServerIdentity(target); serverIdentity != "" {
+			return serverIdentity
 		}
 		return "mcp"
 	}

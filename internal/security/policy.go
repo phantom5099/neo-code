@@ -474,18 +474,32 @@ func mcpServerIdentity(action Action) string {
 	return ""
 }
 
+// CanonicalMCPServerIdentity 将输入标识归一为 MCP server 级 identity（mcp.<server>）。
+func CanonicalMCPServerIdentity(raw string) string {
+	return canonicalMCPServerIdentity(raw)
+}
+
 // canonicalMCPServerIdentity 将 server 标识归一为 mcp.<server> 形式。
 func canonicalMCPServerIdentity(raw string) string {
 	trimmed := strings.ToLower(strings.TrimSpace(raw))
-	if trimmed == "" {
+	if trimmed == "" || trimmed == "mcp" || trimmed == "mcp." {
 		return ""
 	}
 	if strings.HasPrefix(trimmed, "mcp.") {
-		parts := strings.Split(trimmed, ".")
-		if len(parts) >= 2 && parts[1] != "" {
-			return "mcp." + parts[1]
+		body := strings.TrimPrefix(trimmed, "mcp.")
+		if body == "" {
+			return ""
 		}
-		return ""
+		// MCP 工具 identity 采用 mcp.<server>.<tool>，server 允许包含 "."；
+		// 因此按最后一个 "." 分隔 server 与 tool，避免将 server 错误截断到第二段。
+		lastDot := strings.LastIndex(body, ".")
+		if lastDot == -1 {
+			return "mcp." + body
+		}
+		if lastDot == 0 || lastDot == len(body)-1 {
+			return ""
+		}
+		return "mcp." + body[:lastDot]
 	}
 	return "mcp." + trimmed
 }

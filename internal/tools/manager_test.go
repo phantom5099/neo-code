@@ -1036,6 +1036,11 @@ func TestPermissionMapperHelpers(t *testing.T) {
 			serverWant: "mcp.github",
 		},
 		{
+			name:       "mcp server target keeps dotted server id",
+			serverTool: "mcp.github.enterprise.create_issue",
+			serverWant: "mcp.github.enterprise",
+		},
+		{
 			name:       "mcp server target without server",
 			serverTool: "mcp",
 			serverWant: "",

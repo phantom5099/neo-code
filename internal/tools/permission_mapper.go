@@ -95,11 +95,7 @@ func normalizeMCPToolIdentity(toolName string) string {
 
 // mcpServerTarget 从 MCP 工具全名中提取 server 级 identity：mcp.<server>。
 func mcpServerTarget(toolName string) string {
-	parts := strings.Split(normalizeMCPToolIdentity(toolName), ".")
-	if len(parts) < 2 || parts[0] != "mcp" || parts[1] == "" {
-		return ""
-	}
-	return "mcp." + parts[1]
+	return security.CanonicalMCPServerIdentity(normalizeMCPToolIdentity(toolName))
 }
 
 func extractStringArgument(raw []byte, key string) string {

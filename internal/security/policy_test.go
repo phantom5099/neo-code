@@ -313,3 +313,107 @@ func TestPolicyEngineMCPRuleTemplates(t *testing.T) {
 		})
 	}
 }
+
+func TestCanonicalMCPServerIdentity(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "extract from full tool identity with dotted server",
+			input: "mcp.github.enterprise.create_issue",
+			want:  "mcp.github.enterprise",
+		},
+		{
+			name:  "normalize raw server id with dot",
+			input: "github.enterprise",
+			want:  "mcp.github.enterprise",
+		},
+		{
+			name:  "extract from normal tool identity",
+			input: "mcp.github.search",
+			want:  "mcp.github",
+		},
+		{
+			name:  "invalid mcp token returns empty",
+			input: "mcp",
+			want:  "",
+		},
+		{
+			name:  "public wrapper follows canonical behavior",
+			input: "mcp.github.public.search",
+			want:  "mcp.github.public",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := canonicalMCPServerIdentity(tt.input); got != tt.want {
+				t.Fatalf("canonicalMCPServerIdentity() = %q, want %q", got, tt.want)
+			}
+			if got := CanonicalMCPServerIdentity(tt.input); got != tt.want {
+				t.Fatalf("CanonicalMCPServerIdentity() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPolicyEngineMCPDottedServerIsolation(t *testing.T) {
+	t.Parallel()
+
+	engine, err := NewPolicyEngine(DecisionAllow, []PolicyRule{
+		newMCPServerPolicyRule("deny-github-enterprise", DecisionDeny, "github.enterprise", "enterprise denied"),
+		newMCPToolPolicyRule("allow-github-public-search", DecisionAllow, "github.public", "search", "public allowed"),
+	})
+	if err != nil {
+		t.Fatalf("new policy engine: %v", err)
+	}
+
+	enterpriseAction := Action{
+		Type: ActionTypeMCP,
+		Payload: ActionPayload{
+			ToolName:   "mcp.github.enterprise.search",
+			Resource:   "mcp.github.enterprise.search",
+			Operation:  "invoke",
+			TargetType: TargetTypeMCP,
+			Target:     "mcp.github.enterprise.search",
+		},
+	}
+	enterpriseResult, checkErr := engine.Check(context.Background(), enterpriseAction)
+	if checkErr != nil {
+		t.Fatalf("check enterprise action: %v", checkErr)
+	}
+	if enterpriseResult.Decision != DecisionDeny {
+		t.Fatalf("expected enterprise action deny, got %q", enterpriseResult.Decision)
+	}
+	if enterpriseResult.Rule == nil || enterpriseResult.Rule.ID != "deny-github-enterprise" {
+		t.Fatalf("expected enterprise deny rule, got %+v", enterpriseResult.Rule)
+	}
+
+	publicAction := Action{
+		Type: ActionTypeMCP,
+		Payload: ActionPayload{
+			ToolName:   "mcp.github.public.search",
+			Resource:   "mcp.github.public.search",
+			Operation:  "invoke",
+			TargetType: TargetTypeMCP,
+			Target:     "mcp.github.public.search",
+		},
+	}
+	publicResult, checkErr := engine.Check(context.Background(), publicAction)
+	if checkErr != nil {
+		t.Fatalf("check public action: %v", checkErr)
+	}
+	if publicResult.Decision != DecisionAllow {
+		t.Fatalf("expected public action allow, got %q", publicResult.Decision)
+	}
+	if publicResult.Rule == nil || publicResult.Rule.ID != "allow-github-public-search" {
+		t.Fatalf("expected public allow rule, got %+v", publicResult.Rule)
+	}
+}
