@@ -20,8 +20,9 @@ const sessionsDirName = "sessions"
 // Session 表示单个会话的持久化模型，包含基础元数据与消息历史。
 // Provider / Model 用于在 compact 等流程中优先复用会话最近一次成功运行的模型配置。
 type Session struct {
-	ID    string `json:"id"`
-	Title string `json:"title"`
+	SchemaVersion int    `json:"schema_version"`
+	ID            string `json:"id"`
+	Title         string `json:"title"`
 	// Provider 记录最近一次成功运行会话时使用的 provider，用于 compact 优先复用历史配置。
 	Provider string `json:"provider,omitempty"`
 	// Model 记录最近一次成功运行会话时使用的 model，用于 compact 优先复用历史配置。
@@ -29,6 +30,7 @@ type Session struct {
 	CreatedAt        time.Time               `json:"created_at"`
 	UpdatedAt        time.Time               `json:"updated_at"`
 	Workdir          string                  `json:"workdir,omitempty"`
+	TaskState        TaskState               `json:"task_state"`
 	Messages         []providertypes.Message `json:"messages"`
 	TokenInputTotal  int                     `json:"token_input_total,omitempty"`
 	TokenOutputTotal int                     `json:"token_output_total,omitempty"`
@@ -75,6 +77,11 @@ func (s *JSONStore) Save(ctx context.Context, session *Session) error {
 	if session == nil {
 		return errors.New("session: session is nil")
 	}
+	if err := validateSessionSchema(*session); err != nil {
+		return err
+	}
+
+	session.TaskState = normalizeAndClampTaskState(session.TaskState)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -118,8 +125,8 @@ func (s *JSONStore) Load(ctx context.Context, id string) (Session, error) {
 		return Session{}, err
 	}
 
-	var session Session
-	if err := json.Unmarshal(data, &session); err != nil {
+	session, err := decodeStoredSession(data)
+	if err != nil {
 		return Session{}, fmt.Errorf("session: decode session %s: %w", id, err)
 	}
 	return session, nil
@@ -160,8 +167,8 @@ func (s *JSONStore) ListSummaries(ctx context.Context) ([]Summary, error) {
 			continue
 		}
 
-		var summary Summary
-		if err := json.Unmarshal(data, &summary); err != nil {
+		summary, err := decodeStoredSummary(data)
+		if err != nil {
 			continue
 		}
 		if strings.TrimSpace(summary.ID) == "" {
@@ -191,12 +198,14 @@ func New(title string) Session {
 func NewWithWorkdir(title string, workdir string) Session {
 	now := time.Now()
 	return Session{
-		ID:        NewID("session"),
-		Title:     sanitizeTitle(title),
-		CreatedAt: now,
-		UpdatedAt: now,
-		Workdir:   strings.TrimSpace(workdir),
-		Messages:  []providertypes.Message{},
+		SchemaVersion: CurrentSchemaVersion,
+		ID:            NewID("session"),
+		Title:         sanitizeTitle(title),
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		Workdir:       strings.TrimSpace(workdir),
+		TaskState:     TaskState{},
+		Messages:      []providertypes.Message{},
 	}
 }
 
@@ -211,4 +220,101 @@ func sanitizeTitle(title string) string {
 		return string(runes[:40])
 	}
 	return title
+}
+
+// validateSessionSchema 校验会话持久化版本，开发阶段只接受当前结构版本。
+func validateSessionSchema(session Session) error {
+	if session.SchemaVersion != CurrentSchemaVersion {
+		return fmt.Errorf(
+			"session: unsupported schema_version %d, expected %d",
+			session.SchemaVersion,
+			CurrentSchemaVersion,
+		)
+	}
+	return nil
+}
+
+// decodeStoredSession 严格校验持久化会话所需字段，并拒绝缺少 schema_version 或 task_state 的旧数据。
+func decodeStoredSession(data []byte) (Session, error) {
+	type storedSession struct {
+		SchemaVersion *int                    `json:"schema_version"`
+		ID            string                  `json:"id"`
+		Title         string                  `json:"title"`
+		Provider      string                  `json:"provider,omitempty"`
+		Model         string                  `json:"model,omitempty"`
+		CreatedAt     time.Time               `json:"created_at"`
+		UpdatedAt     time.Time               `json:"updated_at"`
+		Workdir       string                  `json:"workdir,omitempty"`
+		TaskState     *TaskState              `json:"task_state"`
+		Messages      []providertypes.Message `json:"messages"`
+		TokenInput    int                     `json:"token_input_total,omitempty"`
+		TokenOutput   int                     `json:"token_output_total,omitempty"`
+	}
+
+	var stored storedSession
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return Session{}, err
+	}
+
+	if stored.SchemaVersion == nil {
+		return Session{}, errors.New("missing required field schema_version")
+	}
+	if stored.TaskState == nil {
+		return Session{}, errors.New("missing required field task_state")
+	}
+
+	session := Session{
+		SchemaVersion:    *stored.SchemaVersion,
+		ID:               stored.ID,
+		Title:            stored.Title,
+		Provider:         stored.Provider,
+		Model:            stored.Model,
+		CreatedAt:        stored.CreatedAt,
+		UpdatedAt:        stored.UpdatedAt,
+		Workdir:          stored.Workdir,
+		TaskState:        *stored.TaskState,
+		Messages:         stored.Messages,
+		TokenInputTotal:  stored.TokenInput,
+		TokenOutputTotal: stored.TokenOutput,
+	}
+	if err := validateSessionSchema(session); err != nil {
+		return Session{}, err
+	}
+	session.TaskState = normalizeAndClampTaskState(session.TaskState)
+	return session, nil
+}
+
+// normalizeAndClampTaskState 先规范化再限幅，保证持久化前后的 task_state 行为一致。
+func normalizeAndClampTaskState(state TaskState) TaskState {
+	return ClampTaskStateBoundaries(NormalizeTaskState(state))
+}
+
+// decodeStoredSummary 只解析会话列表所需的摘要元数据，避免为列表视图反序列化完整消息历史。
+func decodeStoredSummary(data []byte) (Summary, error) {
+	var stored struct {
+		SchemaVersion *int            `json:"schema_version"`
+		ID            string          `json:"id"`
+		Title         string          `json:"title"`
+		CreatedAt     time.Time       `json:"created_at"`
+		UpdatedAt     time.Time       `json:"updated_at"`
+		TaskState     json.RawMessage `json:"task_state"`
+	}
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return Summary{}, err
+	}
+	if stored.SchemaVersion == nil {
+		return Summary{}, errors.New("missing required field schema_version")
+	}
+	if len(stored.TaskState) == 0 {
+		return Summary{}, errors.New("missing required field task_state")
+	}
+	if err := validateSessionSchema(Session{SchemaVersion: *stored.SchemaVersion}); err != nil {
+		return Summary{}, err
+	}
+	return Summary{
+		ID:        stored.ID,
+		Title:     stored.Title,
+		CreatedAt: stored.CreatedAt,
+		UpdatedAt: stored.UpdatedAt,
+	}, nil
 }

@@ -96,33 +96,7 @@ func (s *Service) runCompactForSession(
 	mode contextcompact.Mode,
 	errorPolicy compactErrorPolicy,
 ) (agentsession.Session, contextcompact.Result, error) {
-	runner := s.compactRunner
-	if runner == nil {
-		var err error
-		runner, err = s.defaultCompactRunner(session, cfg)
-		if err != nil {
-			s.emit(ctx, EventCompactError, runID, session.ID, CompactErrorPayload{
-				TriggerMode: string(mode),
-				Message:     err.Error(),
-			})
-			if errorPolicy == compactErrorStrict {
-				return session, contextcompact.Result{}, err
-			}
-			return session, contextcompact.Result{}, nil
-		}
-	}
-
-	originalMessages := append([]providertypes.Message(nil), session.Messages...)
-	s.emit(ctx, EventCompactStart, runID, session.ID, string(mode))
-
-	result, err := runner.Run(ctx, contextcompact.Input{
-		Mode:      mode,
-		SessionID: session.ID,
-		Workdir:   agentsession.EffectiveWorkdir(session.Workdir, cfg.Workdir),
-		Messages:  session.Messages,
-		Config:    cfg.Context.Compact,
-	})
-	if err != nil {
+	failCompact := func(err error) (agentsession.Session, contextcompact.Result, error) {
 		s.emit(ctx, EventCompactError, runID, session.ID, CompactErrorPayload{
 			TriggerMode: string(mode),
 			Message:     err.Error(),
@@ -133,21 +107,47 @@ func (s *Service) runCompactForSession(
 		return session, contextcompact.Result{}, nil
 	}
 
+	runner := s.compactRunner
+	if runner == nil {
+		var err error
+		runner, err = s.defaultCompactRunner(session, cfg)
+		if err != nil {
+			return failCompact(err)
+		}
+	}
+
+	originalMessages := append([]providertypes.Message(nil), session.Messages...)
+	originalTaskState := session.TaskState.Clone()
+	originalTokenInputTotal := session.TokenInputTotal
+	originalTokenOutputTotal := session.TokenOutputTotal
+	originalUpdatedAt := session.UpdatedAt
+	s.emit(ctx, EventCompactStart, runID, session.ID, string(mode))
+
+	result, err := runner.Run(ctx, contextcompact.Input{
+		Mode:      mode,
+		SessionID: session.ID,
+		Workdir:   agentsession.EffectiveWorkdir(session.Workdir, cfg.Workdir),
+		Messages:  session.Messages,
+		TaskState: session.TaskState,
+		Config:    cfg.Context.Compact,
+	})
+	if err != nil {
+		return failCompact(err)
+	}
+
 	if result.Applied {
 		session.Messages = append([]providertypes.Message(nil), result.Messages...)
+		session.TaskState = result.TaskState.Clone()
 		session.TokenInputTotal = 0
 		session.TokenOutputTotal = 0
 		session.UpdatedAt = time.Now()
 		if err := s.sessionStore.Save(ctx, &session); err != nil {
-			s.emit(ctx, EventCompactError, runID, session.ID, CompactErrorPayload{
-				TriggerMode: string(mode),
-				Message:     err.Error(),
-			})
 			session.Messages = originalMessages
-			if errorPolicy == compactErrorStrict {
-				return session, contextcompact.Result{}, err
-			}
-			return session, contextcompact.Result{}, nil
+			session.TaskState = originalTaskState
+			session.TokenInputTotal = originalTokenInputTotal
+			session.TokenOutputTotal = originalTokenOutputTotal
+			session.UpdatedAt = originalUpdatedAt
+			return failCompact(err)
 		}
 	}
 

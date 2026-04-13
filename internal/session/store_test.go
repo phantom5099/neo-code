@@ -25,21 +25,23 @@ func TestJSONStoreSaveLoadAndListSummaries(t *testing.T) {
 	store := NewJSONStore(baseDir, workspaceRoot)
 
 	older := &Session{
-		ID:        "session-old",
-		Title:     "Old Session",
-		CreatedAt: time.Now().Add(-2 * time.Hour),
-		UpdatedAt: time.Now().Add(-1 * time.Hour),
+		SchemaVersion: CurrentSchemaVersion,
+		ID:            "session-old",
+		Title:         "Old Session",
+		CreatedAt:     time.Now().Add(-2 * time.Hour),
+		UpdatedAt:     time.Now().Add(-1 * time.Hour),
 		Messages: []providertypes.Message{
 			{Role: "user", Content: "hello"},
 			{Role: "assistant", Content: "world"},
 		},
 	}
 	newer := &Session{
-		ID:        "session-new",
-		Title:     "New Session",
-		CreatedAt: time.Now().Add(-30 * time.Minute),
-		UpdatedAt: time.Now(),
-		Workdir:   t.TempDir(),
+		SchemaVersion: CurrentSchemaVersion,
+		ID:            "session-new",
+		Title:         "New Session",
+		CreatedAt:     time.Now().Add(-30 * time.Minute),
+		UpdatedAt:     time.Now(),
+		Workdir:       t.TempDir(),
 		Messages: []providertypes.Message{
 			{Role: "user", Content: "new"},
 		},
@@ -108,8 +110,8 @@ func TestJSONStoreScopesSessionsByWorkspaceRoot(t *testing.T) {
 	storeA := NewJSONStore(baseDir, workspaceA)
 	storeB := NewJSONStore(baseDir, workspaceB)
 
-	sessionA := &Session{ID: "session-a", Title: "A", CreatedAt: time.Now(), UpdatedAt: time.Now()}
-	sessionB := &Session{ID: "session-b", Title: "B", CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	sessionA := &Session{SchemaVersion: CurrentSchemaVersion, ID: "session-a", Title: "A", CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	sessionB := &Session{SchemaVersion: CurrentSchemaVersion, ID: "session-b", Title: "B", CreatedAt: time.Now(), UpdatedAt: time.Now()}
 	if err := storeA.Save(context.Background(), sessionA); err != nil {
 		t.Fatalf("save sessionA: %v", err)
 	}
@@ -223,11 +225,12 @@ func TestJSONStoreCorruptedSessionBehaviors(t *testing.T) {
 	store := NewJSONStore(baseDir, workspaceRoot)
 
 	valid := &Session{
-		ID:        "valid-session",
-		Title:     "Valid Session",
-		CreatedAt: time.Now().Add(-time.Minute),
-		UpdatedAt: time.Now(),
-		Messages:  []providertypes.Message{{Role: "user", Content: "hello"}},
+		SchemaVersion: CurrentSchemaVersion,
+		ID:            "valid-session",
+		Title:         "Valid Session",
+		CreatedAt:     time.Now().Add(-time.Minute),
+		UpdatedAt:     time.Now(),
+		Messages:      []providertypes.Message{{Role: "user", Content: "hello"}},
 	}
 	if err := store.Save(context.Background(), valid); err != nil {
 		t.Fatalf("Save valid session: %v", err)
@@ -260,10 +263,11 @@ func TestJSONStoreSaveInvalidBaseDir(t *testing.T) {
 
 	store := NewJSONStore(baseFile, t.TempDir())
 	err := store.Save(context.Background(), &Session{
-		ID:        "session-x",
-		Title:     "Broken Save",
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+		SchemaVersion: CurrentSchemaVersion,
+		ID:            "session-x",
+		Title:         "Broken Save",
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
 	})
 	if err == nil || !strings.Contains(err.Error(), "create sessions dir") {
 		t.Fatalf("expected invalid base dir error, got %v", err)
@@ -285,10 +289,11 @@ func TestJSONStoreSaveReplaceFailureWhenTargetIsNonEmptyDirectory(t *testing.T) 
 	}
 
 	err := store.Save(context.Background(), &Session{
-		ID:        "blocked",
-		Title:     "Blocked",
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+		SchemaVersion: CurrentSchemaVersion,
+		ID:            "blocked",
+		Title:         "Blocked",
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
 	})
 	if err == nil || !strings.Contains(err.Error(), "replace session file") {
 		t.Fatalf("expected replace failure, got %v", err)
@@ -302,10 +307,11 @@ func TestJSONStoreSaveOverwritesExistingSessionFile(t *testing.T) {
 	workspaceRoot := t.TempDir()
 	store := NewJSONStore(baseDir, workspaceRoot)
 	session := &Session{
-		ID:        "overwrite",
-		Title:     "First",
-		CreatedAt: time.Now().Add(-time.Minute),
-		UpdatedAt: time.Now().Add(-time.Minute),
+		SchemaVersion: CurrentSchemaVersion,
+		ID:            "overwrite",
+		Title:         "First",
+		CreatedAt:     time.Now().Add(-time.Minute),
+		UpdatedAt:     time.Now().Add(-time.Minute),
 	}
 	if err := store.Save(context.Background(), session); err != nil {
 		t.Fatalf("save initial session: %v", err)
@@ -342,10 +348,11 @@ func TestJSONStoreSaveWriteTempFailure(t *testing.T) {
 	}
 
 	err := store.Save(context.Background(), &Session{
-		ID:        "temp-blocked",
-		Title:     "Temp Blocked",
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+		SchemaVersion: CurrentSchemaVersion,
+		ID:            "temp-blocked",
+		Title:         "Temp Blocked",
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
 	})
 	if err == nil || !strings.Contains(err.Error(), "write temp session") {
 		t.Fatalf("expected temp write failure, got %v", err)
@@ -372,6 +379,9 @@ func TestNewUsesDefaultWorkdirAndEmptyMessages(t *testing.T) {
 	if !strings.HasPrefix(session.ID, "session_") {
 		t.Fatalf("expected id with session_ prefix, got %q", session.ID)
 	}
+	if session.SchemaVersion != CurrentSchemaVersion {
+		t.Fatalf("expected schema version %d, got %d", CurrentSchemaVersion, session.SchemaVersion)
+	}
 	if session.Title != "hello title" {
 		t.Fatalf("expected title %q, got %q", "hello title", session.Title)
 	}
@@ -380,6 +390,9 @@ func TestNewUsesDefaultWorkdirAndEmptyMessages(t *testing.T) {
 	}
 	if len(session.Messages) != 0 {
 		t.Fatalf("expected empty messages, got %+v", session.Messages)
+	}
+	if session.TaskState.Established() {
+		t.Fatalf("expected empty task state, got %+v", session.TaskState)
 	}
 	if session.CreatedAt.IsZero() || session.UpdatedAt.IsZero() {
 		t.Fatalf("expected non-zero timestamps, got created=%v updated=%v", session.CreatedAt, session.UpdatedAt)
@@ -448,10 +461,11 @@ func TestJSONStoreListSummariesContextCanceledDuringIteration(t *testing.T) {
 
 	for i := 0; i < 10; i++ {
 		s := &Session{
-			ID:        "session-iter-" + strings.Repeat("x", i+1),
-			Title:     "iter",
-			CreatedAt: time.Now(),
-			UpdatedAt: time.Now(),
+			SchemaVersion: CurrentSchemaVersion,
+			ID:            "session-iter-" + strings.Repeat("x", i+1),
+			Title:         "iter",
+			CreatedAt:     time.Now(),
+			UpdatedAt:     time.Now(),
 		}
 		if err := store.Save(context.Background(), s); err != nil {
 			t.Fatalf("save session %d: %v", i, err)
@@ -482,6 +496,44 @@ func TestJSONStoreLoadDecodeErrorWithNonJSONPayload(t *testing.T) {
 	}
 }
 
+func TestJSONStoreLoadRejectsMissingSchemaVersion(t *testing.T) {
+	t.Parallel()
+
+	baseDir := t.TempDir()
+	workspaceRoot := t.TempDir()
+	store := NewJSONStore(baseDir, workspaceRoot)
+
+	mustWriteSessionFile(
+		t,
+		filepath.Join(sessionDirectory(baseDir, workspaceRoot), "missing-schema.json"),
+		`{"id":"missing-schema","title":"x","task_state":{"goal":"","progress":[],"open_items":[],"next_step":"","blockers":[],"key_artifacts":[],"decisions":[],"user_constraints":[],"last_updated_at":"0001-01-01T00:00:00Z"},"messages":[]}`,
+	)
+
+	_, err := store.Load(context.Background(), "missing-schema")
+	if err == nil || !strings.Contains(err.Error(), "missing required field schema_version") {
+		t.Fatalf("expected missing schema_version rejection, got %v", err)
+	}
+}
+
+func TestJSONStoreLoadRejectsMissingTaskState(t *testing.T) {
+	t.Parallel()
+
+	baseDir := t.TempDir()
+	workspaceRoot := t.TempDir()
+	store := NewJSONStore(baseDir, workspaceRoot)
+
+	mustWriteSessionFile(
+		t,
+		filepath.Join(sessionDirectory(baseDir, workspaceRoot), "missing-task-state.json"),
+		`{"schema_version":1,"id":"missing-task-state","title":"x","messages":[]}`,
+	)
+
+	_, err := store.Load(context.Background(), "missing-task-state")
+	if err == nil || !strings.Contains(err.Error(), "missing required field task_state") {
+		t.Fatalf("expected missing task_state rejection, got %v", err)
+	}
+}
+
 func TestJSONStoreListSummariesSkipsUnreadableAndMalformedEntries(t *testing.T) {
 	t.Parallel()
 
@@ -490,10 +542,11 @@ func TestJSONStoreListSummariesSkipsUnreadableAndMalformedEntries(t *testing.T) 
 	store := NewJSONStore(baseDir, workspaceRoot)
 
 	valid := &Session{
-		ID:        "valid-summary",
-		Title:     "Valid",
-		CreatedAt: time.Now().Add(-time.Minute),
-		UpdatedAt: time.Now(),
+		SchemaVersion: CurrentSchemaVersion,
+		ID:            "valid-summary",
+		Title:         "Valid",
+		CreatedAt:     time.Now().Add(-time.Minute),
+		UpdatedAt:     time.Now(),
 	}
 	if err := store.Save(context.Background(), valid); err != nil {
 		t.Fatalf("save valid session: %v", err)
@@ -501,6 +554,11 @@ func TestJSONStoreListSummariesSkipsUnreadableAndMalformedEntries(t *testing.T) 
 
 	mustWriteSessionFile(t, filepath.Join(sessionDirectory(baseDir, workspaceRoot), "malformed.json"), "{malformed")
 	mustWriteSessionFile(t, filepath.Join(sessionDirectory(baseDir, workspaceRoot), "empty-id.json"), `{"id":"   ","title":"x"}`)
+	mustWriteSessionFile(
+		t,
+		filepath.Join(sessionDirectory(baseDir, workspaceRoot), "missing-task-state-summary.json"),
+		`{"schema_version":1,"id":"missing-task-state-summary","title":"x","created_at":"2026-04-13T00:00:00Z","updated_at":"2026-04-13T00:00:00Z"}`,
+	)
 
 	summaries, err := store.ListSummaries(context.Background())
 	if err != nil {
@@ -519,13 +577,14 @@ func TestJSONStoreSavePersistsProviderModelAndMessages(t *testing.T) {
 	store := NewJSONStore(baseDir, workspaceRoot)
 
 	session := &Session{
-		ID:        "persist-full-fields",
-		Title:     "Persist Fields",
-		Provider:  "openai",
-		Model:     "gpt-4.1",
-		Workdir:   "/tmp/persist-workdir",
-		CreatedAt: time.Now().Add(-time.Hour),
-		UpdatedAt: time.Now(),
+		SchemaVersion: CurrentSchemaVersion,
+		ID:            "persist-full-fields",
+		Title:         "Persist Fields",
+		Provider:      "openai",
+		Model:         "gpt-4.1",
+		Workdir:       "/tmp/persist-workdir",
+		CreatedAt:     time.Now().Add(-time.Hour),
+		UpdatedAt:     time.Now(),
 		Messages: []providertypes.Message{
 			{Role: providertypes.RoleUser, Content: "hello"},
 			{
@@ -582,6 +641,147 @@ func TestJSONStoreSavePersistsProviderModelAndMessages(t *testing.T) {
 	if loaded.Messages[2].ToolMetadata["tool_name"] != "webfetch" || loaded.Messages[2].ToolMetadata["http_status"] != "200" {
 		t.Fatalf("expected tool metadata round-trip, got %+v", loaded.Messages[2].ToolMetadata)
 	}
+}
+
+func TestDecodeStoredSummaryUsesLightweightMetadataPath(t *testing.T) {
+	t.Parallel()
+
+	summary, err := decodeStoredSummary([]byte(`{
+  "schema_version": 1,
+  "id": "summary-only",
+  "title": "Summary Only",
+  "created_at": "2026-04-13T08:00:00Z",
+  "updated_at": "2026-04-13T09:00:00Z",
+  "task_state": {
+    "goal": "persist task state",
+    "progress": [],
+    "open_items": [],
+    "next_step": "",
+    "blockers": [],
+    "key_artifacts": [],
+    "decisions": [],
+    "user_constraints": [],
+    "last_updated_at": "2026-04-13T09:00:00Z"
+  }
+}`))
+	if err != nil {
+		t.Fatalf("decodeStoredSummary() error: %v", err)
+	}
+
+	if summary.ID != "summary-only" {
+		t.Fatalf("expected summary id %q, got %q", "summary-only", summary.ID)
+	}
+	if summary.Title != "Summary Only" {
+		t.Fatalf("expected summary title %q, got %q", "Summary Only", summary.Title)
+	}
+	if summary.CreatedAt.IsZero() || summary.UpdatedAt.IsZero() {
+		t.Fatalf("expected non-zero timestamps, got created=%v updated=%v", summary.CreatedAt, summary.UpdatedAt)
+	}
+}
+
+func TestJSONStoreSaveClampsOversizedTaskState(t *testing.T) {
+	t.Parallel()
+
+	baseDir := t.TempDir()
+	workspaceRoot := t.TempDir()
+	store := NewJSONStore(baseDir, workspaceRoot)
+
+	progress := make([]string, 0, taskStateMaxListItems+8)
+	for i := 0; i < taskStateMaxListItems+8; i++ {
+		progress = append(progress, strings.Repeat("p", taskStateMaxListItemChars-4)+buildIndexedSuffix(i))
+	}
+	session := &Session{
+		SchemaVersion: CurrentSchemaVersion,
+		ID:            "task-state-clamp-save",
+		Title:         "Clamp Save",
+		CreatedAt:     time.Now().Add(-time.Minute),
+		UpdatedAt:     time.Now(),
+		TaskState: TaskState{
+			Goal:      strings.Repeat("g", taskStateMaxFieldChars+50),
+			NextStep:  strings.Repeat("n", taskStateMaxFieldChars+50),
+			Progress:  progress,
+			OpenItems: progress,
+		},
+	}
+
+	if err := store.Save(context.Background(), session); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+
+	if len([]rune(session.TaskState.Goal)) != taskStateMaxFieldChars {
+		t.Fatalf("expected goal to be clamped to %d runes, got %d", taskStateMaxFieldChars, len([]rune(session.TaskState.Goal)))
+	}
+	if len(session.TaskState.Progress) != taskStateMaxListItems {
+		t.Fatalf("expected progress list clamped to %d, got %d", taskStateMaxListItems, len(session.TaskState.Progress))
+	}
+	if len([]rune(session.TaskState.Progress[0])) != taskStateMaxListItemChars {
+		t.Fatalf(
+			"expected progress item clamped to %d runes, got %d",
+			taskStateMaxListItemChars,
+			len([]rune(session.TaskState.Progress[0])),
+		)
+	}
+}
+
+func TestJSONStoreLoadClampsOversizedTaskState(t *testing.T) {
+	t.Parallel()
+
+	baseDir := t.TempDir()
+	workspaceRoot := t.TempDir()
+	store := NewJSONStore(baseDir, workspaceRoot)
+
+	payload := strings.Join([]string{
+		`{`,
+		`  "schema_version": 1,`,
+		`  "id": "task-state-clamp-load",`,
+		`  "title": "Clamp Load",`,
+		`  "created_at": "2026-04-13T08:00:00Z",`,
+		`  "updated_at": "2026-04-13T09:00:00Z",`,
+		`  "task_state": {`,
+		`    "goal": "` + strings.Repeat("g", taskStateMaxFieldChars+30) + `",`,
+		`    "progress": [` + buildQuotedRepeatedWithIndex("p", taskStateMaxListItemChars+30, taskStateMaxListItems+3) + `],`,
+		`    "open_items": [],`,
+		`    "next_step": "",`,
+		`    "blockers": [],`,
+		`    "key_artifacts": [],`,
+		`    "decisions": [],`,
+		`    "user_constraints": [],`,
+		`    "last_updated_at": "2026-04-13T09:00:00Z"`,
+		`  },`,
+		`  "messages": []`,
+		`}`,
+	}, "\n")
+	mustWriteSessionFile(
+		t,
+		filepath.Join(sessionDirectory(baseDir, workspaceRoot), "task-state-clamp-load.json"),
+		payload,
+	)
+
+	loaded, err := store.Load(context.Background(), "task-state-clamp-load")
+	if err != nil {
+		t.Fatalf("load session: %v", err)
+	}
+	if len([]rune(loaded.TaskState.Goal)) != taskStateMaxFieldChars {
+		t.Fatalf("expected loaded goal to be clamped to %d runes, got %d", taskStateMaxFieldChars, len([]rune(loaded.TaskState.Goal)))
+	}
+	if len(loaded.TaskState.Progress) != taskStateMaxListItems {
+		t.Fatalf("expected loaded progress list clamped to %d, got %d", taskStateMaxListItems, len(loaded.TaskState.Progress))
+	}
+}
+
+func buildQuotedRepeatedWithIndex(ch string, itemLen int, count int) string {
+	items := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		items = append(items, `"`+strings.Repeat(ch, itemLen-4)+buildIndexedSuffix(i)+`"`)
+	}
+	return strings.Join(items, ",")
+}
+
+func buildIndexedSuffix(index int) string {
+	chars := []rune("abcdefghijklmnopqrstuvwxyz0123456789")
+	hi := chars[(index/len(chars))%len(chars)]
+	lo := chars[index%len(chars)]
+	return string([]rune{hi, lo, 'x', 'x'})
 }
 
 func mustWriteSessionFile(t *testing.T, path string, content string) {
