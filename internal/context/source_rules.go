@@ -2,7 +2,9 @@ package context
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -216,6 +218,9 @@ func discoverRuleFilesWithFinder(ctx context.Context, workdir string, finder rul
 
 		match, err := finder(dir)
 		if err != nil {
+			if isRuleDiscoveryPermissionError(err) {
+				break
+			}
 			return nil, fmt.Errorf("context: discover rule file in %s: %w", dir, err)
 		}
 		if match != "" {
@@ -234,6 +239,20 @@ func discoverRuleFilesWithFinder(ctx context.Context, workdir string, finder rul
 	}
 
 	return paths, nil
+}
+
+// isRuleDiscoveryPermissionError 判断规则发现失败是否由权限限制导致。
+// 在沙箱或受限目录场景下，遇到无权限读取的父目录时应停止继续向上探测，而不是让整个上下文构建失败。
+func isRuleDiscoveryPermissionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if os.IsPermission(err) || errors.Is(err, fs.ErrPermission) || errors.Is(err, os.ErrPermission) {
+		return true
+	}
+
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "permission denied") || strings.Contains(lower, "access is denied")
 }
 
 // findExactRuleFile 只匹配大小写完全一致的 AGENTS.md，避免误读同名变体。

@@ -5,7 +5,7 @@
 ## 概览
 
 - runtime 已接入手动 compact、基于 token 阈值的自动 compact，以及 provider 上下文过长后的 `reactive` compact 自动恢复。
-- `internal/context/compact` 支持 `manual` 与 `reactive` 两种 mode。
+- `internal/context/compact` 支持 `manual`、`auto` 与 `reactive` 三种 mode。
 - 用户通过 `/compact` 对当前会话执行一次上下文压缩。
 - compact 前会先写入完整 transcript，随后生成并校验 compact summary，再回写会话消息。
 
@@ -40,7 +40,7 @@ context:
 
 ## 自动压缩
 
-当 `auto_compact.enabled` 为 `true` 时，runtime 在每次调用 `context.Builder.Build()` 时将当前 token 累计值传入 Metadata，context 模块通过比较累计值与阈值在 `BuildResult.ShouldAutoCompact` 中返回压缩建议。runtime 读取建议后调用现有 compact 管线执行压缩；token 计数的重置与持久化语义统一见 [Session 持久化设计](./session-persistence-design.md)。
+当 `auto_compact.enabled` 为 `true` 时，runtime 在每次调用 `context.Builder.Build()` 时将当前 token 累计值传入 Metadata，context 模块通过比较累计值与阈值在 `BuildResult.AutoCompactSuggested` 中返回压缩建议。runtime 读取建议后调用现有 compact 管线执行压缩；token 计数的重置与持久化语义统一见 [Session 持久化设计](./session-persistence-design.md)。
 
 设计原则：
 - **context 拥有压缩决策权**，runtime 只做编排执行。

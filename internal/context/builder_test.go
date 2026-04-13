@@ -551,7 +551,7 @@ func TestTrimMessagesBoundaries(t *testing.T) {
 	}
 }
 
-func TestBuildShouldAutoCompactDisabled(t *testing.T) {
+func TestBuildAutoCompactSuggestedDisabled(t *testing.T) {
 	t.Parallel()
 
 	builder := NewBuilder()
@@ -566,12 +566,12 @@ func TestBuildShouldAutoCompactDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build() error = %v", err)
 	}
-	if result.ShouldAutoCompact {
-		t.Fatalf("expected ShouldAutoCompact false when threshold is 0")
+	if result.AutoCompactSuggested {
+		t.Fatalf("expected AutoCompactSuggested false when threshold is 0")
 	}
 }
 
-func TestBuildShouldAutoCompactBelowThreshold(t *testing.T) {
+func TestBuildAutoCompactSuggestedBelowThreshold(t *testing.T) {
 	t.Parallel()
 
 	builder := NewBuilder()
@@ -586,12 +586,12 @@ func TestBuildShouldAutoCompactBelowThreshold(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build() error = %v", err)
 	}
-	if result.ShouldAutoCompact {
-		t.Fatalf("expected ShouldAutoCompact false when tokens below threshold")
+	if result.AutoCompactSuggested {
+		t.Fatalf("expected AutoCompactSuggested false when tokens below threshold")
 	}
 }
 
-func TestBuildShouldAutoCompactAtThreshold(t *testing.T) {
+func TestBuildAutoCompactSuggestedAtThreshold(t *testing.T) {
 	t.Parallel()
 
 	builder := NewBuilder()
@@ -606,12 +606,12 @@ func TestBuildShouldAutoCompactAtThreshold(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build() error = %v", err)
 	}
-	if !result.ShouldAutoCompact {
-		t.Fatalf("expected ShouldAutoCompact true when tokens equal threshold")
+	if !result.AutoCompactSuggested {
+		t.Fatalf("expected AutoCompactSuggested true when tokens equal threshold")
 	}
 }
 
-func TestBuildShouldAutoCompactAboveThreshold(t *testing.T) {
+func TestBuildAutoCompactSuggestedAboveThreshold(t *testing.T) {
 	t.Parallel()
 
 	builder := NewBuilder()
@@ -626,8 +626,8 @@ func TestBuildShouldAutoCompactAboveThreshold(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build() error = %v", err)
 	}
-	if !result.ShouldAutoCompact {
-		t.Fatalf("expected ShouldAutoCompact true when tokens above threshold")
+	if !result.AutoCompactSuggested {
+		t.Fatalf("expected AutoCompactSuggested true when tokens above threshold")
 	}
 }
 

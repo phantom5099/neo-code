@@ -4,11 +4,18 @@
 
 当前 runtime 对外暴露一组小而稳定的事件：
 
+- `user_message`
 - `agent_chunk`
 - `agent_done`
+- `tool_call_thinking`
 - `tool_start`
+- `tool_chunk`
 - `tool_result`
+- `run_canceled`
 - `error`
+- `provider_retry`
+- `permission_request`
+- `permission_resolved`
 - `token_usage`
 - `compact_start`
 - `compact_done`
@@ -19,14 +26,19 @@
 1. 加载目标会话或创建新会话。
 2. 追加最新的用户消息。
 3. 读取最新配置快照。
-4. 解析当前 provider 配置并构建 provider 实例。
-5. 调用 `context.Builder` 生成本轮请求使用的 `system prompt` 和消息上下文。
-6. 如命中 token 阈值自动压缩建议，则先执行一次 compact，再继续构造请求。
+4. 调用 `context.Builder` 生成本轮请求使用的 `system prompt` 和消息上下文。
+5. 如命中 token 阈值自动压缩建议，则先执行一次 compact，再在同一轮内重建请求。
+6. 冻结当前 turn 的 `provider / model / tools / workdir / request` 快照。
 7. 调用 `Provider.Generate`，并把流式事件桥接给 TUI。
-8. 如 provider 返回“上下文过长”错误，则触发一次 `reactive` compact，并仅重试一次当前请求。
+8. 如 provider 返回“上下文过长”错误，则触发一次 `reactive` compact，并仅在同一 turn 内重建一次当前请求。
 9. 保存 assistant 完整回复。
 10. 执行返回的工具调用，并保存每一个工具结果。
 11. 如果仍需继续推理，则进入下一轮；否则结束。
+
+补充约束：
+- 同一 turn 内的 provider retry 只重放冻结后的 turn 快照，不会重新读取配置。
+- `auto compact` 与 `reactive compact` 都不额外消耗 reasoning turn。
+- 权限审批等待由 `internal/runtime/approval` 负责 request 生命周期，runtime 自己负责事件发射与 tool 重试编排。
 
 ### Context Builder 输入与职责
 
@@ -44,7 +56,7 @@
   - 从 `workdir` 向上发现的 `AGENTS.md`
   - 系统状态摘要（`workdir` / `shell` / `provider` / `model` / git branch / git dirty）
   - 裁剪后的历史消息
-  - 自动压缩决策（`BuildResult.ShouldAutoCompact`）
+  - 自动压缩决策（`BuildResult.AutoCompactSuggested`）
 - `runtime` 不直接读取规则文件，也不直接查询 git 状态。
 - `provider` 只消费最终生成的 `SystemPrompt`、消息列表和工具 schema，不感知上下文来源。
 
@@ -66,8 +78,13 @@
 ## 流式桥接
 
 - Provider 发出 `StreamEvent`
-- runtime 将其转换成 `RuntimeEvent`
+- `internal/provider/streaming` 统一累积文本、tool call 增量和 `message_done`
+- runtime 将累积过程映射成 `RuntimeEvent`
 - TUI 使用 Bubble Tea `Cmd` 监听事件，并在处理完成后继续订阅
+
+同一套流式累积逻辑同时复用于：
+- 普通 `Run()` 的 assistant 回复收敛
+- compact summary 生成阶段的 provider 输出消费
 
 ## Token 计量
 

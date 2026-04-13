@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	agentruntime "neo-code/internal/runtime"
+	approvalflow "neo-code/internal/runtime/approval"
 )
 
 // permissionPromptOption 表示权限审批面板中的一个可选项。
@@ -21,17 +22,17 @@ var permissionPromptOptions = []permissionPromptOption{
 	{
 		Label:    "Allow once",
 		Hint:     "Approve this request once",
-		Decision: agentruntime.PermissionResolutionAllowOnce,
+		Decision: approvalflow.DecisionAllowOnce,
 	},
 	{
 		Label:    "Allow session",
 		Hint:     "Approve similar requests for this session",
-		Decision: agentruntime.PermissionResolutionAllowSession,
+		Decision: approvalflow.DecisionAllowSession,
 	},
 	{
 		Label:    "Reject",
 		Hint:     "Reject this request",
-		Decision: agentruntime.PermissionResolutionReject,
+		Decision: approvalflow.DecisionReject,
 	},
 }
 
@@ -66,11 +67,11 @@ func permissionPromptOptionAt(selected int) permissionPromptOption {
 func parsePermissionShortcut(input string) (agentruntime.PermissionResolutionDecision, bool) {
 	switch strings.ToLower(strings.TrimSpace(input)) {
 	case "y", "yes", "once":
-		return agentruntime.PermissionResolutionAllowOnce, true
+		return approvalflow.DecisionAllowOnce, true
 	case "a", "always":
-		return agentruntime.PermissionResolutionAllowSession, true
+		return approvalflow.DecisionAllowSession, true
 	case "n", "no", "reject", "deny":
-		return agentruntime.PermissionResolutionReject, true
+		return approvalflow.DecisionReject, true
 	default:
 		return "", false
 	}

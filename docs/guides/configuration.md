@@ -171,7 +171,7 @@ $env:GEMINI_API_KEY = "AI..."
 
 `config.yaml` 里的 `selected_provider/current_model` 表达的是“用户上次保存的选择状态”。
 
-启动时系统还会基于当前 provider、driver 支持情况和模型目录快照执行选择修正。因此需要区分两件事：
+启动时系统还会进行选择校验与必要修正；若 driver 不受支持会报错并中止。因此需要区分两件事：
 
 - 配置快照结构合法
 - 当前选择已经可直接运行

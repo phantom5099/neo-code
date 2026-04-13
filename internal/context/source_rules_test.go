@@ -3,6 +3,7 @@ package context
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -115,7 +116,7 @@ func TestLoadRuleDocumentsReturnsReadError(t *testing.T) {
 	}
 }
 
-func TestDiscoverRuleFilesReturnsDirectoryReadError(t *testing.T) {
+func TestDiscoverRuleFilesStopsTraversalOnPermissionDenied(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
@@ -133,7 +134,7 @@ func TestDiscoverRuleFilesReturnsDirectoryReadError(t *testing.T) {
 		t.Fatalf("write local rules: %v", err)
 	}
 
-	permissionErr := errors.New("permission denied")
+	permissionErr := fmt.Errorf("wrapped permission: %w", os.ErrPermission)
 	paths, err := discoverRuleFilesWithFinder(context.Background(), nested, func(dir string) (string, error) {
 		switch dir {
 		case nested:
@@ -146,11 +147,11 @@ func TestDiscoverRuleFilesReturnsDirectoryReadError(t *testing.T) {
 			return "", nil
 		}
 	})
-	if err == nil || !strings.Contains(err.Error(), permissionErr.Error()) {
-		t.Fatalf("expected discoverRuleFilesWithFinder() to return permission error, got %v", err)
+	if err != nil {
+		t.Fatalf("discoverRuleFilesWithFinder() error = %v", err)
 	}
-	if paths != nil {
-		t.Fatalf("expected no paths on discovery failure, got %+v", paths)
+	if len(paths) != 1 || paths[0] != localRules {
+		t.Fatalf("expected discovery to stop after permission denial, got %+v", paths)
 	}
 }
 

@@ -3,12 +3,12 @@ package runtime
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 
 	agentcontext "neo-code/internal/context"
 	contextcompact "neo-code/internal/context/compact"
 	"neo-code/internal/provider"
+	"neo-code/internal/provider/streaming"
 	providertypes "neo-code/internal/provider/types"
 )
 
@@ -30,6 +30,7 @@ func newCompactSummaryGenerator(
 	}
 }
 
+// Generate 使用冻结后的 provider 配置为 compact 生成语义摘要。
 func (g *compactSummaryGenerator) Generate(ctx context.Context, input contextcompact.SummaryInput) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -58,58 +59,19 @@ func (g *compactSummaryGenerator) Generate(ctx context.Context, input contextcom
 		return "", err
 	}
 
-	// 使用流式事件通道收集 compact 摘要响应。
-	streamEvents := make(chan providertypes.StreamEvent, 32)
-	streamDone := make(chan error, 1)
-	acc := newStreamAccumulator()
-
-	go func() {
-		var streamErr error
-		defer func() {
-			streamDone <- streamErr
-		}()
-
-		for {
-			select {
-			case event, ok := <-streamEvents:
-				if !ok {
-					return
-				}
-				if err := handleProviderStreamEvent(event, acc, nil, nil, nil); err != nil && streamErr == nil {
-					// 记录首个协议错误后继续排空事件通道，避免 provider 在后续发送时阻塞。
-					streamErr = err
-				}
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-
-	err = modelProvider.Generate(ctx, providertypes.GenerateRequest{
+	outcome := generateStreamingMessage(ctx, modelProvider, providertypes.GenerateRequest{
 		Model:        g.model,
 		SystemPrompt: prompt.SystemPrompt,
 		Messages: []providertypes.Message{{
 			Role:    providertypes.RoleUser,
 			Content: prompt.UserPrompt,
 		}},
-	}, streamEvents)
-	close(streamEvents)
-	streamErr := <-streamDone
-
-	if err != nil {
-		return "", err
-	}
-	if streamErr != nil {
-		return "", streamErr
-	}
-	if !acc.messageDone {
-		return "", fmt.Errorf("%w: provider stream ended without message_done event", provider.ErrStreamInterrupted)
+	}, streaming.Hooks{})
+	if outcome.err != nil {
+		return "", outcome.err
 	}
 
-	message, err := acc.buildMessage()
-	if err != nil {
-		return "", err
-	}
+	message := outcome.message
 	if len(message.ToolCalls) > 0 {
 		return "", errors.New("runtime: compact summary response must not contain tool calls")
 	}

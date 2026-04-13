@@ -47,8 +47,8 @@ func NewBuilderWithMemo(policies MicroCompactPolicySource, memoSource SectionSou
 		sources = append(sources, memoSource)
 	}
 	return &DefaultBuilder{
-		promptSources:       sources,
-		trimPolicy:          spanMessageTrimPolicy{},
+		promptSources:        sources,
+		trimPolicy:           spanMessageTrimPolicy{},
 		microCompactPolicies: policies,
 	}
 }
@@ -77,9 +77,9 @@ func (b *DefaultBuilder) Build(ctx context.Context, input BuildInput) (BuildResu
 		input.Metadata.SessionInputTokens >= input.Compact.AutoCompactThreshold
 
 	return BuildResult{
-		SystemPrompt:      composeSystemPrompt(sections...),
-		Messages:          applyReadTimeContextProjection(trimPolicy.Trim(input.Messages), input.Compact, b.microCompactPolicies),
-		ShouldAutoCompact: shouldAutoCompact,
+		SystemPrompt:         composeSystemPrompt(sections...),
+		Messages:             applyReadTimeContextProjection(trimPolicy.Trim(input.Messages), input.Compact, b.microCompactPolicies),
+		AutoCompactSuggested: shouldAutoCompact,
 	}, nil
 }
 

@@ -18,6 +18,7 @@ import (
 	"neo-code/internal/memo"
 	providertypes "neo-code/internal/provider/types"
 	agentruntime "neo-code/internal/runtime"
+	approvalflow "neo-code/internal/runtime/approval"
 	agentsession "neo-code/internal/session"
 	"neo-code/internal/tools"
 	tuistatus "neo-code/internal/tui/core/status"
@@ -1023,7 +1024,7 @@ func runtimeEventPermissionRequestHandler(a *App, event agentruntime.RuntimeEven
 		currentRequestID := strings.TrimSpace(a.pendingPermission.Request.RequestID)
 		nextRequestID := strings.TrimSpace(payload.RequestID)
 		if currentRequestID != "" && currentRequestID != nextRequestID && !a.pendingPermission.Submitting {
-			a.deferredEventCmd = runResolvePermission(a.runtime, currentRequestID, agentruntime.PermissionResolutionReject)
+			a.deferredEventCmd = runResolvePermission(a.runtime, currentRequestID, approvalflow.DecisionReject)
 			a.appendActivity(
 				"permission",
 				"Auto-rejected superseded permission request",
@@ -1083,7 +1084,7 @@ func (a *App) refreshPermissionPromptLayout() {
 
 // runtimeEventCompactDoneHandler 处理 compact 完成事件。
 func runtimeEventCompactDoneHandler(a *App, event agentruntime.RuntimeEvent) bool {
-	payload, ok := event.Payload.(agentruntime.CompactDonePayload)
+	payload, ok := event.Payload.(agentruntime.CompactResult)
 	if !ok {
 		return false
 	}
