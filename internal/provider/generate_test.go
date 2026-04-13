@@ -1,0 +1,85 @@
+package provider_test
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+
+	"neo-code/internal/provider"
+	providertypes "neo-code/internal/provider/types"
+)
+
+type stubTextGenProvider struct {
+	requests []providertypes.GenerateRequest
+	generate func(ctx context.Context, req providertypes.GenerateRequest, events chan<- providertypes.StreamEvent) error
+}
+
+func (s *stubTextGenProvider) Generate(
+	ctx context.Context,
+	req providertypes.GenerateRequest,
+	events chan<- providertypes.StreamEvent,
+) error {
+	s.requests = append(s.requests, req)
+	if s.generate != nil {
+		return s.generate(ctx, req, events)
+	}
+	return nil
+}
+
+func TestGenerateTextSuccess(t *testing.T) {
+	providerStub := &stubTextGenProvider{
+		generate: func(ctx context.Context, req providertypes.GenerateRequest, events chan<- providertypes.StreamEvent) error {
+			events <- providertypes.NewTextDeltaStreamEvent("hello ")
+			events <- providertypes.NewTextDeltaStreamEvent("world")
+			events <- providertypes.NewMessageDoneStreamEvent("stop", nil)
+			return nil
+		},
+	}
+
+	req := providertypes.GenerateRequest{
+		Model:        "test-model",
+		SystemPrompt: "test prompt",
+		Messages: []providertypes.Message{
+			{Role: providertypes.RoleUser, Content: "test message"},
+		},
+	}
+
+	text, err := provider.GenerateText(context.Background(), providerStub, req)
+	if err != nil {
+		t.Fatalf("GenerateText() error = %v", err)
+	}
+	if text != "hello world" {
+		t.Fatalf("text = %q, want %q", text, "hello world")
+	}
+	if len(providerStub.requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(providerStub.requests))
+	}
+}
+
+func TestGenerateTextProviderError(t *testing.T) {
+	providerStub := &stubTextGenProvider{
+		generate: func(ctx context.Context, req providertypes.GenerateRequest, events chan<- providertypes.StreamEvent) error {
+			return errors.New("provider error")
+		},
+	}
+
+	_, err := provider.GenerateText(context.Background(), providerStub, providertypes.GenerateRequest{})
+	if err == nil || !strings.Contains(err.Error(), "provider error") {
+		t.Fatalf("GenerateText() error = %v", err)
+	}
+}
+
+func TestGenerateTextRequiresMessageDone(t *testing.T) {
+	providerStub := &stubTextGenProvider{
+		generate: func(ctx context.Context, req providertypes.GenerateRequest, events chan<- providertypes.StreamEvent) error {
+			events <- providertypes.NewTextDeltaStreamEvent("partial")
+			return nil
+		},
+	}
+
+	_, err := provider.GenerateText(context.Background(), providerStub, providertypes.GenerateRequest{})
+	if err == nil || !strings.Contains(err.Error(), "message_done") {
+		t.Fatalf("GenerateText() error = %v", err)
+	}
+}

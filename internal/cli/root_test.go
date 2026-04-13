@@ -96,13 +96,17 @@ func TestDefaultRootProgramLauncherRunsProgram(t *testing.T) {
 	originalNewProgram := newRootProgram
 	t.Cleanup(func() { newRootProgram = originalNewProgram })
 
-	newRootProgram = func(ctx context.Context, opts app.BootstrapOptions) (*tea.Program, error) {
+	cleanedUp := false
+	newRootProgram = func(ctx context.Context, opts app.BootstrapOptions) (*tea.Program, func() error, error) {
 		model := quitModel{}
-		return tea.NewProgram(model, tea.WithInput(nil), tea.WithOutput(io.Discard)), nil
+		return tea.NewProgram(model, tea.WithInput(nil), tea.WithOutput(io.Discard)), func() error { cleanedUp = true; return nil }, nil
 	}
 
 	if err := defaultRootProgramLauncher(context.Background(), app.BootstrapOptions{Workdir: `D:\项目\中文目录`}); err != nil {
 		t.Fatalf("defaultRootProgramLauncher() error = %v", err)
+	}
+	if !cleanedUp {
+		t.Fatalf("expected cleanup to be called")
 	}
 }
 
@@ -111,8 +115,8 @@ func TestDefaultRootProgramLauncherReturnsNewProgramError(t *testing.T) {
 	t.Cleanup(func() { newRootProgram = originalNewProgram })
 
 	expected := errors.New("new program failed")
-	newRootProgram = func(ctx context.Context, opts app.BootstrapOptions) (*tea.Program, error) {
-		return nil, expected
+	newRootProgram = func(ctx context.Context, opts app.BootstrapOptions) (*tea.Program, func() error, error) {
+		return nil, nil, expected
 	}
 
 	err := defaultRootProgramLauncher(context.Background(), app.BootstrapOptions{})

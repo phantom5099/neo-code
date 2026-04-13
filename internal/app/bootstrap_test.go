@@ -30,12 +30,15 @@ func TestNewProgram(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 
-	program, err := NewProgram(context.Background(), BootstrapOptions{})
+	program, cleanup, err := NewProgram(context.Background(), BootstrapOptions{})
 	if err != nil {
 		t.Fatalf("NewProgram() error = %v", err)
 	}
 	if program == nil {
 		t.Fatalf("expected tea program")
+	}
+	if cleanup != nil {
+		defer cleanup()
 	}
 
 	configPath := filepath.Join(home, ".neocode", "config.yaml")
@@ -62,12 +65,15 @@ func TestNewProgramNormalizesInvalidCurrentModelOnStartup(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	program, err := NewProgram(context.Background(), BootstrapOptions{})
+	program, cleanup, err := NewProgram(context.Background(), BootstrapOptions{})
 	if err != nil {
 		t.Fatalf("NewProgram() error = %v", err)
 	}
 	if program == nil {
 		t.Fatalf("expected tea program")
+	}
+	if cleanup != nil {
+		defer cleanup()
 	}
 
 	data, err := os.ReadFile(configPath)
@@ -137,9 +143,12 @@ func TestBuildToolRegistryUsesWebFetchConfig(t *testing.T) {
 	cfg.Workdir = t.TempDir()
 	cfg.Tools.WebFetch.MaxResponseBytes = 4
 
-	registry, err := buildToolRegistry(cfg)
+	registry, cleanup, err := buildToolRegistry(cfg)
 	if err != nil {
 		t.Fatalf("buildToolRegistry() error = %v", err)
+	}
+	if cleanup != nil {
+		defer cleanup()
 	}
 	tool, err := registry.Get("webfetch")
 	if err != nil {
@@ -348,9 +357,12 @@ func TestBuildToolRegistryIncludesMCPFromConfig(t *testing.T) {
 		return registry.RefreshServerTools(context.Background(), server.ID)
 	}
 
-	registry, err := buildToolRegistry(cfg)
+	registry, cleanup, err := buildToolRegistry(cfg)
 	if err != nil {
 		t.Fatalf("buildToolRegistry() error = %v", err)
+	}
+	if cleanup != nil {
+		defer cleanup()
 	}
 	specs, err := registry.ListAvailableSpecs(context.Background(), tools.SpecListInput{})
 	if err != nil {
@@ -410,9 +422,12 @@ func TestBuildToolRegistryAppliesMCPExposureConfig(t *testing.T) {
 		return registry.RefreshServerTools(context.Background(), server.ID)
 	}
 
-	registry, err := buildToolRegistry(cfg)
+	registry, cleanup, err := buildToolRegistry(cfg)
 	if err != nil {
 		t.Fatalf("buildToolRegistry() error = %v", err)
+	}
+	if cleanup != nil {
+		defer cleanup()
 	}
 
 	specs, err := registry.ListAvailableSpecs(context.Background(), tools.SpecListInput{Agent: "planner"})
@@ -448,7 +463,10 @@ func TestBuildToolRegistryReturnsMCPSourceError(t *testing.T) {
 		},
 	}
 
-	_, err := buildToolRegistry(cfg)
+	_, cleanup, err := buildToolRegistry(cfg)
+	if cleanup != nil {
+		defer cleanup()
+	}
 	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "unsupported mcp source") {
 		t.Fatalf("expected unsupported mcp source error, got %v", err)
 	}
@@ -789,7 +807,10 @@ func TestNewProgramRejectsInvalidWorkdirOverride(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 
-	_, err := NewProgram(context.Background(), BootstrapOptions{Workdir: filepath.Join(t.TempDir(), "missing", "中文")})
+	_, cleanup, err := NewProgram(context.Background(), BootstrapOptions{Workdir: filepath.Join(t.TempDir(), "missing", "中文")})
+	if cleanup != nil {
+		defer cleanup()
+	}
 	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "resolve workdir") {
 		t.Fatalf("expected invalid workdir error, got %v", err)
 	}
