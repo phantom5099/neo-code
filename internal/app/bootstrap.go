@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -118,10 +119,8 @@ func BuildRuntime(ctx context.Context, opts BootstrapOptions) (RuntimeBundle, er
 
 	// 注入记忆提取钩子：当 AutoExtract 启用且 memoSvc 可用时，ReAct 循环完成后异步提取记忆。
 	if memoSvc != nil && cfg.Memo.AutoExtract {
-		runtimeSvc.SetMemoExtractor(&memoExtractorAdapter{
-			extractor: memo.NewRuleExtractor(),
-			svc:       memoSvc,
-		})
+		textGen := newProviderTextGenerator(providerRegistry, manager)
+		runtimeSvc.SetMemoExtractor(memo.NewAutoExtractor(memo.NewLLMExtractor(textGen), memoSvc))
 	}
 
 	return RuntimeBundle{
@@ -223,13 +222,91 @@ func buildToolManager(registry *tools.Registry) (tools.Manager, error) {
 	return tools.NewManager(registry, engine, security.NewWorkspaceSandbox())
 }
 
-// memoExtractorAdapter 适配 memo.RuleExtractor + memo.Service 到 runtime.MemoExtractor 接口。
-type memoExtractorAdapter struct {
-	extractor *memo.RuleExtractor
-	svc       *memo.Service
+// providerTextGenerator 复用当前 provider 配置，向 memo 提供纯文本生成能力。
+type providerTextGenerator struct {
+	factory       agentruntime.ProviderFactory
+	configManager *config.Manager
 }
 
-// ExtractAndStore 实现 runtime.MemoExtractor 接口，从消息中提取记忆并保存。
-func (a *memoExtractorAdapter) ExtractAndStore(ctx context.Context, messages []providertypes.Message) {
-	memo.ExtractAndStore(ctx, a.extractor, a.svc, messages)
+// newProviderTextGenerator 创建基于当前 provider 选择的文本生成适配器。
+func newProviderTextGenerator(factory agentruntime.ProviderFactory, cm *config.Manager) *providerTextGenerator {
+	return &providerTextGenerator{
+		factory:       factory,
+		configManager: cm,
+	}
+}
+
+// Generate 使用当前选中的 provider/model 发起无工具的独立生成请求。
+func (g *providerTextGenerator) Generate(
+	ctx context.Context,
+	prompt string,
+	messages []providertypes.Message,
+) (string, error) {
+	cfg := g.configManager.Get()
+	resolved, err := config.ResolveSelectedProvider(cfg)
+	if err != nil {
+		return "", err
+	}
+
+	modelProvider, err := g.factory.Build(ctx, resolved.ToRuntimeConfig())
+	if err != nil {
+		return "", err
+	}
+
+	events := make(chan providertypes.StreamEvent, 32)
+	done := make(chan error, 1)
+	var builder strings.Builder
+
+	go func() {
+		messageDone := false
+		var streamErr error
+		for event := range events {
+			switch event.Type {
+			case providertypes.StreamEventTextDelta:
+				payload, err := event.TextDeltaValue()
+				if err != nil {
+					if streamErr == nil {
+						streamErr = err
+					}
+					continue
+				}
+				builder.WriteString(payload.Text)
+			case providertypes.StreamEventMessageDone:
+				if _, err := event.MessageDoneValue(); err != nil {
+					if streamErr == nil {
+						streamErr = err
+					}
+					continue
+				}
+				messageDone = true
+			default:
+				if streamErr == nil {
+					streamErr = fmt.Errorf("memo: unexpected provider stream event %q", event.Type)
+				}
+			}
+		}
+		if streamErr == nil && !messageDone {
+			streamErr = fmt.Errorf("memo: provider stream ended without message_done event")
+		}
+		done <- streamErr
+	}()
+
+	err = modelProvider.Generate(ctx, providertypes.GenerateRequest{
+		Model:        cfg.CurrentModel,
+		SystemPrompt: prompt,
+		Messages:     append([]providertypes.Message(nil), messages...),
+	}, events)
+	close(events)
+
+	streamErr := <-done
+	if streamErr != nil {
+		if err != nil {
+			return "", fmt.Errorf("memo: provider generate failed: %v: %w", streamErr, err)
+		}
+		return "", streamErr
+	}
+	if err != nil {
+		return "", err
+	}
+	return builder.String(), nil
 }

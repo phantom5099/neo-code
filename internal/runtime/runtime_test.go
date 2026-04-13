@@ -310,21 +310,24 @@ func (m *stubToolManager) RememberSessionDecision(sessionID string, action secur
 	return m.rememberErr
 }
 
-type stubMemoExtractor struct {
-	calls    int
-	messages []providertypes.Message
-	done     chan struct{}
+type stubScheduledMemoExtractor struct {
+	calls []struct {
+		sessionID string
+		messages  []providertypes.Message
+		skip      bool
+	}
 }
 
-func (s *stubMemoExtractor) ExtractAndStore(ctx context.Context, messages []providertypes.Message) {
-	s.calls++
-	s.messages = append([]providertypes.Message(nil), messages...)
-	if s.done != nil {
-		select {
-		case s.done <- struct{}{}:
-		default:
-		}
-	}
+func (s *stubScheduledMemoExtractor) Schedule(sessionID string, messages []providertypes.Message, skip bool) {
+	s.calls = append(s.calls, struct {
+		sessionID string
+		messages  []providertypes.Message
+		skip      bool
+	}{
+		sessionID: sessionID,
+		messages:  cloneMessages(messages),
+		skip:      skip,
+	})
 }
 
 func TestServiceRun(t *testing.T) {
@@ -504,6 +507,115 @@ func TestServiceRun(t *testing.T) {
 				tt.assert(t, store, scripted, registeredTool)
 			}
 		})
+	}
+}
+
+func TestServiceRunSchedulesMemoExtractionAfterFinalReply(t *testing.T) {
+	t.Parallel()
+
+	manager := newRuntimeConfigManager(t)
+	store := newMemoryStore()
+	registry := tools.NewRegistry()
+	registry.Register(&stubTool{name: "filesystem_read_file", content: "default"})
+
+	scripted := &scriptedProvider{
+		streams: [][]providertypes.StreamEvent{
+			{
+				providertypes.NewTextDeltaStreamEvent("final answer"),
+				providertypes.NewMessageDoneStreamEvent("stop", nil),
+			},
+		},
+	}
+
+	service := NewWithFactory(manager, registry, store, &scriptedProviderFactory{provider: scripted}, &stubContextBuilder{})
+	memoExtractor := &stubScheduledMemoExtractor{}
+	service.SetMemoExtractor(memoExtractor)
+
+	if err := service.Run(context.Background(), UserInput{RunID: "run-memo-schedule", Content: "hello"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(memoExtractor.calls) != 1 {
+		t.Fatalf("memo schedule calls = %d, want 1", len(memoExtractor.calls))
+	}
+	if memoExtractor.calls[0].skip {
+		t.Fatalf("skip = true, want false")
+	}
+	if len(memoExtractor.calls[0].messages) != 2 {
+		t.Fatalf("scheduled messages = %#v", memoExtractor.calls[0].messages)
+	}
+}
+
+func TestServiceRunSkipsAutoMemoExtractionAfterRememberTool(t *testing.T) {
+	t.Parallel()
+
+	manager := newRuntimeConfigManager(t)
+	store := newMemoryStore()
+	registry := tools.NewRegistry()
+	registry.Register(&stubTool{name: tools.ToolNameMemoRemember, content: "Memory saved"})
+
+	scripted := &scriptedProvider{
+		streams: [][]providertypes.StreamEvent{
+			{
+				providertypes.NewToolCallStartStreamEvent(0, "call-remember", tools.ToolNameMemoRemember),
+				providertypes.NewToolCallDeltaStreamEvent(0, "call-remember", `{"type":"user","title":"t","content":"c"}`),
+				providertypes.NewMessageDoneStreamEvent("tool_calls", nil),
+			},
+			{
+				providertypes.NewTextDeltaStreamEvent("done"),
+				providertypes.NewMessageDoneStreamEvent("stop", nil),
+			},
+		},
+	}
+
+	service := NewWithFactory(manager, registry, store, &scriptedProviderFactory{provider: scripted}, &stubContextBuilder{})
+	memoExtractor := &stubScheduledMemoExtractor{}
+	service.SetMemoExtractor(memoExtractor)
+
+	if err := service.Run(context.Background(), UserInput{RunID: "run-remember-skip", Content: "remember this"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(memoExtractor.calls) != 1 {
+		t.Fatalf("memo schedule calls = %d, want 1", len(memoExtractor.calls))
+	}
+	if !memoExtractor.calls[0].skip {
+		t.Fatalf("skip = false, want true")
+	}
+}
+
+func TestServiceRunSchedulesMemoExtractionOnlyAfterFinalCompletion(t *testing.T) {
+	t.Parallel()
+
+	manager := newRuntimeConfigManager(t)
+	store := newMemoryStore()
+	registry := tools.NewRegistry()
+	registry.Register(&stubTool{name: "filesystem_edit", content: "tool output"})
+
+	scripted := &scriptedProvider{
+		streams: [][]providertypes.StreamEvent{
+			{
+				providertypes.NewToolCallStartStreamEvent(0, "call-1", "filesystem_edit"),
+				providertypes.NewToolCallDeltaStreamEvent(0, "call-1", `{"path":"main.go"}`),
+				providertypes.NewMessageDoneStreamEvent("tool_calls", nil),
+			},
+			{
+				providertypes.NewTextDeltaStreamEvent("done"),
+				providertypes.NewMessageDoneStreamEvent("stop", nil),
+			},
+		},
+	}
+
+	service := NewWithFactory(manager, registry, store, &scriptedProviderFactory{provider: scripted}, &stubContextBuilder{})
+	memoExtractor := &stubScheduledMemoExtractor{}
+	service.SetMemoExtractor(memoExtractor)
+
+	if err := service.Run(context.Background(), UserInput{RunID: "run-final-only", Content: "edit file"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(memoExtractor.calls) != 1 {
+		t.Fatalf("memo schedule calls = %d, want 1", len(memoExtractor.calls))
+	}
+	if len(memoExtractor.calls[0].messages) != 4 {
+		t.Fatalf("scheduled messages = %#v", memoExtractor.calls[0].messages)
 	}
 }
 
@@ -1400,60 +1512,6 @@ func TestServiceNewWithFactoryDefaultsToolManager(t *testing.T) {
 
 	events := collectRuntimeEvents(service.Events())
 	assertEventSequence(t, events, []EventType{EventUserMessage, EventAgentDone})
-}
-
-func TestServiceRunMemoExtractorOnlyReceivesLatestUserMessage(t *testing.T) {
-	manager := newRuntimeConfigManager(t)
-	store := newMemoryStore()
-	now := time.Now()
-	store.sessions["session-memo"] = agentsession.Session{
-		ID:        "session-memo",
-		Title:     "history",
-		CreatedAt: now.Add(-time.Minute),
-		UpdatedAt: now.Add(-time.Minute),
-		Messages: []providertypes.Message{
-			{Role: providertypes.RoleUser, Content: "旧偏好"},
-			{Role: providertypes.RoleAssistant, Content: "收到"},
-		},
-	}
-
-	service := NewWithFactory(manager, &stubToolManager{}, store, &scriptedProviderFactory{
-		provider: &scriptedProvider{
-			streams: [][]providertypes.StreamEvent{
-				{providertypes.NewTextDeltaStreamEvent("done")},
-			},
-		},
-	}, nil)
-
-	extractor := &stubMemoExtractor{done: make(chan struct{}, 1)}
-	service.SetMemoExtractor(extractor)
-	if err := service.Run(context.Background(), UserInput{
-		SessionID: "session-memo",
-		RunID:     "run-memo-extract",
-		Content:   "记住以后都用 tab",
-	}); err != nil {
-		t.Fatalf("Run() error = %v", err)
-	}
-
-	select {
-	case <-extractor.done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("memo extractor was not called")
-	}
-
-	if extractor.calls != 1 {
-		t.Fatalf("memo extractor calls = %d, want 1", extractor.calls)
-	}
-	if len(extractor.messages) != 1 {
-		t.Fatalf("memo extractor message count = %d, want 1", len(extractor.messages))
-	}
-	got := extractor.messages[0]
-	if got.Role != providertypes.RoleUser {
-		t.Fatalf("memo extractor role = %q, want %q", got.Role, providertypes.RoleUser)
-	}
-	if got.Content != "记住以后都用 tab" {
-		t.Fatalf("memo extractor content = %q", got.Content)
-	}
 }
 
 func TestServiceRunErrorPaths(t *testing.T) {

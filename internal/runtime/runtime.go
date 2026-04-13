@@ -29,10 +29,6 @@ const (
 	providerRetryBaseWait = 1 * time.Second
 	// providerRetryMaxWait 是 runtime 层重试的最大等待时间。
 	providerRetryMaxWait = 5 * time.Second
-	// memoExtractTimeout 控制单次异步记忆提取的最长执行时间。
-	memoExtractTimeout = 3 * time.Second
-	// memoExtractQueueSize 控制并发记忆提取任务上限，避免高频请求放大后台负载。
-	memoExtractQueueSize = 4
 )
 
 // streamAccumulator 在流式事件处理过程中累积本轮对话需要持久化的助手消息状态，
@@ -139,7 +135,7 @@ type ProviderFactory interface {
 // 与 memo.Extractor 解耦，避免 runtime 直接依赖 memo 包的具体类型。
 type MemoExtractor interface {
 	// ExtractAndStore 从消息中提取记忆并保存，失败静默处理。
-	ExtractAndStore(ctx context.Context, messages []providertypes.Message)
+	Schedule(sessionID string, messages []providertypes.Message, skip bool)
 }
 
 // SetMemoExtractor 设置可选的记忆提取钩子，完成后由 ReAct 循环调用。
@@ -155,7 +151,6 @@ type Service struct {
 	contextBuilder      agentcontext.Builder // 上下文构建器，负责组装 system prompt 与本轮发给模型的消息上下文。
 	compactRunner       contextcompact.Runner
 	memoExtractor       MemoExtractor // 可选的记忆提取钩子，完成后异步提取记忆。
-	memoExtractSlots    chan struct{} // 异步记忆提取并发限流槽位。
 	events              chan RuntimeEvent
 	operationMu         sync.Mutex         // 运行级互斥：串行化 Run 与 Compact，避免并发写同一会话。
 	runMu               sync.Mutex         // 仅保护 activeRun* 字段的并发读写。
@@ -184,13 +179,12 @@ func NewWithFactory(
 	}
 
 	return &Service{
-		configManager:    configManager,
-		sessionStore:     sessionStore,
-		toolManager:      toolManager,
-		providerFactory:  providerFactory,
-		contextBuilder:   contextBuilder,
-		memoExtractSlots: make(chan struct{}, memoExtractQueueSize),
-		events:           make(chan RuntimeEvent, 128),
+		configManager:   configManager,
+		sessionStore:    sessionStore,
+		toolManager:     toolManager,
+		providerFactory: providerFactory,
+		contextBuilder:  contextBuilder,
+		events:          make(chan RuntimeEvent, 128),
 	}
 }
 
@@ -230,6 +224,7 @@ func (s *Service) Run(ctx context.Context, input UserInput) error {
 
 	autoCompacted := false
 	reactiveRetried := false
+	rememberedThisRun := false
 
 	for attempt := 0; ; attempt++ {
 		if err := ctx.Err(); err != nil {
@@ -350,7 +345,10 @@ func (s *Service) Run(ctx context.Context, input UserInput) error {
 		}
 		if len(assistant.ToolCalls) == 0 {
 			s.emit(ctx, EventAgentDone, input.RunID, session.ID, assistant)
-			s.scheduleMemoExtract(ctx, userMessage)
+			// 异步提取记忆：不影响主循环，失败静默处理。
+			if s.memoExtractor != nil {
+				s.memoExtractor.Schedule(session.ID, cloneMessages(session.Messages), rememberedThisRun)
+			}
 			return nil
 		}
 
@@ -405,6 +403,9 @@ func (s *Service) Run(ctx context.Context, input UserInput) error {
 			}
 
 			s.emit(ctx, EventToolResult, input.RunID, session.ID, result)
+			if isSuccessfulRememberToolCall(call.Name, result, execErr) {
+				rememberedThisRun = true
+			}
 			if execErr != nil {
 				if err := ctx.Err(); err != nil {
 					return s.handleRunError(ctx, input.RunID, session.ID, err)
@@ -779,6 +780,42 @@ func (s *Service) isRunCanceled(err error) bool {
 	return errors.Is(err, context.Canceled)
 }
 
+// isSuccessfulRememberToolCall 判断工具调用是否已成功完成显式记忆写入。
+func isSuccessfulRememberToolCall(callName string, result tools.ToolResult, execErr error) bool {
+	if execErr != nil || result.IsError {
+		return false
+	}
+
+	toolName := strings.TrimSpace(result.Name)
+	if toolName == "" {
+		toolName = strings.TrimSpace(callName)
+	}
+	return toolName == tools.ToolNameMemoRemember
+}
+
+// cloneMessages 深拷贝消息切片，避免后台调度读取到后续运行态修改。
+func cloneMessages(messages []providertypes.Message) []providertypes.Message {
+	if len(messages) == 0 {
+		return nil
+	}
+
+	cloned := make([]providertypes.Message, 0, len(messages))
+	for _, message := range messages {
+		next := message
+		if len(message.ToolCalls) > 0 {
+			next.ToolCalls = append([]providertypes.ToolCall(nil), message.ToolCalls...)
+		}
+		if len(message.ToolMetadata) > 0 {
+			next.ToolMetadata = make(map[string]string, len(message.ToolMetadata))
+			for key, value := range message.ToolMetadata {
+				next.ToolMetadata[key] = value
+			}
+		}
+		cloned = append(cloned, next)
+	}
+	return cloned
+}
+
 type permissionEventView struct {
 	toolName   string
 	actionType string
@@ -875,52 +912,4 @@ func resolveWorkdirForSession(defaultWorkdir string, currentWorkdir string, requ
 
 func normalizeExistingWorkdir(workdir string) (string, error) {
 	return agentsession.ResolveExistingDir(workdir)
-}
-
-// scheduleMemoExtract 在回答完成后异步触发记忆提取，不阻塞主流程。
-// 调用方仅传入本轮用户消息，并通过超时与限流控制后台资源占用。
-func (s *Service) scheduleMemoExtract(parent context.Context, userMessage providertypes.Message) {
-	if s == nil || s.memoExtractor == nil {
-		return
-	}
-	if strings.TrimSpace(userMessage.Role) == "" {
-		userMessage.Role = providertypes.RoleUser
-	}
-	if userMessage.Role != providertypes.RoleUser {
-		return
-	}
-	if !s.tryAcquireMemoExtractSlot() {
-		return
-	}
-
-	extractCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), memoExtractTimeout)
-	go func(message providertypes.Message) {
-		defer cancel()
-		defer s.releaseMemoExtractSlot()
-		s.memoExtractor.ExtractAndStore(extractCtx, []providertypes.Message{message})
-	}(userMessage)
-}
-
-// tryAcquireMemoExtractSlot 以非阻塞方式申请记忆提取槽位。
-func (s *Service) tryAcquireMemoExtractSlot() bool {
-	if s == nil || s.memoExtractSlots == nil {
-		return false
-	}
-	select {
-	case s.memoExtractSlots <- struct{}{}:
-		return true
-	default:
-		return false
-	}
-}
-
-// releaseMemoExtractSlot 释放记忆提取槽位。
-func (s *Service) releaseMemoExtractSlot() {
-	if s == nil || s.memoExtractSlots == nil {
-		return
-	}
-	select {
-	case <-s.memoExtractSlots:
-	default:
-	}
 }

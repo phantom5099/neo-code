@@ -18,11 +18,10 @@ type Service struct {
 	extractor  Extractor
 	config     config.MemoConfig
 	mu         sync.Mutex
-	sourceInvl func() // 可选的缓存失效回调
+	sourceInvl func()
 }
 
-// NewService 创建 memo Service 实例。
-// extractor 可以为 nil（禁用自动提取时不需要）。
+// NewService 创建 memo Service 实例；extractor 可以为 nil。
 func NewService(store Store, extractor Extractor, cfg config.MemoConfig, sourceInvl func()) *Service {
 	return &Service{
 		store:      store,
@@ -34,17 +33,43 @@ func NewService(store Store, extractor Extractor, cfg config.MemoConfig, sourceI
 
 // Add 添加一条记忆并持久化索引和 topic 文件。
 func (s *Service) Add(ctx context.Context, entry Entry) error {
-	if !IsValidType(entry.Type) {
-		return fmt.Errorf("memo: invalid type %q", entry.Type)
-	}
-	entry.Title = NormalizeTitle(entry.Title)
-	if entry.Title == "" {
-		return fmt.Errorf("memo: title is empty")
+	entry, err := normalizeEntryForPersist(entry)
+	if err != nil {
+		return err
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	return s.saveEntryLocked(ctx, entry)
+}
+
+// addAutoExtractIfAbsent 在同一把锁内完成自动提取条目的查重与写入。
+func (s *Service) addAutoExtractIfAbsent(ctx context.Context, entry Entry) (bool, error) {
+	entry, err := normalizeEntryForPersist(entry)
+	if err != nil {
+		return false, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	duplicate, err := s.hasExactAutoExtractLocked(ctx, entry)
+	if err != nil {
+		return false, err
+	}
+	if duplicate {
+		return false, nil
+	}
+
+	if err := s.saveEntryLocked(ctx, entry); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// saveEntryLocked 在持有 Service 锁的前提下持久化单条记忆及索引。
+func (s *Service) saveEntryLocked(ctx context.Context, entry Entry) error {
 	now := time.Now()
 	if entry.ID == "" {
 		entry.ID = newEntryID(entry.Type)
@@ -64,7 +89,6 @@ func (s *Service) Add(ctx context.Context, entry Entry) error {
 	}
 	working := cloneIndex(index)
 
-	// 检查是否已存在相同 ID（更新场景）
 	replaced := false
 	for i, existing := range working.Entries {
 		if existing.ID == entry.ID {
@@ -78,11 +102,9 @@ func (s *Service) Add(ctx context.Context, entry Entry) error {
 	}
 	working.UpdatedAt = now
 
-	// 截断索引到最大行数
 	var topicsToDelete []string
 	if s.config.MaxIndexLines > 0 && len(working.Entries) > s.config.MaxIndexLines {
 		excess := len(working.Entries) - s.config.MaxIndexLines
-		// 记录最旧条目对应的 topic 文件，待索引写入成功后再删除。
 		for i := 0; i < excess; i++ {
 			topicFile := strings.TrimSpace(working.Entries[i].TopicFile)
 			if topicFile != "" && topicFile != entry.TopicFile {
@@ -109,8 +131,42 @@ func (s *Service) Add(ctx context.Context, entry Entry) error {
 	return nil
 }
 
-// loadIndexLocked 在持有锁的状态下加载索引，供多个 Service 方法复用。
-// 调用方须持有 s.mu 锁。
+// hasExactAutoExtractLocked 检查是否已存在完全相同的自动提取记忆。
+func (s *Service) hasExactAutoExtractLocked(ctx context.Context, target Entry) (bool, error) {
+	targetKey := autoExtractDedupKey(target)
+	if targetKey == "" {
+		return false, nil
+	}
+
+	index, err := s.loadIndexLocked(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range index.Entries {
+		if strings.TrimSpace(entry.TopicFile) == "" {
+			continue
+		}
+
+		topicContent, err := s.store.LoadTopic(ctx, entry.TopicFile)
+		if err != nil {
+			continue
+		}
+
+		source, content := parseTopicSourceAndContent(topicContent)
+		if source != SourceAutoExtract {
+			continue
+		}
+
+		entry.Source = source
+		entry.Content = content
+		if autoExtractDedupKey(entry) == targetKey {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// loadIndexLocked 在持有锁的状态下加载索引。
 func (s *Service) loadIndexLocked(ctx context.Context) (*Index, error) {
 	index, err := s.store.LoadIndex(ctx)
 	if err != nil {
@@ -119,8 +175,7 @@ func (s *Service) loadIndexLocked(ctx context.Context) (*Index, error) {
 	return index, nil
 }
 
-// Remove 按关键词搜索并删除匹配的记忆条目。
-// 返回被删除的条目数量。
+// Remove 按关键词搜索并删除匹配的记忆条目，返回删除数量。
 func (s *Service) Remove(ctx context.Context, keyword string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -167,7 +222,7 @@ func (s *Service) Remove(ctx context.Context, keyword string) (int, error) {
 	return removed, nil
 }
 
-// List 返回所有记忆条目的浅拷贝。
+// List 返回索引中的所有记忆条目浅拷贝。
 func (s *Service) List(ctx context.Context) ([]Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -181,7 +236,7 @@ func (s *Service) List(ctx context.Context) ([]Entry, error) {
 	return result, nil
 }
 
-// Search 按关键词搜索记忆条目，返回匹配结果。
+// Search 按关键词搜索记忆条目。
 func (s *Service) Search(ctx context.Context, keyword string) ([]Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -229,15 +284,14 @@ func (s *Service) Recall(ctx context.Context, keyword string) (map[string]string
 	return results, nil
 }
 
-// invalidateCache 触发上下文源的缓存失效回调。
+// invalidateCache 触发上下文源缓存失效回调。
 func (s *Service) invalidateCache() {
 	if s.sourceInvl != nil {
 		s.sourceInvl()
 	}
 }
 
-// matchesKeyword 检查条目是否匹配关键词（标题、关键词列表、类型）。
-// 调用方须确保 keyword 已转换为小写。
+// matchesKeyword 检查条目是否匹配关键词。
 func matchesKeyword(entry Entry, keyword string) bool {
 	if strings.Contains(strings.ToLower(entry.Title), keyword) {
 		return true
@@ -253,6 +307,18 @@ func matchesKeyword(entry Entry, keyword string) bool {
 	return false
 }
 
+// normalizeEntryForPersist 统一校验并标准化写入前的记忆条目。
+func normalizeEntryForPersist(entry Entry) (Entry, error) {
+	if !IsValidType(entry.Type) {
+		return Entry{}, fmt.Errorf("memo: invalid type %q", entry.Type)
+	}
+	entry.Title = NormalizeTitle(entry.Title)
+	if entry.Title == "" {
+		return Entry{}, fmt.Errorf("memo: title is empty")
+	}
+	return entry, nil
+}
+
 // newEntryID 生成格式为 <type>_<timestamp_hex>_<random_hex> 的唯一 ID。
 func newEntryID(t Type) string {
 	ts := fmt.Sprintf("%x", time.Now().Unix())
@@ -262,7 +328,7 @@ func newEntryID(t Type) string {
 	return fmt.Sprintf("%s_%s_%s", t, ts, randHex)
 }
 
-// cloneIndex 复制索引结构，避免在持久化失败时污染内存中的原始数据引用。
+// cloneIndex 复制索引结构，避免持久化失败时污染原始数据引用。
 func cloneIndex(index *Index) *Index {
 	if index == nil {
 		return &Index{}
