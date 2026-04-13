@@ -257,6 +257,30 @@ func TestAutoExtractorRemovesIdleState(t *testing.T) {
 	})
 }
 
+func TestAutoExtractorHandleIdleKeepsActiveState(t *testing.T) {
+	auto := NewAutoExtractor(&stubMemoExtractor{}, newAutoExtractorTestService(t))
+	auto.logf = func(string, ...any) {}
+
+	state := &autoExtractState{
+		idleSeq: 2,
+		pending: &autoExtractRequest{
+			messages: []providertypes.Message{{Role: providertypes.RoleUser, Content: "keep"}},
+		},
+	}
+
+	auto.mu.Lock()
+	auto.states["session-1"] = state
+	auto.mu.Unlock()
+
+	auto.handleIdle("session-1", state, 2)
+
+	auto.mu.Lock()
+	defer auto.mu.Unlock()
+	if _, ok := auto.states["session-1"]; !ok {
+		t.Fatal("active state should not be removed by idle callback")
+	}
+}
+
 func TestAutoExtractorLoadsDedupIndexOutsideCurrentProcessState(t *testing.T) {
 	baseDir := t.TempDir()
 	workspace := t.TempDir()
@@ -381,6 +405,24 @@ func TestCloneProviderMessagesDeepCopyAndStopTimer(t *testing.T) {
 	timer := time.NewTimer(5 * time.Millisecond)
 	time.Sleep(10 * time.Millisecond)
 	stopTimer(timer)
+}
+
+func TestIsIdleStateLocked(t *testing.T) {
+	state := &autoExtractState{idleSeq: 3}
+	if !isIdleStateLocked(state, 3) {
+		t.Fatal("expected idle state to be recyclable")
+	}
+
+	state.pending = &autoExtractRequest{}
+	if isIdleStateLocked(state, 3) {
+		t.Fatal("state with pending request should not be recyclable")
+	}
+
+	state.pending = nil
+	state.running = true
+	if isIdleStateLocked(state, 3) {
+		t.Fatal("running state should not be recyclable")
+	}
 }
 
 func waitFor(t *testing.T, timeout time.Duration, fn func() bool) {

@@ -180,18 +180,27 @@ func (a *AutoExtractor) armIdleTimerLocked(sessionID string, state *autoExtractS
 // handleIdle 在会话空闲超时后回收状态。
 func (a *AutoExtractor) handleIdle(sessionID string, state *autoExtractState, seq uint64) {
 	state.mu.Lock()
-	if state.idleSeq != seq || state.running || state.pending != nil {
-		state.mu.Unlock()
+	defer state.mu.Unlock()
+	if !isIdleStateLocked(state, seq) {
 		return
 	}
-	state.idleTimer = nil
-	state.mu.Unlock()
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.states[sessionID] == state {
-		delete(a.states, sessionID)
+	// 在删除前再次确认 map 中仍指向当前状态，防止旧回调回收新状态。
+	if a.states[sessionID] != state {
+		return
 	}
+	if !isIdleStateLocked(state, seq) {
+		return
+	}
+	state.idleTimer = nil
+	delete(a.states, sessionID)
+}
+
+// isIdleStateLocked 判断状态在持锁条件下是否仍满足可回收的空闲条件。
+func isIdleStateLocked(state *autoExtractState, seq uint64) bool {
+	return state.idleSeq == seq && !state.running && state.pending == nil
 }
 
 // extractAndStore 执行提取，并在写入前做本地批次去重和持久化级别的原子去重。
