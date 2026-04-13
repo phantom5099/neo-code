@@ -126,8 +126,21 @@ type UserInput struct {
 	Workdir   string
 }
 
+// ProviderFactory 根据 provider 运行时配置创建 provider 实例。
 type ProviderFactory interface {
 	Build(ctx context.Context, cfg provider.RuntimeConfig) (provider.Provider, error)
+}
+
+// MemoExtractor 定义 runtime 层调用记忆提取的最小能力。
+// 与 memo.Extractor 解耦，避免 runtime 直接依赖 memo 包的具体类型。
+type MemoExtractor interface {
+	// ExtractAndStore 从消息中提取记忆并保存，失败静默处理。
+	ExtractAndStore(ctx context.Context, messages []providertypes.Message)
+}
+
+// SetMemoExtractor 设置可选的记忆提取钩子，完成后由 ReAct 循环调用。
+func (s *Service) SetMemoExtractor(extractor MemoExtractor) {
+	s.memoExtractor = extractor
 }
 
 type Service struct {
@@ -137,6 +150,7 @@ type Service struct {
 	providerFactory     ProviderFactory      // Provider 工厂接口，根据配置动态创建具体的 provider 实例。
 	contextBuilder      agentcontext.Builder // 上下文构建器，负责组装 system prompt 与本轮发给模型的消息上下文。
 	compactRunner       contextcompact.Runner
+	memoExtractor       MemoExtractor // 可选的记忆提取钩子，完成后异步提取记忆。
 	events              chan RuntimeEvent
 	operationMu         sync.Mutex         // 运行级互斥：串行化 Run 与 Compact，避免并发写同一会话。
 	runMu               sync.Mutex         // 仅保护 activeRun* 字段的并发读写。
@@ -330,6 +344,12 @@ func (s *Service) Run(ctx context.Context, input UserInput) error {
 		}
 		if len(assistant.ToolCalls) == 0 {
 			s.emit(ctx, EventAgentDone, input.RunID, session.ID, assistant)
+			// 异步提取记忆：不影响主循环，失败静默处理。
+			if s.memoExtractor != nil {
+				msgs := make([]providertypes.Message, len(session.Messages))
+				copy(msgs, session.Messages)
+				go s.memoExtractor.ExtractAndStore(context.Background(), msgs)
+			}
 			return nil
 		}
 
