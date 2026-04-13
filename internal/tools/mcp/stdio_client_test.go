@@ -536,7 +536,7 @@ func TestStdIOClientListToolsTimeout(t *testing.T) {
 		t.Fatal("expected timeout error, got nil")
 	}
 	errMsg := callErr.Error()
-	if !strings.Contains(errMsg, "deadline exceeded") {
+	if !strings.Contains(errMsg, context.DeadlineExceeded.Error()) {
 		t.Fatalf("expected deadline exceeded error, got %v", callErr)
 	}
 	if !strings.Contains(errMsg, "initialize session") && !strings.Contains(errMsg, "tools/list") {
