@@ -14,6 +14,7 @@ import (
 	providertypes "neo-code/internal/provider/types"
 	"neo-code/internal/runtime/approval"
 	agentsession "neo-code/internal/session"
+	"neo-code/internal/subagent"
 	"neo-code/internal/tools"
 )
 
@@ -65,6 +66,7 @@ type Service struct {
 	compactRunner   contextcompact.Runner
 	approvalBroker  *approval.Broker
 	memoExtractor   MemoExtractor
+	subAgentFactory subagent.Factory
 
 	events           chan RuntimeEvent
 	sessionMu        sync.Mutex
@@ -106,6 +108,7 @@ func NewWithFactory(
 		providerFactory:  providerFactory,
 		contextBuilder:   contextBuilder,
 		approvalBroker:   approval.NewBroker(),
+		subAgentFactory:  subagent.NewWorkerFactory(nil),
 		events:           make(chan RuntimeEvent, 128),
 		sessionLocks:     make(map[string]*sessionLockEntry),
 		activeRunCancels: make(map[uint64]context.CancelFunc),
