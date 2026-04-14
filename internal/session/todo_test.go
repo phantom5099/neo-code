@@ -90,6 +90,22 @@ func TestSessionUpdateTodoStatus(t *testing.T) {
 	}
 }
 
+func TestSessionUpdateTodoStatusRejectsUnknownTodoAndInvalidStatus(t *testing.T) {
+	t.Parallel()
+
+	session := New("Update Todo Status Errors")
+	if err := session.AddTodo(TodoItem{ID: "todo-1", Content: "existing"}); err != nil {
+		t.Fatalf("add todo: %v", err)
+	}
+
+	if err := session.UpdateTodoStatus("missing", TodoStatusCompleted); err == nil || !strings.Contains(err.Error(), `todo "missing" not found`) {
+		t.Fatalf("expected unknown todo error, got %v", err)
+	}
+	if err := session.UpdateTodoStatus("todo-1", TodoStatus("paused")); err == nil || !strings.Contains(err.Error(), `invalid todo status`) {
+		t.Fatalf("expected invalid status error, got %v", err)
+	}
+}
+
 func TestSessionAddTodoRejectsDuplicateID(t *testing.T) {
 	t.Parallel()
 
@@ -130,5 +146,27 @@ func TestFindTodoDependentsPreservesOrder(t *testing.T) {
 
 	if len(got) != 2 || got[0] != "todo-1" || got[1] != "todo-2" {
 		t.Fatalf("expected ordered dependents [todo-1 todo-2], got %+v", got)
+	}
+}
+
+func TestSessionDeleteTodoReportsAllDependentsAndNotFound(t *testing.T) {
+	t.Parallel()
+
+	session := New("Delete Todo Errors")
+	for _, item := range []TodoItem{
+		{ID: "todo-9", Content: "shared dependency"},
+		{ID: "todo-1", Content: "first dependent", Dependencies: []string{"todo-9"}},
+		{ID: "todo-2", Content: "second dependent", Dependencies: []string{"todo-9"}},
+	} {
+		if err := session.AddTodo(item); err != nil {
+			t.Fatalf("add todo %q: %v", item.ID, err)
+		}
+	}
+
+	if err := session.DeleteTodo("todo-9"); err == nil || !strings.Contains(err.Error(), `still required by todo-1, todo-2`) {
+		t.Fatalf("expected dependent list error, got %v", err)
+	}
+	if err := session.DeleteTodo("missing"); err == nil || !strings.Contains(err.Error(), `todo "missing" not found`) {
+		t.Fatalf("expected not found error, got %v", err)
 	}
 }

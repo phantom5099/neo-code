@@ -892,6 +892,50 @@ func TestJSONStoreSaveRejectsInvalidTodos(t *testing.T) {
 	}
 }
 
+func TestJSONStoreLoadRejectsInvalidTodos(t *testing.T) {
+	t.Parallel()
+
+	baseDir := t.TempDir()
+	workspaceRoot := t.TempDir()
+	store := NewJSONStore(baseDir, workspaceRoot)
+
+	mustWriteSessionFile(t, filepath.Join(sessionDirectory(baseDir, workspaceRoot), "invalid-todos-load.json"), strings.Join([]string{
+		`{`,
+		`  "schema_version": 1,`,
+		`  "id": "invalid-todos-load",`,
+		`  "title": "Invalid Todos Load",`,
+		`  "created_at": "2026-04-14T10:00:00Z",`,
+		`  "updated_at": "2026-04-14T10:05:00Z",`,
+		`  "task_state": {`,
+		`    "goal": "",`,
+		`    "progress": [],`,
+		`    "open_items": [],`,
+		`    "next_step": "",`,
+		`    "blockers": [],`,
+		`    "key_artifacts": [],`,
+		`    "decisions": [],`,
+		`    "user_constraints": [],`,
+		`    "last_updated_at": "2026-04-14T10:05:00Z"`,
+		`  },`,
+		`  "todos": [`,
+		`    {`,
+		`      "id": "todo-1",`,
+		`      "content": "broken todo",`,
+		`      "status": "paused",`,
+		`      "created_at": "2026-04-14T10:00:00Z",`,
+		`      "updated_at": "2026-04-14T10:05:00Z"`,
+		`    }`,
+		`  ],`,
+		`  "messages": []`,
+		`}`,
+	}, "\n"))
+
+	_, err := store.Load(context.Background(), "invalid-todos-load")
+	if err == nil || !strings.Contains(err.Error(), `invalid todo status "paused"`) {
+		t.Fatalf("expected invalid todo status load error, got %v", err)
+	}
+}
+
 func buildQuotedRepeatedWithIndex(ch string, itemLen int, count int) string {
 	items := make([]string, 0, count)
 	for i := 0; i < count; i++ {
