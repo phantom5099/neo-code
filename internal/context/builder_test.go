@@ -743,3 +743,30 @@ func TestNewBuilderWithMemo(t *testing.T) {
 		}
 	})
 }
+
+func TestProjectToolMessagesForModelKeepsBuilderProjectionBehavior(t *testing.T) {
+	t.Parallel()
+
+	messages := []providertypes.Message{
+		{
+			Role:         providertypes.RoleTool,
+			ToolCallID:   "call-1",
+			Content:      "tool output",
+			ToolMetadata: map[string]string{"tool_name": "filesystem_read_file", "path": "README.md"},
+		},
+	}
+
+	projected := ProjectToolMessagesForModel(cloneContextMessages(messages))
+	if len(projected) != 1 {
+		t.Fatalf("len(projected) = %d, want 1", len(projected))
+	}
+	if !strings.Contains(projected[0].Content, "tool result") || !strings.Contains(projected[0].Content, "tool: filesystem_read_file") {
+		t.Fatalf("unexpected projected content: %q", projected[0].Content)
+	}
+	if projected[0].ToolMetadata != nil {
+		t.Fatalf("expected projected metadata to be cleared, got %#v", projected[0].ToolMetadata)
+	}
+	if messages[0].ToolMetadata == nil {
+		t.Fatal("expected source messages to remain unchanged")
+	}
+}
