@@ -2,11 +2,14 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 
 	providertypes "neo-code/internal/provider/types"
+	"neo-code/internal/tools"
 )
 
 // executeAssistantToolCalls 并发执行 assistant 返回的全部工具调用并回写结果。
@@ -23,9 +26,21 @@ func (s *Service) executeAssistantToolCalls(
 	execCtx, cancelExec := context.WithCancel(ctx)
 	defer cancelExec()
 
-	parallelism := resolveToolParallelism(len(assistant.ToolCalls))
 	orderedCalls := reorderToolCallsByNameRoundRobin(assistant.ToolCalls)
-	toolLocks := buildToolExecutionLocks(assistant.ToolCalls)
+	readyCalls, skippedCalls := splitDuplicateToolCallsInTurn(orderedCalls)
+	for _, skipped := range skippedCalls {
+		result := newDuplicateToolCallResult(skipped.call.Name, skipped.call.ID, skipped.originalCallID)
+		if err := s.appendToolMessageAndSave(execCtx, state, skipped.call, result); err != nil {
+			return err
+		}
+		s.emitRunScoped(execCtx, EventToolResult, state, result)
+	}
+	if len(readyCalls) == 0 {
+		return nil
+	}
+
+	parallelism := resolveToolParallelism(len(readyCalls))
+	toolLocks := buildToolExecutionLocks(readyCalls)
 	taskCh := make(chan providertypes.ToolCall)
 	var mu sync.Mutex
 	var firstErr error
@@ -55,7 +70,7 @@ func (s *Service) executeAssistantToolCalls(
 		}()
 	}
 
-	for _, call := range orderedCalls {
+	for _, call := range readyCalls {
 		if checkContext() {
 			break
 		}
@@ -191,6 +206,68 @@ func buildToolExecutionLocks(calls []providertypes.ToolCall) map[string]*sync.Mu
 // normalizeToolLockKey 将工具名规范化为锁键，防止大小写差异导致重复并发执行。
 func normalizeToolLockKey(name string) string {
 	return strings.ToLower(strings.TrimSpace(name))
+}
+
+type duplicateToolCall struct {
+	call           providertypes.ToolCall
+	originalCallID string
+}
+
+const toolCallFingerprintSeparator = "\x1f"
+
+// splitDuplicateToolCallsInTurn 在单轮内按工具名+参数指纹去重，并返回被跳过的重复调用。
+func splitDuplicateToolCallsInTurn(calls []providertypes.ToolCall) ([]providertypes.ToolCall, []duplicateToolCall) {
+	if len(calls) <= 1 {
+		return append([]providertypes.ToolCall(nil), calls...), nil
+	}
+
+	uniqueCalls := make([]providertypes.ToolCall, 0, len(calls))
+	skippedCalls := make([]duplicateToolCall, 0, len(calls))
+	seen := make(map[string]string, len(calls))
+	for _, call := range calls {
+		fingerprint := buildToolCallFingerprint(call)
+		if firstCallID, exists := seen[fingerprint]; exists {
+			skippedCalls = append(skippedCalls, duplicateToolCall{
+				call:           call,
+				originalCallID: firstCallID,
+			})
+			continue
+		}
+		seen[fingerprint] = strings.TrimSpace(call.ID)
+		uniqueCalls = append(uniqueCalls, call)
+	}
+	return uniqueCalls, skippedCalls
+}
+
+// buildToolCallFingerprint 生成工具调用指纹，用于识别同轮内 name+args 完全重复的调用。
+func buildToolCallFingerprint(call providertypes.ToolCall) string {
+	return normalizeToolLockKey(call.Name) + toolCallFingerprintSeparator + canonicalizeToolCallArguments(call.Arguments)
+}
+
+// canonicalizeToolCallArguments 将参数规范化为稳定字符串，JSON 解析失败时回退为裁剪后的原始文本。
+func canonicalizeToolCallArguments(rawArgs string) string {
+	trimmed := strings.TrimSpace(rawArgs)
+	if trimmed == "" {
+		return ""
+	}
+
+	var decoded any
+	if err := json.Unmarshal([]byte(trimmed), &decoded); err != nil {
+		return trimmed
+	}
+	encoded, err := json.Marshal(decoded)
+	if err != nil {
+		return trimmed
+	}
+	return string(encoded)
+}
+
+// newDuplicateToolCallResult 生成重复调用的统一错误结果，显式携带被复用的首个 call_id。
+func newDuplicateToolCallResult(toolName string, duplicateCallID string, originalCallID string) tools.ToolResult {
+	duplicateCallID = strings.TrimSpace(duplicateCallID)
+	originalCallID = strings.TrimSpace(originalCallID)
+	details := fmt.Sprintf("call_id=%s duplicates call_id=%s", duplicateCallID, originalCallID)
+	return tools.NewErrorResult(toolName, "duplicate_tool_call", details, nil)
 }
 
 // rememberFirstError 记录首次错误，后续错误只保留用于日志和事件路径。

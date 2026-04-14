@@ -4761,6 +4761,225 @@ func TestParallelToolCallsSerializeSameToolName(t *testing.T) {
 	}
 }
 
+func TestParallelToolCallsDeduplicateSameNameAndArgsWithinTurn(t *testing.T) {
+	t.Parallel()
+
+	store := newMemoryStore()
+	session := newRuntimeSession("session-dedup-same-name-args")
+	store.sessions[session.ID] = cloneSession(session)
+
+	var executeCalls int32
+	toolManager := &stubToolManager{
+		specs: []providertypes.ToolSpec{{Name: "shared_tool"}},
+		executeFn: func(ctx context.Context, input tools.ToolCallInput) (tools.ToolResult, error) {
+			atomic.AddInt32(&executeCalls, 1)
+			return tools.ToolResult{Name: input.Name, Content: "ok"}, nil
+		},
+	}
+
+	service := NewWithFactory(
+		newRuntimeConfigManager(t),
+		toolManager,
+		store,
+		&scriptedProviderFactory{
+			provider: &scriptedProvider{
+				responses: []scriptedResponse{
+					{
+						Message: providertypes.Message{
+							Role: providertypes.RoleAssistant,
+							ToolCalls: []providertypes.ToolCall{
+								{ID: "call_1", Name: "shared_tool", Arguments: `{"path":"a.txt"}`},
+								{ID: "call_2", Name: "shared_tool", Arguments: `{"path":"a.txt"}`},
+							},
+						},
+						FinishReason: "tool_calls",
+					},
+					{
+						Message:      providertypes.Message{Role: providertypes.RoleAssistant, Content: "done"},
+						FinishReason: "stop",
+					},
+				},
+			},
+		},
+		nil,
+	)
+
+	err := service.Run(context.Background(), UserInput{
+		RunID:     "run-dedup-same-name-args",
+		SessionID: session.ID,
+		Content:   "run tools",
+	})
+	if err != nil {
+		t.Fatalf("Run() failed: %v", err)
+	}
+	if got := atomic.LoadInt32(&executeCalls); got != 1 {
+		t.Fatalf("expected only 1 tool execution, got %d", got)
+	}
+
+	saved, err := store.Load(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	var duplicateResult *providertypes.Message
+	for idx := range saved.Messages {
+		message := saved.Messages[idx]
+		if message.Role == providertypes.RoleTool && message.ToolCallID == "call_2" {
+			duplicateResult = &saved.Messages[idx]
+			break
+		}
+	}
+	if duplicateResult == nil {
+		t.Fatalf("expected duplicate tool result for call_2")
+	}
+	if !duplicateResult.IsError {
+		t.Fatalf("expected duplicate tool result to be error")
+	}
+	if !strings.Contains(duplicateResult.Content, "duplicates call_id=call_1") {
+		t.Fatalf("expected duplicate error contains first call id, got %q", duplicateResult.Content)
+	}
+}
+
+func TestParallelToolCallsDoesNotDeduplicateSameNameDifferentArgs(t *testing.T) {
+	t.Parallel()
+
+	var executeCalls int32
+	toolManager := &stubToolManager{
+		specs: []providertypes.ToolSpec{{Name: "shared_tool"}},
+		executeFn: func(ctx context.Context, input tools.ToolCallInput) (tools.ToolResult, error) {
+			atomic.AddInt32(&executeCalls, 1)
+			return tools.ToolResult{Name: input.Name, Content: string(input.Arguments)}, nil
+		},
+	}
+
+	service := NewWithFactory(
+		newRuntimeConfigManager(t),
+		toolManager,
+		newMemoryStore(),
+		&scriptedProviderFactory{
+			provider: &scriptedProvider{
+				responses: []scriptedResponse{
+					{
+						Message: providertypes.Message{
+							Role: providertypes.RoleAssistant,
+							ToolCalls: []providertypes.ToolCall{
+								{ID: "call_1", Name: "shared_tool", Arguments: `{"path":"a.txt"}`},
+								{ID: "call_2", Name: "shared_tool", Arguments: `{"path":"b.txt"}`},
+							},
+						},
+						FinishReason: "tool_calls",
+					},
+					{
+						Message:      providertypes.Message{Role: providertypes.RoleAssistant, Content: "done"},
+						FinishReason: "stop",
+					},
+				},
+			},
+		},
+		nil,
+	)
+
+	if err := service.Run(context.Background(), UserInput{RunID: "run-dedup-different-args", Content: "run tools"}); err != nil {
+		t.Fatalf("Run() failed: %v", err)
+	}
+	if got := atomic.LoadInt32(&executeCalls); got != 2 {
+		t.Fatalf("expected 2 tool executions, got %d", got)
+	}
+}
+
+func TestParallelToolCallsDeduplicateWhenJSONKeyOrderDiffers(t *testing.T) {
+	t.Parallel()
+
+	var executeCalls int32
+	toolManager := &stubToolManager{
+		specs: []providertypes.ToolSpec{{Name: "shared_tool"}},
+		executeFn: func(ctx context.Context, input tools.ToolCallInput) (tools.ToolResult, error) {
+			atomic.AddInt32(&executeCalls, 1)
+			return tools.ToolResult{Name: input.Name, Content: "ok"}, nil
+		},
+	}
+
+	service := NewWithFactory(
+		newRuntimeConfigManager(t),
+		toolManager,
+		newMemoryStore(),
+		&scriptedProviderFactory{
+			provider: &scriptedProvider{
+				responses: []scriptedResponse{
+					{
+						Message: providertypes.Message{
+							Role: providertypes.RoleAssistant,
+							ToolCalls: []providertypes.ToolCall{
+								{ID: "call_1", Name: "shared_tool", Arguments: `{"a":1,"b":2}`},
+								{ID: "call_2", Name: "shared_tool", Arguments: `{"b":2,"a":1}`},
+							},
+						},
+						FinishReason: "tool_calls",
+					},
+					{
+						Message:      providertypes.Message{Role: providertypes.RoleAssistant, Content: "done"},
+						FinishReason: "stop",
+					},
+				},
+			},
+		},
+		nil,
+	)
+
+	if err := service.Run(context.Background(), UserInput{RunID: "run-dedup-json-order", Content: "run tools"}); err != nil {
+		t.Fatalf("Run() failed: %v", err)
+	}
+	if got := atomic.LoadInt32(&executeCalls); got != 1 {
+		t.Fatalf("expected 1 tool execution after JSON canonicalization, got %d", got)
+	}
+}
+
+func TestParallelToolCallsDeduplicateWithInvalidJSONFallback(t *testing.T) {
+	t.Parallel()
+
+	var executeCalls int32
+	toolManager := &stubToolManager{
+		specs: []providertypes.ToolSpec{{Name: "shared_tool"}},
+		executeFn: func(ctx context.Context, input tools.ToolCallInput) (tools.ToolResult, error) {
+			atomic.AddInt32(&executeCalls, 1)
+			return tools.ToolResult{Name: input.Name, Content: "ok"}, nil
+		},
+	}
+
+	service := NewWithFactory(
+		newRuntimeConfigManager(t),
+		toolManager,
+		newMemoryStore(),
+		&scriptedProviderFactory{
+			provider: &scriptedProvider{
+				responses: []scriptedResponse{
+					{
+						Message: providertypes.Message{
+							Role: providertypes.RoleAssistant,
+							ToolCalls: []providertypes.ToolCall{
+								{ID: "call_1", Name: "shared_tool", Arguments: `{bad-json}`},
+								{ID: "call_2", Name: "shared_tool", Arguments: `  {bad-json} `},
+							},
+						},
+						FinishReason: "tool_calls",
+					},
+					{
+						Message:      providertypes.Message{Role: providertypes.RoleAssistant, Content: "done"},
+						FinishReason: "stop",
+					},
+				},
+			},
+		},
+		nil,
+	)
+
+	if err := service.Run(context.Background(), UserInput{RunID: "run-dedup-invalid-json", Content: "run tools"}); err != nil {
+		t.Fatalf("Run() failed: %v", err)
+	}
+	if got := atomic.LoadInt32(&executeCalls); got != 1 {
+		t.Fatalf("expected 1 tool execution with invalid JSON fallback compare, got %d", got)
+	}
+}
+
 func TestParallelToolCallsStopDispatchAfterFirstError(t *testing.T) {
 	t.Parallel()
 
