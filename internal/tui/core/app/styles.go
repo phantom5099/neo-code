@@ -149,35 +149,23 @@ func newStyles() styles {
 		messageBody: lipgloss.NewStyle().
 			Foreground(lipgloss.Color(anthropicNearBlack)).
 			UnsetBackground().
-			Border(lipgloss.NormalBorder()).
-			BorderForeground(lipgloss.Color(borderWarm)).
-			Padding(0, 0),
+			MarginLeft(2),
 		messageUserBody: lipgloss.NewStyle().
-			Foreground(lipgloss.Color(anthropicNearBlack)).
+			Foreground(lipgloss.Color(terracotta)).
 			UnsetBackground().
-			Border(lipgloss.NormalBorder()).
-			BorderForeground(lipgloss.Color(terracotta)).
-			Padding(0, 0),
+			Bold(true).
+			MarginRight(2),
 		inlineNotice: lipgloss.NewStyle().
 			Foreground(lipgloss.Color(oliveGray)).
 			UnsetBackground().
-			Border(lipgloss.NormalBorder()).
-			BorderForeground(lipgloss.Color(borderWarm)).
-			Padding(0, 0).
 			Italic(true),
 		inlineError: lipgloss.NewStyle().
 			Foreground(lipgloss.Color(errorCrimson)).
 			UnsetBackground().
-			Border(lipgloss.NormalBorder()).
-			BorderForeground(lipgloss.Color(errorCrimson)).
-			Padding(0, 0).
 			Bold(true),
 		inlineSystem: lipgloss.NewStyle().
 			Foreground(lipgloss.Color(oliveGray)).
-			UnsetBackground().
-			Border(lipgloss.NormalBorder()).
-			BorderForeground(lipgloss.Color(borderWarm)).
-			Padding(0, 0),
+			UnsetBackground(),
 		codeBlock: lipgloss.NewStyle().
 			MarginLeft(1).
 			Padding(0, 0).

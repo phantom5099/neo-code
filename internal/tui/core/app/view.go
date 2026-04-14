@@ -194,7 +194,6 @@ func (a App) renderMessageBlockWithCopy(message providertypes.Message, width int
 	tag := messageTagAgent
 	tagStyle := a.styles.messageAgentTag
 	bodyStyle := a.styles.messageBody
-	blockAlign := lipgloss.Left
 
 	switch message.Role {
 	case roleUser:
@@ -202,7 +201,6 @@ func (a App) renderMessageBlockWithCopy(message providertypes.Message, width int
 		tag = messageTagUser
 		tagStyle = a.styles.messageUserTag
 		bodyStyle = a.styles.messageUserBody
-		blockAlign = lipgloss.Right
 	case roleTool:
 		return "", nil
 	}
@@ -229,7 +227,7 @@ func (a App) renderMessageBlockWithCopy(message providertypes.Message, width int
 		contentBlock, copyButtons = a.renderMessageContentWithCopy(content, maxMessageWidth-2, bodyStyle, startCopyID)
 	}
 	parts := []string{tagStyle.Render(tag), contentBlock}
-	block := lipgloss.JoinVertical(blockAlign, parts...)
+	block := lipgloss.JoinVertical(lipgloss.Left, parts...)
 
 	if message.Role == roleUser {
 		return lipgloss.PlaceHorizontal(width, lipgloss.Right, block), nil
