@@ -39,11 +39,6 @@ type styles struct {
 	doc               lipgloss.Style
 	headerBar         lipgloss.Style
 	headerBrand       lipgloss.Style
-	headerLabel       lipgloss.Style
-	headerPath        lipgloss.Style
-	headerSub         lipgloss.Style
-	headerMeta        lipgloss.Style
-	headerSpacer      lipgloss.Style
 	panel             lipgloss.Style
 	panelFocused      lipgloss.Style
 	panelTitle        lipgloss.Style
@@ -107,17 +102,6 @@ func newStyles() styles {
 			Foreground(lipgloss.Color(terracotta)).
 			UnsetBackground().
 			Padding(0, 1),
-		headerLabel: lipgloss.NewStyle().
-			Foreground(lipgloss.Color(oliveGray)),
-		headerPath: lipgloss.NewStyle().
-			Foreground(lipgloss.Color(anthropicNearBlack)),
-		headerSub: lipgloss.NewStyle().
-			Foreground(lipgloss.Color(oliveGray)),
-		headerMeta: lipgloss.NewStyle().
-			Foreground(lipgloss.Color(anthropicNearBlack)),
-		headerSpacer: lipgloss.NewStyle().
-			Width(1).
-			UnsetBackground(),
 		panel: panel,
 		panelFocused: panel.Copy().
 			BorderForeground(lipgloss.Color(terracotta)),

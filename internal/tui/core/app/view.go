@@ -43,7 +43,7 @@ func (a App) View() string {
 }
 
 func (a App) renderHeader(width int) string {
-	status := tuicomponents.CompactStatusText(a.state.StatusText, max(18, width/3))
+	status := a.state.StatusText
 	if a.state.IsAgentRunning {
 		if a.runProgressKnown {
 			progressBar := a.progress
@@ -55,36 +55,18 @@ func (a App) renderHeader(width int) string {
 		}
 	}
 
-	brand := lipgloss.JoinHorizontal(
-		lipgloss.Center,
-		a.styles.headerBrand.Render("NeoCode"),
-	)
+	brand := a.styles.headerBrand.Render("NeoCode")
 
-	meta := lipgloss.JoinHorizontal(
+	modelStatus := lipgloss.JoinHorizontal(
 		lipgloss.Top,
-		a.styles.badgeAgent.Render(a.state.CurrentProvider),
 		a.styles.badgeUser.Render(a.state.CurrentModel),
-		a.styles.badgeMuted.Render(a.focusLabel()),
 		a.statusBadge(status),
 	)
 
-	spacerWidth := lipgloss.Width(a.styles.headerSpacer.Render(""))
-	workdirLabel := a.styles.headerLabel.Render("Workdir")
-	workdirWidth := max(12, width-lipgloss.Width(brand)-lipgloss.Width(meta)-(spacerWidth*2)-lipgloss.Width(workdirLabel)-1)
-	workdir := lipgloss.JoinHorizontal(
-		lipgloss.Center,
-		workdirLabel,
-		" ",
-		a.styles.headerPath.Render(tuiutils.TrimMiddle(a.state.CurrentWorkdir, workdirWidth)),
-	)
-
 	header := lipgloss.JoinHorizontal(
-		lipgloss.Center,
+		lipgloss.Top,
 		brand,
-		a.styles.headerSpacer.Render(""),
-		workdir,
-		a.styles.headerSpacer.Render(""),
-		meta,
+		modelStatus,
 	)
 	return a.styles.headerBar.Width(width).Render(lipgloss.Place(width, 1, lipgloss.Left, lipgloss.Top, header))
 }
