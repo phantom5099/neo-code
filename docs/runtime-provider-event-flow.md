@@ -2,7 +2,7 @@
 
 ## Runtime 事件类型
 
-当前 runtime 对外暴露一组小而稳定的事件：
+当前 runtime 对外暴露一组小而稳定的事件（1A 硬切后不再保留旧事件镜像）：
 
 - `user_message`
 - `agent_chunk`
@@ -11,14 +11,15 @@
 - `tool_start`
 - `tool_chunk`
 - `tool_result`
-- `run_canceled`
-- `error`
+- `phase_changed`
+- `progress_evaluated`
+- `stop_reason_decided`
 - `provider_retry`
-- `permission_request`
+- `permission_requested`
 - `permission_resolved`
 - `token_usage`
 - `compact_start`
-- `compact_done`
+- `compact_applied`
 - `compact_error`
 
 这三类 compact 事件同时用于 `manual`、`auto` 与 `reactive` 三种来源，调用方可通过 payload 中的 `trigger_mode` 区分。

@@ -21,6 +21,25 @@ type stubMemoExtractor struct {
 	doneCh   chan struct{}
 }
 
+type lockProbeStore struct {
+	saveFn func(ctx context.Context, session *agentsession.Session) error
+}
+
+func (s *lockProbeStore) Save(ctx context.Context, session *agentsession.Session) error {
+	if s.saveFn == nil {
+		return nil
+	}
+	return s.saveFn(ctx, session)
+}
+
+func (s *lockProbeStore) Load(ctx context.Context, id string) (agentsession.Session, error) {
+	return agentsession.Session{}, errors.New("not implemented")
+}
+
+func (s *lockProbeStore) ListSummaries(ctx context.Context) ([]agentsession.Summary, error) {
+	return nil, errors.New("not implemented")
+}
+
 func (s *stubMemoExtractor) Schedule(_ string, messages []providertypes.Message) {
 	s.mu.Lock()
 	s.calls++
@@ -39,7 +58,6 @@ func TestRunStateNilReceiverNoops(t *testing.T) {
 	t.Parallel()
 
 	var state *runState
-	state.syncSessionTokenTotals()
 	state.recordUsage(3, 5)
 	state.resetTokenTotals()
 	state.touchSession()
@@ -52,18 +70,13 @@ func TestRunStateMutationsAndSync(t *testing.T) {
 	state := newRunState("run-1", session)
 
 	state.recordUsage(10, 20)
-	if state.tokenInputTotal != 11 || state.tokenOutputTotal != 22 {
-		t.Fatalf("unexpected token totals: in=%d out=%d", state.tokenInputTotal, state.tokenOutputTotal)
-	}
-
-	state.syncSessionTokenTotals()
 	if state.session.TokenInputTotal != 11 || state.session.TokenOutputTotal != 22 {
-		t.Fatalf("session totals not synced: %+v", state.session)
+		t.Fatalf("unexpected token totals: in=%d out=%d", state.session.TokenInputTotal, state.session.TokenOutputTotal)
 	}
 
 	state.resetTokenTotals()
-	if state.tokenInputTotal != 0 || state.tokenOutputTotal != 0 {
-		t.Fatalf("expected reset totals to be zero, got in=%d out=%d", state.tokenInputTotal, state.tokenOutputTotal)
+	if state.session.TokenInputTotal != 0 || state.session.TokenOutputTotal != 0 {
+		t.Fatalf("expected reset totals to be zero, got in=%d out=%d", state.session.TokenInputTotal, state.session.TokenOutputTotal)
 	}
 
 	before := state.session.UpdatedAt
@@ -73,7 +86,7 @@ func TestRunStateMutationsAndSync(t *testing.T) {
 		t.Fatalf("expected touchSession to update time")
 	}
 	if state.session.TokenInputTotal != 1 || state.session.TokenOutputTotal != 2 {
-		t.Fatalf("expected touchSession to sync totals")
+		t.Fatalf("expected recordUsage to sync totals")
 	}
 }
 
@@ -139,6 +152,39 @@ func TestAppendToolMessageAndSaveSanitizesMetadata(t *testing.T) {
 	}
 	if _, exists := msg.ToolMetadata["sensitive"]; exists {
 		t.Fatalf("expected sensitive metadata key to be removed, got %+v", msg.ToolMetadata)
+	}
+}
+
+func TestAppendToolMessageAndSaveUnlocksStateBeforePersist(t *testing.T) {
+	t.Parallel()
+
+	session := newRuntimeSession("session-append-tool-lock")
+	state := newRunState("run-append-tool-lock", session)
+
+	store := &lockProbeStore{
+		saveFn: func(_ context.Context, _ *agentsession.Session) error {
+			locked := make(chan struct{})
+			go func() {
+				state.mu.Lock()
+				state.mu.Unlock()
+				close(locked)
+			}()
+
+			select {
+			case <-locked:
+				return nil
+			case <-time.After(200 * time.Millisecond):
+				return errors.New("state lock is still held during save")
+			}
+		},
+	}
+
+	service := &Service{sessionStore: store}
+	call := providertypes.ToolCall{ID: "call-1", Name: "filesystem_read_file"}
+	result := tools.ToolResult{Name: "filesystem_read_file", Content: "ok"}
+
+	if err := service.appendToolMessageAndSave(context.Background(), &state, call, result); err != nil {
+		t.Fatalf("appendToolMessageAndSave() error = %v", err)
 	}
 }
 

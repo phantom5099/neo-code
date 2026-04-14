@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"neo-code/internal/provider/streaming"
 	providertypes "neo-code/internal/provider/types"
 	approvalflow "neo-code/internal/runtime/approval"
+	"neo-code/internal/runtime/controlplane"
 	"neo-code/internal/security"
 	agentsession "neo-code/internal/session"
 	"neo-code/internal/tools"
@@ -331,6 +333,7 @@ func (b *stubContextBuilder) Build(ctx context.Context, input agentcontext.Build
 }
 
 type stubToolManager struct {
+	mu           sync.Mutex
 	specs        []providertypes.ToolSpec
 	result       tools.ToolResult
 	err          error
@@ -339,6 +342,7 @@ type stubToolManager struct {
 	listCalls    int
 	executeCalls int
 	lastInput    tools.ToolCallInput
+	executeFn    func(ctx context.Context, input tools.ToolCallInput) (tools.ToolResult, error)
 	rememberErr  error
 	remembered   []struct {
 		sessionID string
@@ -348,6 +352,8 @@ type stubToolManager struct {
 }
 
 func (m *stubToolManager) ListAvailableSpecs(ctx context.Context, input tools.SpecListInput) ([]providertypes.ToolSpec, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.listCalls++
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -359,6 +365,8 @@ func (m *stubToolManager) ListAvailableSpecs(ctx context.Context, input tools.Sp
 }
 
 func (m *stubToolManager) MicroCompactPolicy(name string) tools.MicroCompactPolicy {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if policy, ok := m.policies[name]; ok {
 		return policy
 	}
@@ -366,16 +374,25 @@ func (m *stubToolManager) MicroCompactPolicy(name string) tools.MicroCompactPoli
 }
 
 func (m *stubToolManager) Execute(ctx context.Context, input tools.ToolCallInput) (tools.ToolResult, error) {
+	m.mu.Lock()
 	m.executeCalls++
 	m.lastInput = input
+	executeFn := m.executeFn
 	result := m.result
+	err := m.err
+	m.mu.Unlock()
+	if executeFn != nil {
+		return executeFn(ctx, input)
+	}
 	if result.Name == "" {
 		result.Name = input.Name
 	}
-	return result, m.err
+	return result, err
 }
 
 func (m *stubToolManager) RememberSessionDecision(sessionID string, action security.Action, scope tools.SessionPermissionScope) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.remembered = append(m.remembered, struct {
 		sessionID string
 		action    security.Action
@@ -859,7 +876,7 @@ func TestServiceRunRejectsProviderCompletionWithoutMessageDone(t *testing.T) {
 	}
 
 	events := collectRuntimeEvents(service.Events())
-	assertEventSequence(t, events, []EventType{EventUserMessage, EventAgentChunk, EventError})
+	assertEventSequence(t, events, []EventType{EventUserMessage, EventAgentChunk, EventStopReasonDecided})
 	assertNoEventType(t, events, EventAgentDone)
 
 	session := onlySession(t, store)
@@ -1358,7 +1375,7 @@ waitRequest:
 		case <-deadline:
 			t.Fatalf("timed out waiting permission request event")
 		case event := <-service.Events():
-			if event.Type != EventPermissionRequest {
+			if !isPermissionRequestEvent(event.Type) {
 				continue
 			}
 			payload, ok := event.Payload.(PermissionRequestPayload)
@@ -1474,7 +1491,7 @@ func TestServiceRunEmitsPermissionResolvedForDeny(t *testing.T) {
 		EventToolResult,
 		EventAgentDone,
 	})
-	assertNoEventType(t, events, EventPermissionRequest)
+	assertNoPermissionRequestFlow(t, events)
 	assertNoEventType(t, events, EventError)
 
 	for _, event := range events {
@@ -1569,7 +1586,7 @@ func TestServiceRunEmitsRememberScopeWhenSessionRejectMemoryHits(t *testing.T) {
 
 	events := collectRuntimeEvents(service.Events())
 	assertEventSequence(t, events, []EventType{EventPermissionResolved, EventToolResult, EventAgentDone})
-	assertNoEventType(t, events, EventPermissionRequest)
+	assertNoPermissionRequestFlow(t, events)
 
 	for _, event := range events {
 		if event.Type != EventPermissionResolved {
@@ -1604,7 +1621,7 @@ func TestServiceRunHandlesToolManagerSpecError(t *testing.T) {
 	}
 
 	events := collectRuntimeEvents(service.Events())
-	assertEventSequence(t, events, []EventType{EventUserMessage, EventError})
+	assertEventSequence(t, events, []EventType{EventUserMessage, EventStopReasonDecided})
 	assertNoEventType(t, events, EventAgentDone)
 	assertEventsRunID(t, events, input.RunID)
 
@@ -1704,7 +1721,7 @@ func TestServiceRunErrorPaths(t *testing.T) {
 			expectErr:  "factory failed",
 			expectEvents: []EventType{
 				EventUserMessage,
-				EventError,
+				EventStopReasonDecided,
 			},
 		},
 		{
@@ -1793,7 +1810,7 @@ func TestServiceRunErrorPaths(t *testing.T) {
 				},
 			},
 			expectErr:    "invalid api key",
-			expectEvents: []EventType{EventUserMessage, EventError},
+			expectEvents: []EventType{EventUserMessage, EventStopReasonDecided},
 			assert: func(t *testing.T, store *memoryStore, scripted *scriptedProvider, tool *stubTool) {
 				t.Helper()
 				if scripted.callCount != 1 {
@@ -1816,7 +1833,7 @@ func TestServiceRunErrorPaths(t *testing.T) {
 				},
 			},
 			expectErr:    "internal server error",
-			expectEvents: []EventType{EventUserMessage, EventProviderRetry, EventError},
+			expectEvents: []EventType{EventUserMessage, EventProviderRetry, EventStopReasonDecided},
 			assert: func(t *testing.T, store *memoryStore, scripted *scriptedProvider, tool *stubTool) {
 				t.Helper()
 				// 1 initial + 2 retries = 3 calls
@@ -1911,7 +1928,7 @@ func TestServiceCancelActiveRun(t *testing.T) {
 	}
 
 	events := collectRuntimeEvents(service.Events())
-	assertEventSequence(t, events, []EventType{EventUserMessage, EventRunCanceled})
+	assertEventSequence(t, events, []EventType{EventUserMessage, EventStopReasonDecided})
 	assertNoEventType(t, events, EventError)
 	assertEventsRunID(t, events, input.RunID)
 }
@@ -2024,7 +2041,7 @@ func TestServiceRunCanceledByProvider(t *testing.T) {
 	}
 
 	events := collectRuntimeEvents(service.Events())
-	assertEventSequence(t, events, []EventType{EventUserMessage, EventRunCanceled})
+	assertEventSequence(t, events, []EventType{EventUserMessage, EventStopReasonDecided})
 	assertNoEventType(t, events, EventError)
 	assertEventsRunID(t, events, input.RunID)
 
@@ -2069,8 +2086,7 @@ func TestServiceRunPreservesProviderErrorAfterCancel(t *testing.T) {
 	}
 
 	events := collectRuntimeEvents(service.Events())
-	assertEventSequence(t, events, []EventType{EventUserMessage, EventError})
-	assertNoEventType(t, events, EventRunCanceled)
+	assertEventSequence(t, events, []EventType{EventUserMessage, EventStopReasonDecided})
 	assertEventsRunID(t, events, input.RunID)
 }
 
@@ -2124,9 +2140,8 @@ func TestServiceRunCanceledDuringToolExecution(t *testing.T) {
 	}
 
 	events := collectRuntimeEvents(service.Events())
-	assertEventSequence(t, events, []EventType{EventUserMessage, EventToolStart, EventToolChunk, EventRunCanceled})
+	assertEventSequence(t, events, []EventType{EventUserMessage, EventToolStart, EventToolChunk, EventStopReasonDecided})
 	assertNoEventType(t, events, EventToolResult)
-	assertNoEventType(t, events, EventError)
 	assertEventsRunID(t, events, input.RunID)
 
 	session := onlySession(t, store)
@@ -2186,8 +2201,7 @@ func TestServiceRunPreservesToolErrorAfterCancel(t *testing.T) {
 	}
 
 	events := collectRuntimeEvents(service.Events())
-	assertEventSequence(t, events, []EventType{EventUserMessage, EventToolStart, EventToolChunk, EventToolResult, EventRunCanceled})
-	assertNoEventType(t, events, EventError)
+	assertEventSequence(t, events, []EventType{EventUserMessage, EventToolStart, EventToolChunk, EventToolResult, EventStopReasonDecided})
 	assertEventsRunID(t, events, input.RunID)
 
 	session := onlySession(t, store)
@@ -2223,8 +2237,7 @@ func TestServiceRunPreservesSessionSaveErrorAfterCancel(t *testing.T) {
 	}
 
 	events := collectRuntimeEvents(service.Events())
-	assertEventSequence(t, events, []EventType{EventError})
-	assertNoEventType(t, events, EventRunCanceled)
+	assertEventSequence(t, events, []EventType{EventStopReasonDecided})
 	assertEventsRunID(t, events, input.RunID)
 }
 
@@ -2269,7 +2282,6 @@ func TestServiceRunToolTimeoutIsNotCancellation(t *testing.T) {
 
 	events := collectRuntimeEvents(service.Events())
 	assertEventSequence(t, events, []EventType{EventUserMessage, EventToolStart, EventToolResult, EventAgentDone})
-	assertNoEventType(t, events, EventRunCanceled)
 	assertEventsRunID(t, events, input.RunID)
 
 	session := onlySession(t, store)
@@ -2335,7 +2347,7 @@ func TestServiceCompactManualAppliesAndPersists(t *testing.T) {
 	}
 
 	events := collectRuntimeEvents(service.Events())
-	assertEventSequence(t, events, []EventType{EventCompactStart, EventCompactDone})
+	assertEventSequence(t, events, []EventType{EventCompactStart, EventCompactApplied})
 	assertEventsRunID(t, events, "run-manual")
 }
 
@@ -2375,7 +2387,7 @@ func TestServiceCompactManualFailureReturnsError(t *testing.T) {
 
 	events := collectRuntimeEvents(service.Events())
 	assertEventSequence(t, events, []EventType{EventCompactStart, EventCompactError})
-	assertNoEventType(t, events, EventCompactDone)
+	assertNoEventType(t, events, EventCompactApplied)
 }
 
 func TestServiceCompactUsesSessionProviderAndModelWhenPresent(t *testing.T) {
@@ -2577,7 +2589,7 @@ func TestServiceManualCompactThenRunContinuesToolRound(t *testing.T) {
 	events := collectRuntimeEvents(service.Events())
 	assertEventSequence(t, events, []EventType{
 		EventCompactStart,
-		EventCompactDone,
+		EventCompactApplied,
 		EventUserMessage,
 		EventToolStart,
 		EventToolResult,
@@ -2935,6 +2947,11 @@ func collectRuntimeEvents(events <-chan RuntimeEvent) []RuntimeEvent {
 	}
 }
 
+// isPermissionRequestEvent 判断是否为权限请求类事件（含 1A 主事件与兼容旧名）。
+func isPermissionRequestEvent(typ EventType) bool {
+	return typ == EventPermissionRequested
+}
+
 func eventIndex(events []RuntimeEvent, want EventType) int {
 	for index, event := range events {
 		if event.Type == want {
@@ -2965,6 +2982,16 @@ func assertNoEventType(t *testing.T, events []RuntimeEvent, unexpected EventType
 	for _, event := range events {
 		if event.Type == unexpected {
 			t.Fatalf("did not expect event %q in %+v", unexpected, events)
+		}
+	}
+}
+
+// assertNoPermissionRequestFlow 断言未出现需要用户审批的权限请求事件（新旧名均排除）。
+func assertNoPermissionRequestFlow(t *testing.T, events []RuntimeEvent) {
+	t.Helper()
+	for _, event := range events {
+		if isPermissionRequestEvent(event.Type) {
+			t.Fatalf("did not expect permission request event %q in %+v", event.Type, events)
 		}
 	}
 }
@@ -3579,7 +3606,7 @@ func TestServiceRunAutoCompactsAndResetsSessionTokens(t *testing.T) {
 	assertEventSequence(t, events, []EventType{
 		EventUserMessage,
 		EventCompactStart,
-		EventCompactDone,
+		EventCompactApplied,
 		EventToolStart,
 		EventToolResult,
 		EventAgentDone,
@@ -3588,7 +3615,7 @@ func TestServiceRunAutoCompactsAndResetsSessionTokens(t *testing.T) {
 
 	foundAutoDone := false
 	for _, event := range events {
-		if event.Type != EventCompactDone {
+		if event.Type != EventCompactApplied {
 			continue
 		}
 		payload, ok := event.Payload.(CompactResult)
@@ -3841,14 +3868,14 @@ func TestServiceRunReactivelyCompactsOnContextTooLong(t *testing.T) {
 	assertEventSequence(t, events, []EventType{
 		EventUserMessage,
 		EventCompactStart,
-		EventCompactDone,
+		EventCompactApplied,
 		EventAgentDone,
 	})
 	assertNoEventType(t, events, EventCompactError)
 
 	foundReactiveDone := false
 	for _, event := range events {
-		if event.Type != EventCompactDone {
+		if event.Type != EventCompactApplied {
 			continue
 		}
 		payload, ok := event.Payload.(CompactResult)
@@ -3939,7 +3966,7 @@ func TestServiceRunReactiveCompactRetriesWithinSameRun(t *testing.T) {
 	assertEventSequence(t, events, []EventType{
 		EventUserMessage,
 		EventCompactStart,
-		EventCompactDone,
+		EventCompactApplied,
 		EventAgentDone,
 	})
 	assertNoEventType(t, events, EventError)
@@ -3990,9 +4017,9 @@ func TestServiceRunReactiveCompactDegradesUpToMaxAttempts(t *testing.T) {
 		EventUserMessage,
 		EventCompactStart,
 		EventCompactError,
-		EventError,
+		EventStopReasonDecided,
 	})
-	assertNoEventType(t, events, EventCompactDone)
+	assertNoEventType(t, events, EventCompactApplied)
 
 	foundReactiveError := false
 	for _, event := range events {
@@ -4050,10 +4077,10 @@ func TestServiceRunDoesNotReactiveCompactOnPlainTextTokenThrottle(t *testing.T) 
 	events := collectRuntimeEvents(service.Events())
 	assertEventSequence(t, events, []EventType{
 		EventUserMessage,
-		EventError,
+		EventStopReasonDecided,
 	})
 	assertNoEventType(t, events, EventCompactStart)
-	assertNoEventType(t, events, EventCompactDone)
+	assertNoEventType(t, events, EventCompactApplied)
 	assertNoEventType(t, events, EventCompactError)
 }
 
@@ -4067,11 +4094,11 @@ func TestRestoreSessionTokens(t *testing.T) {
 
 	state := newRunState("", session)
 
-	if state.tokenInputTotal != 500 {
-		t.Fatalf("expected sessionInputTokens == 500, got %d", state.tokenInputTotal)
+	if state.session.TokenInputTotal != 500 {
+		t.Fatalf("expected sessionInputTokens == 500, got %d", state.session.TokenInputTotal)
 	}
-	if state.tokenOutputTotal != 200 {
-		t.Fatalf("expected sessionOutputTokens == 200, got %d", state.tokenOutputTotal)
+	if state.session.TokenOutputTotal != 200 {
+		t.Fatalf("expected sessionOutputTokens == 200, got %d", state.session.TokenOutputTotal)
 	}
 }
 
@@ -4085,11 +4112,11 @@ func TestRestoreSessionTokensNewSession(t *testing.T) {
 
 	state := newRunState("", session)
 
-	if state.tokenInputTotal != 0 {
-		t.Fatalf("expected sessionInputTokens == 0, got %d", state.tokenInputTotal)
+	if state.session.TokenInputTotal != 0 {
+		t.Fatalf("expected sessionInputTokens == 0, got %d", state.session.TokenInputTotal)
 	}
-	if state.tokenOutputTotal != 0 {
-		t.Fatalf("expected sessionOutputTokens == 0, got %d", state.tokenOutputTotal)
+	if state.session.TokenOutputTotal != 0 {
+		t.Fatalf("expected sessionOutputTokens == 0, got %d", state.session.TokenOutputTotal)
 	}
 }
 
@@ -4173,8 +4200,8 @@ func TestTokenUsageRecordedOnMessageDone(t *testing.T) {
 				service.emit(context.Background(), EventTokenUsage, "test-run-id", "test-session-id", TokenUsagePayload{
 					InputTokens:         payload.Usage.InputTokens,
 					OutputTokens:        payload.Usage.OutputTokens,
-					SessionInputTokens:  state.tokenInputTotal,
-					SessionOutputTokens: state.tokenOutputTotal,
+					SessionInputTokens:  state.session.TokenInputTotal,
+					SessionOutputTokens: state.session.TokenOutputTotal,
 				})
 			}
 		}},
@@ -4184,11 +4211,11 @@ func TestTokenUsageRecordedOnMessageDone(t *testing.T) {
 	}
 
 	// Verify the service counters are updated
-	if state.tokenInputTotal != 100 {
-		t.Fatalf("expected sessionInputTokens == 100, got %d", state.tokenInputTotal)
+	if state.session.TokenInputTotal != 100 {
+		t.Fatalf("expected sessionInputTokens == 100, got %d", state.session.TokenInputTotal)
 	}
-	if state.tokenOutputTotal != 50 {
-		t.Fatalf("expected sessionOutputTokens == 50, got %d", state.tokenOutputTotal)
+	if state.session.TokenOutputTotal != 50 {
+		t.Fatalf("expected sessionOutputTokens == 50, got %d", state.session.TokenOutputTotal)
 	}
 
 	// Verify EventTokenUsage was emitted with correct payload
@@ -4215,5 +4242,367 @@ func TestTokenUsageRecordedOnMessageDone(t *testing.T) {
 	}
 	if tokenUsagePayload.SessionOutputTokens != 50 {
 		t.Fatalf("expected SessionOutputTokens == 50, got %d", tokenUsagePayload.SessionOutputTokens)
+	}
+}
+
+func assertEventContains(t *testing.T, events []RuntimeEvent, expected EventType) {
+	t.Helper()
+	for _, e := range events {
+		if e.Type == expected {
+			return
+		}
+	}
+	t.Errorf("expected event %q to be in sequence, but not found", expected)
+}
+
+func TestParallelToolCallsPhaseMigration(t *testing.T) {
+	t.Parallel()
+
+	callsCount := 0
+	mu := sync.Mutex{}
+
+	toolManager := &stubToolManager{
+		specs: []providertypes.ToolSpec{
+			{Name: "tool_a"},
+			{Name: "tool_b"},
+			{Name: "tool_c"},
+		},
+		executeFn: func(ctx context.Context, input tools.ToolCallInput) (tools.ToolResult, error) {
+			mu.Lock()
+			callsCount++
+			mu.Unlock()
+			time.Sleep(10 * time.Millisecond)
+			if input.Name == "tool_a" {
+				return tools.ToolResult{Content: "result_a"}, nil
+			} else if input.Name == "tool_b" {
+				return tools.ToolResult{Content: "result_b"}, nil
+			}
+			return tools.ToolResult{Content: "result_c"}, nil
+		},
+	}
+
+	providerFactory := &scriptedProviderFactory{
+		provider: &scriptedProvider{
+			responses: []scriptedResponse{
+				{
+					Message: providertypes.Message{
+						Role: providertypes.RoleAssistant,
+						ToolCalls: []providertypes.ToolCall{
+							{ID: "call_1", Name: "tool_a", Arguments: "{}"},
+							{ID: "call_2", Name: "tool_b", Arguments: "{}"},
+							{ID: "call_3", Name: "tool_c", Arguments: "{}"},
+						},
+					},
+					FinishReason: "tool_calls",
+				},
+				{
+					Message: providertypes.Message{
+						Role:    providertypes.RoleAssistant,
+						Content: "done",
+					},
+					FinishReason: "stop",
+				},
+			},
+		},
+	}
+
+	service := NewWithFactory(
+		newRuntimeConfigManager(t),
+		toolManager,
+		newMemoryStore(),
+		providerFactory,
+		nil,
+	)
+
+	input := UserInput{
+		RunID:   "run-parallel",
+		Content: "run parallel tools",
+	}
+
+	if err := service.Run(context.Background(), input); err != nil {
+		t.Fatalf("Run() failed: %v", err)
+	}
+
+	mu.Lock()
+	if callsCount != 3 {
+		t.Errorf("expected 3 tool calls executed, got %d", callsCount)
+	}
+	mu.Unlock()
+
+	events := collectRuntimeEvents(service.Events())
+
+	// We expect EventPhaseChanged to emit plan -> execute -> verify
+	var phaseChanges []PhaseChangedPayload
+	for _, e := range events {
+		if e.Type == EventPhaseChanged {
+			payload := e.Payload.(PhaseChangedPayload)
+			phaseChanges = append(phaseChanges, payload)
+		}
+	}
+
+	expectedTransitions := []PhaseChangedPayload{
+		{From: "", To: "plan"},
+		{From: "plan", To: "execute"},
+		{From: "execute", To: "verify"},
+		{From: "verify", To: "plan"},
+	}
+
+	if len(phaseChanges) < len(expectedTransitions) {
+		t.Errorf("expected at least %d phase transitions, got %d", len(expectedTransitions), len(phaseChanges))
+	} else {
+		for i, exp := range expectedTransitions {
+			if phaseChanges[i] != exp {
+				t.Errorf("transition %d: expected %+v, got %+v", i, exp, phaseChanges[i])
+			}
+		}
+	}
+
+	assertEventContains(t, events, EventToolStart)
+	assertEventContains(t, events, EventToolResult)
+}
+
+func TestParallelToolCallsRespectConcurrencyLimit(t *testing.T) {
+	t.Parallel()
+
+	var inFlight int32
+	var maxInFlight int32
+	toolSpecs := make([]providertypes.ToolSpec, 0, 12)
+	toolCalls := make([]providertypes.ToolCall, 0, 12)
+	for i := 0; i < 12; i++ {
+		name := fmt.Sprintf("tool_%d", i)
+		toolSpecs = append(toolSpecs, providertypes.ToolSpec{Name: name})
+		toolCalls = append(toolCalls, providertypes.ToolCall{ID: fmt.Sprintf("call_%d", i), Name: name, Arguments: `{}`})
+	}
+
+	toolManager := &stubToolManager{
+		specs: toolSpecs,
+		executeFn: func(ctx context.Context, input tools.ToolCallInput) (tools.ToolResult, error) {
+			current := atomic.AddInt32(&inFlight, 1)
+			defer atomic.AddInt32(&inFlight, -1)
+			for {
+				max := atomic.LoadInt32(&maxInFlight)
+				if current <= max {
+					break
+				}
+				if atomic.CompareAndSwapInt32(&maxInFlight, max, current) {
+					break
+				}
+			}
+			time.Sleep(20 * time.Millisecond)
+			return tools.ToolResult{Name: input.Name, Content: "ok"}, nil
+		},
+	}
+
+	providerFactory := &scriptedProviderFactory{
+		provider: &scriptedProvider{
+			responses: []scriptedResponse{
+				{
+					Message: providertypes.Message{
+						Role:      providertypes.RoleAssistant,
+						ToolCalls: toolCalls,
+					},
+					FinishReason: "tool_calls",
+				},
+				{
+					Message: providertypes.Message{
+						Role:    providertypes.RoleAssistant,
+						Content: "done",
+					},
+					FinishReason: "stop",
+				},
+			},
+		},
+	}
+
+	service := NewWithFactory(
+		newRuntimeConfigManager(t),
+		toolManager,
+		newMemoryStore(),
+		providerFactory,
+		nil,
+	)
+
+	if err := service.Run(context.Background(), UserInput{RunID: "run-parallel-limit", Content: "parallel"}); err != nil {
+		t.Fatalf("Run() failed: %v", err)
+	}
+
+	if got := atomic.LoadInt32(&maxInFlight); got > int32(defaultToolParallelism) {
+		t.Fatalf("max in-flight tool calls = %d, want <= %d", got, defaultToolParallelism)
+	}
+}
+
+func TestParallelToolCallsSerializeSameToolName(t *testing.T) {
+	t.Parallel()
+
+	var sharedInFlight int32
+	var sharedOverlap int32
+
+	toolManager := &stubToolManager{
+		specs: []providertypes.ToolSpec{{Name: "shared_tool"}},
+		executeFn: func(ctx context.Context, input tools.ToolCallInput) (tools.ToolResult, error) {
+			current := atomic.AddInt32(&sharedInFlight, 1)
+			if current > 1 {
+				atomic.StoreInt32(&sharedOverlap, 1)
+			}
+			time.Sleep(25 * time.Millisecond)
+			atomic.AddInt32(&sharedInFlight, -1)
+			return tools.ToolResult{Name: input.Name, Content: "ok"}, nil
+		},
+	}
+
+	providerFactory := &scriptedProviderFactory{
+		provider: &scriptedProvider{
+			responses: []scriptedResponse{
+				{
+					Message: providertypes.Message{
+						Role: providertypes.RoleAssistant,
+						ToolCalls: []providertypes.ToolCall{
+							{ID: "call_1", Name: "shared_tool", Arguments: "{}"},
+							{ID: "call_2", Name: "shared_tool", Arguments: "{}"},
+						},
+					},
+					FinishReason: "tool_calls",
+				},
+				{
+					Message: providertypes.Message{
+						Role:    providertypes.RoleAssistant,
+						Content: "done",
+					},
+					FinishReason: "stop",
+				},
+			},
+		},
+	}
+
+	service := NewWithFactory(
+		newRuntimeConfigManager(t),
+		toolManager,
+		newMemoryStore(),
+		providerFactory,
+		nil,
+	)
+
+	if err := service.Run(context.Background(), UserInput{RunID: "run-parallel-lock", Content: "parallel"}); err != nil {
+		t.Fatalf("Run() failed: %v", err)
+	}
+
+	if atomic.LoadInt32(&sharedOverlap) != 0 {
+		t.Fatalf("same tool calls overlapped, expected serialized execution")
+	}
+}
+
+func TestParallelToolCallsStopDispatchAfterFirstError(t *testing.T) {
+	t.Parallel()
+
+	const (
+		totalCalls    = 12
+		slowToolDelay = 200 * time.Millisecond
+	)
+
+	toolSpecs := make([]providertypes.ToolSpec, 0, totalCalls)
+	toolCalls := make([]providertypes.ToolCall, 0, totalCalls)
+	for i := 0; i < totalCalls; i++ {
+		name := fmt.Sprintf("tool_%d", i)
+		toolSpecs = append(toolSpecs, providertypes.ToolSpec{Name: name})
+		toolCalls = append(toolCalls, providertypes.ToolCall{ID: fmt.Sprintf("call_%d", i), Name: name, Arguments: `{}`})
+	}
+
+	var executeStarted int32
+	toolManager := &stubToolManager{
+		specs: toolSpecs,
+		executeFn: func(ctx context.Context, input tools.ToolCallInput) (tools.ToolResult, error) {
+			atomic.AddInt32(&executeStarted, 1)
+			if input.Name == "tool_0" {
+				return tools.ToolResult{Name: input.Name, Content: "ok"}, nil
+			}
+			time.Sleep(slowToolDelay)
+			return tools.ToolResult{Name: input.Name, Content: "ok"}, nil
+		},
+	}
+
+	providerFactory := &scriptedProviderFactory{
+		provider: &scriptedProvider{
+			responses: []scriptedResponse{
+				{
+					Message: providertypes.Message{
+						Role:      providertypes.RoleAssistant,
+						ToolCalls: toolCalls,
+					},
+					FinishReason: "tool_calls",
+				},
+			},
+		},
+	}
+
+	baseStore := newMemoryStore()
+	store := &failingStore{
+		Store:      baseStore,
+		saveErr:    errors.New("save failed"),
+		failOnSave: 3,
+	}
+
+	service := NewWithFactory(
+		newRuntimeConfigManager(t),
+		toolManager,
+		store,
+		providerFactory,
+		nil,
+	)
+
+	err := service.Run(context.Background(), UserInput{RunID: "run-first-error-stop-dispatch", Content: "parallel"})
+	if err == nil {
+		t.Fatalf("expected run error when first tool result save fails")
+	}
+
+	if got := atomic.LoadInt32(&executeStarted); got >= int32(totalCalls) {
+		t.Fatalf("expected dispatch to stop before all tool calls start, started=%d total=%d", got, totalCalls)
+	}
+}
+
+func TestAgentDoneEventCarriesRunScopedEnvelope(t *testing.T) {
+	t.Parallel()
+
+	service := NewWithFactory(
+		newRuntimeConfigManager(t),
+		&stubToolManager{},
+		newMemoryStore(),
+		&scriptedProviderFactory{
+			provider: &scriptedProvider{
+				responses: []scriptedResponse{
+					{
+						Message: providertypes.Message{
+							Role:    providertypes.RoleAssistant,
+							Content: "done",
+						},
+						FinishReason: "stop",
+					},
+				},
+			},
+		},
+		nil,
+	)
+
+	if err := service.Run(context.Background(), UserInput{RunID: "run-agent-done-envelope", Content: "hello"}); err != nil {
+		t.Fatalf("Run() failed: %v", err)
+	}
+
+	events := collectRuntimeEvents(service.Events())
+	var doneEvent RuntimeEvent
+	found := false
+	for _, event := range events {
+		if event.Type == EventAgentDone {
+			doneEvent = event
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected agent_done event")
+	}
+	if doneEvent.Turn == turnUnspecified {
+		t.Fatalf("expected run-scoped turn, got %d", doneEvent.Turn)
+	}
+	if doneEvent.Phase != string(controlplane.PhasePlan) {
+		t.Fatalf("expected phase=%q, got %q", controlplane.PhasePlan, doneEvent.Phase)
 	}
 }

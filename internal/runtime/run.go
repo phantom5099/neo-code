@@ -13,6 +13,7 @@ import (
 	"neo-code/internal/provider"
 	"neo-code/internal/provider/streaming"
 	providertypes "neo-code/internal/provider/types"
+	"neo-code/internal/runtime/controlplane"
 	agentsession "neo-code/internal/session"
 	"neo-code/internal/tools"
 )
@@ -22,10 +23,8 @@ import (
 // 新会话在创建后再绑定会话锁，不同会话可并行执行。
 // 当前实现不再设置内部轮数上限，因此 Run 仅在拿到最终 assistant 回复、遇到错误或收到外部取消时结束。
 // 这也意味着同一 session 的锁会覆盖整个运行周期，调用方需要依赖模型终止条件或取消机制兜底。
-func (s *Service) Run(ctx context.Context, input UserInput) error {
-	if strings.TrimSpace(input.Content) == "" {
-		return errors.New("runtime: input content is empty")
-	}
+func (s *Service) Run(ctx context.Context, input UserInput) (err error) {
+	var statePtr *runState
 
 	runCtx, cancel := context.WithCancel(ctx)
 	runToken := s.startRun(cancel)
@@ -33,7 +32,15 @@ func (s *Service) Run(ctx context.Context, input UserInput) error {
 		cancel()
 		s.finishRun(runToken)
 	}()
+	defer func() {
+		s.emitRunTermination(runCtx, input, statePtr, err)
+	}()
 	ctx = runCtx
+
+	if strings.TrimSpace(input.Content) == "" {
+		err = errors.New("runtime: input content is empty")
+		return err
+	}
 
 	initialCfg := s.configManager.Get()
 	sessionID := strings.TrimSpace(input.SessionID)
@@ -66,11 +73,15 @@ func (s *Service) Run(ctx context.Context, input UserInput) error {
 	}
 
 	state := newRunState(input.RunID, session)
+	statePtr = &state
 	if err := s.appendUserMessageAndSave(ctx, &state, input.Content); err != nil {
 		return s.handleRunError(ctx, state.runID, state.session.ID, err)
 	}
 
-	for {
+	for turn := 0; ; turn++ {
+		state.turn = turn
+		s.transitionRunPhase(ctx, &state, controlplane.PhasePlan)
+
 		for {
 			if err := ctx.Err(); err != nil {
 				return s.handleRunError(ctx, state.runID, state.session.ID, err)
@@ -109,13 +120,48 @@ func (s *Service) Run(ctx context.Context, input UserInput) error {
 			s.emitTokenUsage(ctx, &state, turnResult)
 
 			if len(turnResult.assistant.ToolCalls) == 0 {
-				s.emit(ctx, EventAgentDone, state.runID, state.session.ID, turnResult.assistant)
+				s.emitRunScoped(ctx, EventAgentDone, &state, turnResult.assistant)
 				s.triggerMemoExtraction(state.session.ID, state.session.Messages, state.rememberedThisRun)
 				return nil
 			}
+			s.transitionRunPhase(ctx, &state, controlplane.PhaseExecute)
 			if err := s.executeAssistantToolCalls(ctx, &state, snapshot, turnResult.assistant); err != nil {
 				return s.handleRunError(ctx, state.runID, state.session.ID, err)
 			}
+			s.transitionRunPhase(ctx, &state, controlplane.PhaseVerify)
+
+			var evidence []controlplane.ProgressEvidenceRecord
+			hasProgress := false
+			toolCallCount := len(turnResult.assistant.ToolCalls)
+			state.mu.Lock()
+			if len(state.session.Messages) >= toolCallCount {
+				for i := len(state.session.Messages) - toolCallCount; i < len(state.session.Messages); i++ {
+					msg := state.session.Messages[i]
+					if msg.Role == providertypes.RoleTool && !msg.IsError {
+						hasProgress = true
+						break
+					}
+				}
+			}
+			state.mu.Unlock()
+
+			if hasProgress {
+				evidence = append(evidence, controlplane.ProgressEvidenceRecord{Kind: controlplane.EvidenceNewInfoNonDup})
+			}
+
+			state.mu.Lock()
+			state.progress = controlplane.ApplyProgressEvidence(state.progress, evidence)
+			streak := state.progress.LastScore.NoProgressStreak
+			currentScore := state.progress.LastScore
+			state.mu.Unlock()
+
+			s.emitRunScoped(ctx, EventProgressEvaluated, &state, ProgressEvaluatedPayload{Score: currentScore})
+
+			if streak >= noProgressStreakLimit {
+				err = ErrNoProgressStreakLimit
+				return err
+			}
+
 			break
 		}
 	}
@@ -134,8 +180,8 @@ func (s *Service) prepareTurnSnapshot(ctx context.Context, state *runState) (tur
 			Shell:               cfg.Shell,
 			Provider:            cfg.SelectedProvider,
 			Model:               cfg.CurrentModel,
-			SessionInputTokens:  state.tokenInputTotal,
-			SessionOutputTokens: state.tokenOutputTotal,
+			SessionInputTokens:  state.session.TokenInputTotal,
+			SessionOutputTokens: state.session.TokenOutputTotal,
 		},
 		Compact: agentcontext.CompactOptions{
 			DisableMicroCompact:           cfg.Context.Compact.MicroCompactDisabled,
@@ -197,7 +243,7 @@ func (s *Service) callProviderWithRetry(
 	for retryAttempt := 0; retryAttempt <= defaultProviderRetryMax; retryAttempt++ {
 		if retryAttempt > 0 {
 			wait := providerRetryBackoff(retryAttempt)
-			s.emit(ctx, EventProviderRetry, state.runID, state.session.ID,
+			s.emitRunScoped(ctx, EventProviderRetry, state,
 				fmt.Sprintf("retrying provider call (attempt %d/%d, wait=%.1fs)...",
 					retryAttempt, defaultProviderRetryMax, wait.Seconds()))
 
@@ -215,10 +261,10 @@ func (s *Service) callProviderWithRetry(
 
 		streamOutcome := generateStreamingMessage(ctx, modelProvider, snapshot.request, streaming.Hooks{
 			OnTextDelta: func(text string) {
-				s.emit(ctx, EventAgentChunk, state.runID, state.session.ID, text)
+				s.emitRunScoped(ctx, EventAgentChunk, state, text)
 			},
 			OnToolCallStart: func(payload providertypes.ToolCallStartPayload) {
-				s.emit(ctx, EventToolCallThinking, state.runID, state.session.ID, payload.Name)
+				s.emitRunScoped(ctx, EventToolCallThinking, state, payload.Name)
 			},
 		})
 		if streamOutcome.err != nil {
@@ -250,11 +296,11 @@ func (s *Service) emitTokenUsage(ctx context.Context, state *runState, result pr
 	if result.inputTokens == 0 && result.outputTokens == 0 {
 		return
 	}
-	s.emit(ctx, EventTokenUsage, state.runID, state.session.ID, TokenUsagePayload{
+	s.emitRunScoped(ctx, EventTokenUsage, state, TokenUsagePayload{
 		InputTokens:         result.inputTokens,
 		OutputTokens:        result.outputTokens,
-		SessionInputTokens:  state.tokenInputTotal,
-		SessionOutputTokens: state.tokenOutputTotal,
+		SessionInputTokens:  state.session.TokenInputTotal,
+		SessionOutputTokens: state.session.TokenOutputTotal,
 	})
 }
 
