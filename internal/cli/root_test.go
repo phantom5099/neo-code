@@ -352,35 +352,115 @@ func TestURLDispatchSubcommandUsesPositionalURL(t *testing.T) {
 	}
 }
 
-func TestURLDispatchSubcommandRejectsInvalidScheme(t *testing.T) {
+func TestURLDispatchSubcommandRunnerErrorTriggersExit(t *testing.T) {
+	originalRunner := runURLDispatchCommand
+	originalExitProcess := exitProcess
 	originalPreload := runGlobalPreload
+	t.Cleanup(func() { runURLDispatchCommand = originalRunner })
+	t.Cleanup(func() { exitProcess = originalExitProcess })
 	t.Cleanup(func() { runGlobalPreload = originalPreload })
 	runGlobalPreload = func(context.Context) error { return nil }
 
+	runURLDispatchCommand = func(context.Context, urlDispatchCommandOptions) error {
+		return errors.New("runner failed")
+	}
+
+	exitCode := 0
+	exitProcess = func(code int) {
+		exitCode = code
+	}
+
+	command := NewRootCommand()
+	command.SetArgs([]string{"url-dispatch", "--url", "neocode://review?path=README.md"})
+	if err := command.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext() error = %v", err)
+	}
+	if exitCode != 1 {
+		t.Fatalf("exit code = %d, want %d", exitCode, 1)
+	}
+}
+
+func TestURLDispatchSubcommandRejectsInvalidScheme(t *testing.T) {
+	originalExitProcess := exitProcess
+	originalPreload := runGlobalPreload
+	originalStderr := os.Stderr
+	t.Cleanup(func() { exitProcess = originalExitProcess })
+	t.Cleanup(func() { runGlobalPreload = originalPreload })
+	t.Cleanup(func() { os.Stderr = originalStderr })
+	runGlobalPreload = func(context.Context) error { return nil }
+	exitCode := 0
+	exitProcess = func(code int) {
+		exitCode = code
+	}
+
+	stderrReader, stderrWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create stderr pipe: %v", err)
+	}
+	t.Cleanup(func() { _ = stderrReader.Close() })
+	os.Stderr = stderrWriter
+
 	command := NewRootCommand()
 	command.SetArgs([]string{"url-dispatch", "--url", "http://example.com"})
-	err := command.ExecuteContext(context.Background())
-	if err == nil {
-		t.Fatal("expected invalid scheme error")
+	if err := command.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext() error = %v", err)
 	}
-	if !strings.Contains(err.Error(), "invalid url scheme") {
-		t.Fatalf("error = %v, want invalid scheme message", err)
+
+	_ = stderrWriter.Close()
+	stderrOutput, readErr := io.ReadAll(stderrReader)
+	if readErr != nil {
+		t.Fatalf("read stderr: %v", readErr)
+	}
+	if exitCode != 1 {
+		t.Fatalf("exit code = %d, want %d", exitCode, 1)
+	}
+	if !strings.Contains(string(stderrOutput), `"status":"error"`) {
+		t.Fatalf("stderr = %q, want contains %q", string(stderrOutput), `"status":"error"`)
+	}
+	if !strings.Contains(string(stderrOutput), `"code":"invalid_scheme"`) {
+		t.Fatalf("stderr = %q, want contains invalid_scheme", string(stderrOutput))
 	}
 }
 
 func TestURLDispatchSubcommandRejectsMissingActionHost(t *testing.T) {
+	originalExitProcess := exitProcess
 	originalPreload := runGlobalPreload
+	originalStderr := os.Stderr
+	t.Cleanup(func() { exitProcess = originalExitProcess })
 	t.Cleanup(func() { runGlobalPreload = originalPreload })
+	t.Cleanup(func() { os.Stderr = originalStderr })
 	runGlobalPreload = func(context.Context) error { return nil }
+	exitCode := 0
+	exitProcess = func(code int) {
+		exitCode = code
+	}
+
+	stderrReader, stderrWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create stderr pipe: %v", err)
+	}
+	t.Cleanup(func() { _ = stderrReader.Close() })
+	os.Stderr = stderrWriter
 
 	command := NewRootCommand()
 	command.SetArgs([]string{"url-dispatch", "--url", "neocode://"})
-	err := command.ExecuteContext(context.Background())
-	if err == nil {
-		t.Fatal("expected missing action host error")
+	if err := command.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext() error = %v", err)
 	}
-	if !strings.Contains(err.Error(), "missing required field: action") {
-		t.Fatalf("error = %v, want missing action message", err)
+
+	_ = stderrWriter.Close()
+	stderrOutput, readErr := io.ReadAll(stderrReader)
+	if readErr != nil {
+		t.Fatalf("read stderr: %v", readErr)
+	}
+	if exitCode != 1 {
+		t.Fatalf("exit code = %d, want %d", exitCode, 1)
+	}
+	if !strings.Contains(string(stderrOutput), `"status":"error"`) {
+		t.Fatalf("stderr = %q, want contains %q", string(stderrOutput), `"status":"error"`)
+	}
+	if !strings.Contains(string(stderrOutput), `"code":"missing_required_field"`) {
+		t.Fatalf("stderr = %q, want contains missing_required_field", string(stderrOutput))
 	}
 }
 
@@ -403,11 +483,13 @@ func TestURLDispatchSubcommandRejectsMissingURL(t *testing.T) {
 func TestURLDispatchSubcommandDefaultRunnerError(t *testing.T) {
 	originalRunner := runURLDispatchCommand
 	originalDispatch := dispatchURLThroughIPC
+	originalExitProcess := exitProcess
 	originalPreload := runGlobalPreload
 	originalStdout := os.Stdout
 	originalStderr := os.Stderr
 	t.Cleanup(func() { runURLDispatchCommand = originalRunner })
 	t.Cleanup(func() { dispatchURLThroughIPC = originalDispatch })
+	t.Cleanup(func() { exitProcess = originalExitProcess })
 	t.Cleanup(func() { runGlobalPreload = originalPreload })
 	t.Cleanup(func() {
 		os.Stdout = originalStdout
@@ -420,6 +502,10 @@ func TestURLDispatchSubcommandDefaultRunnerError(t *testing.T) {
 			Code:    gateway.ErrorCodeInvalidAction.String(),
 			Message: "unsupported wake action",
 		}
+	}
+	exitCode := 0
+	exitProcess = func(code int) {
+		exitCode = code
 	}
 
 	stderrReader, stderrWriter, err := os.Pipe()
@@ -437,17 +523,27 @@ func TestURLDispatchSubcommandDefaultRunnerError(t *testing.T) {
 
 	command := NewRootCommand()
 	command.SetArgs([]string{"url-dispatch", "--url", "neocode://review?path=README.md"})
-	runErr := command.ExecuteContext(context.Background())
-	if runErr == nil {
-		t.Fatal("expected default runner error")
+	if err := command.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext() error = %v", err)
 	}
 
 	_ = stdoutWriter.Close()
 	_ = stderrWriter.Close()
 
+	stdoutOutput, readStdoutErr := io.ReadAll(stdoutReader)
+	if readStdoutErr != nil {
+		t.Fatalf("read stdout: %v", readStdoutErr)
+	}
+	if len(strings.TrimSpace(string(stdoutOutput))) != 0 {
+		t.Fatalf("stdout = %q, want empty output", string(stdoutOutput))
+	}
+
 	stderrOutput, readErr := io.ReadAll(stderrReader)
 	if readErr != nil {
 		t.Fatalf("read stderr: %v", readErr)
+	}
+	if exitCode != 1 {
+		t.Fatalf("exit code = %d, want %d", exitCode, 1)
 	}
 	if !strings.Contains(string(stderrOutput), `"status":"error"`) {
 		t.Fatalf("stderr = %q, want contains %q", string(stderrOutput), `"status":"error"`)
@@ -455,21 +551,26 @@ func TestURLDispatchSubcommandDefaultRunnerError(t *testing.T) {
 	if !strings.Contains(string(stderrOutput), gateway.ErrorCodeInvalidAction.String()) {
 		t.Fatalf("stderr = %q, want contains %q", string(stderrOutput), gateway.ErrorCodeInvalidAction.String())
 	}
-	if !strings.Contains(runErr.Error(), "unsupported wake action") {
-		t.Fatalf("error = %v, want contains %q", runErr, "unsupported wake action")
+	if strings.Contains(string(stderrOutput), "Error:") {
+		t.Fatalf("stderr = %q, want pure JSON without cobra prefix", string(stderrOutput))
 	}
 }
 
 func TestURLDispatchSubcommandDefaultRunnerSuccess(t *testing.T) {
 	originalRunner := runURLDispatchCommand
 	originalDispatch := dispatchURLThroughIPC
+	originalExitProcess := exitProcess
 	originalPreload := runGlobalPreload
 	originalStdout := os.Stdout
 	t.Cleanup(func() { runURLDispatchCommand = originalRunner })
 	t.Cleanup(func() { dispatchURLThroughIPC = originalDispatch })
+	t.Cleanup(func() { exitProcess = originalExitProcess })
 	t.Cleanup(func() { runGlobalPreload = originalPreload })
 	t.Cleanup(func() { os.Stdout = originalStdout })
 	runGlobalPreload = func(context.Context) error { return nil }
+	exitProcess = func(code int) {
+		t.Fatalf("unexpected exit with code %d", code)
+	}
 
 	runURLDispatchCommand = defaultURLDispatchCommandRunner
 	dispatchURLThroughIPC = func(context.Context, urlscheme.DispatchRequest) (urlscheme.DispatchResult, error) {

@@ -23,8 +23,8 @@ func TestDialWindowsNamedPipe(t *testing.T) {
 		if timeout == nil {
 			t.Fatal("timeout pointer should not be nil")
 		}
-		if *timeout != defaultNamedPipeDialTimeout {
-			t.Fatalf("timeout = %v, want %v", *timeout, defaultNamedPipeDialTimeout)
+		if *timeout != defaultIPCDialTimeout {
+			t.Fatalf("timeout = %v, want %v", *timeout, defaultIPCDialTimeout)
 		}
 		return clientConn, nil
 	}

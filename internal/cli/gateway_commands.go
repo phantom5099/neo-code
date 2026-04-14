@@ -27,6 +27,7 @@ var (
 	runURLDispatchCommand = defaultURLDispatchCommandRunner
 	newGatewayServer      = defaultNewGatewayServer
 	dispatchURLThroughIPC = urlscheme.Dispatch
+	exitProcess           = os.Exit
 )
 
 type gatewayCommandOptions struct {
@@ -149,10 +150,15 @@ func newURLDispatchCommand() *cobra.Command {
 				return err
 			}
 
-			return runURLDispatchCommand(cmd.Context(), urlDispatchCommandOptions{
+			dispatchErr := runURLDispatchCommand(cmd.Context(), urlDispatchCommandOptions{
 				URL:           normalizedURL,
 				ListenAddress: strings.TrimSpace(options.ListenAddress),
 			})
+			if dispatchErr != nil {
+				exitProcess(1)
+				return nil
+			}
+			return nil
 		},
 	}
 
@@ -173,7 +179,8 @@ func defaultURLDispatchCommandRunner(ctx context.Context, options urlDispatchCom
 		if writeErr != nil {
 			return errors.Join(err, writeErr)
 		}
-		return err
+		exitProcess(1)
+		return nil
 	}
 
 	if err := writeURLDispatchSuccessOutput(os.Stdout, result); err != nil {
