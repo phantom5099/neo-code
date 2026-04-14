@@ -43,6 +43,10 @@
 - runtime 只负责在结束点调度，不直接执行提取逻辑；实际 debounce、尾随执行与持久化去重由 `internal/memo` 内部处理。
 - 调度时会绑定当次 provider/model 快照，后台任务不会重新读取全局当前配置，避免把历史会话消息发送到后续切换后的 provider。
 - 自动提取失败只记日志，不额外发出 TUI 事件，也不影响主链路完成。
+- `memo` 的最近消息窗口会复用 `internal/context` 的只读投影规则，只保留 provider-safe 的消息序列。
+- assistant 含 `tool_calls` 时，只有在窗口内能同时保留对应 `tool` 响应时才会注入；缺响应、空内容或已被 micro compact 清空的 assistant/tool 片段会整组丢弃，保留项会先投影为模型可消费的结构化文本。
+- recent window 的总消息数有硬预算：`min(limit*2, 24)`；超过预算的整段 tool span 会被跳过，避免窗口体积失控。
+- 进入 `memo` 提取前，tool 文本会二次收敛为 `content_excerpt`，并按 `600` rune 上限截断。
 
 补充约束：
 - 同一 turn 内的 provider retry 只重放冻结后的 turn 快照，不会重新读取配置。
@@ -90,6 +94,8 @@
 - `internal/provider/streaming` 统一累积文本、tool call 增量和 `message_done`
 - runtime 将累积过程映射成 `RuntimeEvent`
 - TUI 使用 Bubble Tea `Cmd` 监听事件，并在处理完成后继续订阅
+- `provider.GenerateText` 只在上游 `Generate` 成功返回时，才把缺失 `message_done` 视为流式中断。
+- 如果 provider 在真正开始流式输出前直接返回 HTTP/ProviderError，则优先保留原始错误，不再额外包装成 `message_done` 缺失。
 
 同一套流式累积逻辑同时复用于：
 - 普通 `Run()` 的 assistant 回复收敛
