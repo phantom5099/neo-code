@@ -55,6 +55,18 @@ Gateway 子命令（Step 1 骨架）：
 go run ./cmd/neocode gateway
 ```
 
+指定网络访问面监听地址（默认 `127.0.0.1:8080`，仅允许 Loopback）：
+
+```bash
+go run ./cmd/neocode gateway --http-listen 127.0.0.1:8080
+```
+
+网络访问面骨架端点（EPIC-GW-04）：
+
+- `POST /rpc`：单次 JSON-RPC 请求入口
+- `GET /ws`：WebSocket 流式入口（含心跳）
+- `GET /sse`：SSE 流式入口（MVP 默认触发 `gateway.ping`，含心跳）
+
 URL Scheme 派发骨架命令（EPIC-GW-02A）：
 
 ```bash
