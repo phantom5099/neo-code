@@ -169,3 +169,64 @@ func TestProgressEvidenceResetsNoProgressStreak(t *testing.T) {
 		}
 	}
 }
+
+func TestRepeatCycleStreakStopsRunAndInjectsReminder(t *testing.T) {
+	t.Setenv("TEST_KEY", "dummy")
+
+	cfg := config.Config{
+		Providers:        []config.ProviderConfig{{Name: "test-repeat", Driver: "test", BaseURL: "http://localhost", Model: "test", APIKeyEnv: "TEST_KEY"}},
+		SelectedProvider: "test-repeat",
+		Workdir:          t.TempDir(),
+		Runtime: config.RuntimeConfig{
+			MaxNoProgressStreak:  10,
+			MaxRepeatCycleStreak: 3,
+		},
+	}
+
+	toolManager := &stubToolManager{
+		specs: []providertypes.ToolSpec{
+			{Name: "tool_repeat"},
+		},
+		executeFn: func(ctx context.Context, input tools.ToolCallInput) (tools.ToolResult, error) {
+			return tools.ToolResult{Name: input.Name, Content: "ok", IsError: false}, nil
+		},
+	}
+
+	var promptInjected bool
+	providerFactory := &scriptedProviderFactory{
+		provider: &scriptedProvider{
+			chatFn: func(ctx context.Context, req providertypes.GenerateRequest, events chan<- providertypes.StreamEvent) error {
+				if strings.Contains(req.SystemPrompt, selfHealingRepeatReminder) {
+					promptInjected = true
+				}
+				events <- providertypes.NewToolCallStartStreamEvent(0, "call_repeat", "tool_repeat")
+				events <- providertypes.NewToolCallDeltaStreamEvent(0, "call_repeat", `{"path":"x"}`)
+				events <- providertypes.NewMessageDoneStreamEvent("tool_calls", nil)
+				return nil
+			},
+		},
+	}
+
+	manager := config.NewManager(config.NewLoader(t.TempDir(), &cfg))
+	service := NewWithFactory(
+		manager,
+		toolManager,
+		newMemoryStore(),
+		providerFactory,
+		nil,
+	)
+
+	err := service.Run(context.Background(), UserInput{
+		RunID:   "run-repeat-streak",
+		Content: "trigger repeat loop",
+	})
+	if err == nil {
+		t.Fatal("expected repeat cycle limit error, got nil")
+	}
+	if !errors.Is(err, ErrRepeatCycleLimit) {
+		t.Fatalf("expected ErrRepeatCycleLimit, got %v", err)
+	}
+	if !promptInjected {
+		t.Fatal("expected repeat self-healing prompt to be injected before repeat limit is reached")
+	}
+}
