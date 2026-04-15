@@ -26,6 +26,7 @@ import (
 	"neo-code/internal/tools/filesystem"
 	"neo-code/internal/tools/mcp"
 	memotool "neo-code/internal/tools/memo"
+	"neo-code/internal/tools/todo"
 	"neo-code/internal/tools/webfetch"
 	"neo-code/internal/tui"
 )
@@ -244,6 +245,7 @@ func buildToolRegistry(cfg config.Config) (*tools.Registry, func() error, error)
 		MaxResponseBytes:      cfg.Tools.WebFetch.MaxResponseBytes,
 		SupportedContentTypes: cfg.Tools.WebFetch.SupportedContentTypes,
 	}))
+	toolRegistry.Register(todo.New())
 	mcpRegistry, err := buildMCPRegistry(cfg)
 	if err != nil {
 		return nil, nil, err

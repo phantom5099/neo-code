@@ -173,6 +173,7 @@ func (s *Service) prepareTurnSnapshot(ctx context.Context, state *runState) (tur
 	builtContext, err := s.contextBuilder.Build(ctx, agentcontext.BuildInput{
 		Messages:     state.session.Messages,
 		TaskState:    state.session.TaskState,
+		Todos:        cloneTodosForPersistence(state.session.Todos),
 		ActiveSkills: activeSkills,
 		Metadata: agentcontext.Metadata{
 			Workdir:             activeWorkdir,
@@ -191,6 +192,9 @@ func (s *Service) prepareTurnSnapshot(ctx context.Context, state *runState) (tur
 	})
 	if err != nil {
 		return turnSnapshot{}, false, err
+	}
+	if strings.Contains(builtContext.SystemPrompt, "## Todo State") {
+		s.emitRunScoped(ctx, EventTodoSummaryInjected, state, TodoEventPayload{})
 	}
 
 	if builtContext.AutoCompactSuggested && !state.compactApplied {
