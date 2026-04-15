@@ -43,7 +43,7 @@ func (s *Service) ActivateSessionSkill(ctx context.Context, sessionID string, sk
 		return err
 	}
 	if changed {
-		_ = s.emit(ctx, EventSkillActivated, "", session.ID, SessionSkillEventPayload{SkillID: descriptor.ID})
+		_ = s.emit(ctx, EventSkillActivated, "", session.ID, SessionSkillEventPayload{SkillID: normalizeRuntimeSkillID(descriptor.ID)})
 	}
 	return nil
 }
@@ -128,7 +128,7 @@ func (s *Service) resolveActiveSkills(ctx context.Context, state *runState) ([]s
 	}
 	if s.skillsRegistry == nil {
 		for _, skillID := range activeSkillIDs {
-			_ = s.emitRunScoped(ctx, EventSkillMissing, state, SessionSkillEventPayload{SkillID: skillID})
+			s.emitSkillMissingOnce(ctx, state, skillID)
 		}
 		return nil, nil
 	}
@@ -138,7 +138,7 @@ func (s *Service) resolveActiveSkills(ctx context.Context, state *runState) ([]s
 		descriptor, content, err := s.skillsRegistry.Get(ctx, skillID)
 		if err != nil {
 			if errors.Is(err, skills.ErrSkillNotFound) {
-				_ = s.emitRunScoped(ctx, EventSkillMissing, state, SessionSkillEventPayload{SkillID: skillID})
+				s.emitSkillMissingOnce(ctx, state, skillID)
 				continue
 			}
 			return nil, err
@@ -149,6 +149,18 @@ func (s *Service) resolveActiveSkills(ctx context.Context, state *runState) ([]s
 		})
 	}
 	return resolved, nil
+}
+
+// emitSkillMissingOnce 在同一次 run 内只上报一次指定 skill 的缺失事件，避免重复噪音。
+func (s *Service) emitSkillMissingOnce(ctx context.Context, state *runState, skillID string) {
+	if state == nil {
+		_ = s.emitRunScoped(ctx, EventSkillMissing, state, SessionSkillEventPayload{SkillID: skillID})
+		return
+	}
+	if !state.markSkillMissingReported(skillID) {
+		return
+	}
+	_ = s.emitRunScoped(ctx, EventSkillMissing, state, SessionSkillEventPayload{SkillID: skillID})
 }
 
 // mutateSessionSkills 串行修改 session 的激活 skills，并在发生变化时立即持久化。

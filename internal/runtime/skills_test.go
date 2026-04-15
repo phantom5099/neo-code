@@ -62,7 +62,7 @@ func TestActivateSessionSkillPersistsAndEmitsEvent(t *testing.T) {
 	service.SetSkillsRegistry(&stubSkillsRegistry{
 		skills: map[string]skills.Skill{
 			"go-review": {
-				Descriptor: skills.Descriptor{ID: "go-review", Name: "Go Review"},
+				Descriptor: skills.Descriptor{ID: "go_review", Name: "Go Review"},
 				Content:    skills.Content{Instruction: "review code"},
 			},
 		},
@@ -180,6 +180,40 @@ func TestPrepareTurnSnapshotEmitsSkillMissingAndContinues(t *testing.T) {
 	events := collectRuntimeEvents(service.Events())
 	if len(events) != 1 || events[0].Type != EventSkillMissing {
 		t.Fatalf("expected skill_missing event, got %+v", events)
+	}
+}
+
+func TestPrepareTurnSnapshotDeduplicatesSkillMissingPerRun(t *testing.T) {
+	t.Parallel()
+
+	manager := newRuntimeConfigManager(t)
+	store := newMemoryStore()
+	session := newRuntimeSession("session-missing-skill-dedupe")
+	session.ActivateSkill("missing-skill")
+	store.sessions[session.ID] = cloneSession(session)
+
+	builder := &stubContextBuilder{}
+	service := NewWithFactory(manager, &stubToolManager{}, store, &scriptedProviderFactory{provider: &scriptedProvider{}}, builder)
+
+	state := newRunState("run-missing-skill-dedupe", session)
+	if _, rebuilt, err := service.prepareTurnSnapshot(context.Background(), &state); err != nil {
+		t.Fatalf("first prepareTurnSnapshot() error = %v", err)
+	} else if rebuilt {
+		t.Fatalf("did not expect first snapshot rebuild")
+	}
+	if _, rebuilt, err := service.prepareTurnSnapshot(context.Background(), &state); err != nil {
+		t.Fatalf("second prepareTurnSnapshot() error = %v", err)
+	} else if rebuilt {
+		t.Fatalf("did not expect second snapshot rebuild")
+	}
+
+	events := collectRuntimeEvents(service.Events())
+	if len(events) != 1 || events[0].Type != EventSkillMissing {
+		t.Fatalf("expected exactly one skill_missing event, got %+v", events)
+	}
+	payload, ok := events[0].Payload.(SessionSkillEventPayload)
+	if !ok || payload.SkillID != "missing-skill" {
+		t.Fatalf("unexpected event payload: %+v", events[0].Payload)
 	}
 }
 

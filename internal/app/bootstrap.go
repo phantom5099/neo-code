@@ -262,7 +262,7 @@ func buildToolRegistry(cfg config.Config) (*tools.Registry, func() error, error)
 	return toolRegistry, mcpRegistry.Close, nil
 }
 
-// buildSkillsRegistry 负责以最小代价初始化本地 skills registry，失败时返回 nil 并记录日志。
+// buildSkillsRegistry 负责以最小代价初始化本地 skills registry，refresh 失败时仅记录日志并保留 registry 实例。
 func buildSkillsRegistry(ctx context.Context, baseDir string) skills.Registry {
 	root := filepath.Join(baseDir, "skills")
 	registry := skills.NewRegistry(skills.NewLocalLoader(root))
