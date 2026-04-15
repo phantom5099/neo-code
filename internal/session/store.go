@@ -17,6 +17,8 @@ import (
 
 const sessionsDirName = "sessions"
 
+const legacySchemaVersion = 1
+
 // Session 表示单个会话的持久化模型，包含基础元数据与消息历史。
 // Provider / Model 用于在 compact 等流程中优先复用会话最近一次成功运行的模型配置。
 type Session struct {
@@ -244,6 +246,18 @@ func validateSessionSchema(session Session) error {
 	return nil
 }
 
+// validateStoredSessionSchema 校验已持久化会话可被当前版本读取（包含兼容读取的旧版本）。
+func validateStoredSessionSchema(version int) error {
+	if version != CurrentSchemaVersion && version != legacySchemaVersion {
+		return fmt.Errorf(
+			"session: unsupported schema_version %d, expected %d",
+			version,
+			CurrentSchemaVersion,
+		)
+	}
+	return nil
+}
+
 // decodeStoredSession 严格校验持久化会话所需字段，并拒绝缺少 schema_version 或 task_state 的旧数据。
 func decodeStoredSession(data []byte) (Session, error) {
 	type storedSession struct {
@@ -271,12 +285,15 @@ func decodeStoredSession(data []byte) (Session, error) {
 	if stored.SchemaVersion == nil {
 		return Session{}, errors.New("missing required field schema_version")
 	}
+	if err := validateStoredSessionSchema(*stored.SchemaVersion); err != nil {
+		return Session{}, err
+	}
 	if stored.TaskState == nil {
 		return Session{}, errors.New("missing required field task_state")
 	}
 
 	session := Session{
-		SchemaVersion:    *stored.SchemaVersion,
+		SchemaVersion:    CurrentSchemaVersion,
 		ID:               stored.ID,
 		Title:            stored.Title,
 		Provider:         stored.Provider,
@@ -290,9 +307,6 @@ func decodeStoredSession(data []byte) (Session, error) {
 		Messages:         stored.Messages,
 		TokenInputTotal:  stored.TokenInput,
 		TokenOutputTotal: stored.TokenOutput,
-	}
-	if err := validateSessionSchema(session); err != nil {
-		return Session{}, err
 	}
 	session.TaskState = normalizeAndClampTaskState(session.TaskState)
 	session.ActivatedSkills = normalizeSkillActivations(session.ActivatedSkills)
@@ -325,11 +339,11 @@ func decodeStoredSummary(data []byte) (Summary, error) {
 	if stored.SchemaVersion == nil {
 		return Summary{}, errors.New("missing required field schema_version")
 	}
+	if err := validateStoredSessionSchema(*stored.SchemaVersion); err != nil {
+		return Summary{}, err
+	}
 	if len(stored.TaskState) == 0 {
 		return Summary{}, errors.New("missing required field task_state")
-	}
-	if err := validateSessionSchema(Session{SchemaVersion: *stored.SchemaVersion}); err != nil {
-		return Summary{}, err
 	}
 	return Summary{
 		ID:        stored.ID,

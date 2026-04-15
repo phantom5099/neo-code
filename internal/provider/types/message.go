@@ -1,5 +1,7 @@
 package types
 
+import "encoding/json"
+
 // RoleSystem 标识系统消息。
 const RoleSystem = "system"
 
@@ -30,6 +32,23 @@ func (m *Message) IsEmpty() bool {
 // Validate ensures the message is well-formed.
 func (m *Message) Validate() error {
 	return ValidateParts(m.Parts)
+}
+
+// UnmarshalJSON 兼容旧版 content 字段，确保历史消息在升级后仍可读。
+func (m *Message) UnmarshalJSON(data []byte) error {
+	type messageAlias Message
+	var raw struct {
+		messageAlias
+		LegacyContent *string `json:"content"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*m = Message(raw.messageAlias)
+	if len(m.Parts) == 0 && raw.LegacyContent != nil && *raw.LegacyContent != "" {
+		m.Parts = []ContentPart{NewTextPart(*raw.LegacyContent)}
+	}
+	return nil
 }
 
 // ToolCall 表示模型发起的工具调用请求。

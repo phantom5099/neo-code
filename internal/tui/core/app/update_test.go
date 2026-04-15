@@ -988,22 +988,43 @@ func TestRuntimeEventRunContextHandler(t *testing.T) {
 }
 
 func TestRuntimeEventRunContextHandlerInvalidatesModelCapabilityCache(t *testing.T) {
-	app, _ := newTestApp(t)
-	app.state.CurrentProvider = "provider-a"
-	app.state.CurrentModel = "model-a"
-	app.currentModelCapabilities = modelCapabilityState{
-		checked:            true,
-		supportsImageInput: true,
-	}
+	t.Run("provider changed", func(t *testing.T) {
+		app, _ := newTestApp(t)
+		app.state.CurrentProvider = "provider-a"
+		app.state.CurrentModel = "model-a"
+		app.currentModelCapabilities = modelCapabilityState{
+			checked:            true,
+			supportsImageInput: true,
+		}
 
-	payload := tuiservices.RuntimeRunContextPayload{
-		Provider: "provider-b",
-		Model:    "model-b",
-	}
-	_ = runtimeEventRunContextHandler(&app, agentruntime.RuntimeEvent{Payload: payload})
-	if app.currentModelCapabilities.checked {
-		t.Fatalf("expected capability cache to be invalidated when provider/model changes")
-	}
+		payload := tuiservices.RuntimeRunContextPayload{
+			Provider: "provider-b",
+			Model:    "model-a",
+		}
+		_ = runtimeEventRunContextHandler(&app, agentruntime.RuntimeEvent{Payload: payload})
+		if app.currentModelCapabilities.checked {
+			t.Fatalf("expected capability cache to be invalidated when provider changes")
+		}
+	})
+
+	t.Run("model changed", func(t *testing.T) {
+		app, _ := newTestApp(t)
+		app.state.CurrentProvider = "provider-a"
+		app.state.CurrentModel = "model-a"
+		app.currentModelCapabilities = modelCapabilityState{
+			checked:            true,
+			supportsImageInput: true,
+		}
+
+		payload := tuiservices.RuntimeRunContextPayload{
+			Provider: "provider-a",
+			Model:    "model-b",
+		}
+		_ = runtimeEventRunContextHandler(&app, agentruntime.RuntimeEvent{Payload: payload})
+		if app.currentModelCapabilities.checked {
+			t.Fatalf("expected capability cache to be invalidated when model changes")
+		}
+	})
 }
 
 func TestSyncConfigStateInvalidatesModelCapabilityCache(t *testing.T) {

@@ -178,6 +178,18 @@ func TestMessageStructFields(t *testing.T) {
 	}
 }
 
+func TestMessageUnmarshalLegacyContentField(t *testing.T) {
+	t.Parallel()
+
+	var msg Message
+	if err := json.Unmarshal([]byte(`{"role":"user","content":"legacy text"}`), &msg); err != nil {
+		t.Fatalf("unmarshal legacy message: %v", err)
+	}
+	if got := ExtractTextForProjection(msg.Parts); got != "legacy text" {
+		t.Fatalf("expected legacy content migrated to parts, got %q", got)
+	}
+}
+
 func TestToolCallStructFields(t *testing.T) {
 	t.Parallel()
 

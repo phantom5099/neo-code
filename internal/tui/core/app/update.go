@@ -425,7 +425,10 @@ func (a App) updateInputPanel(msg tea.Msg, typed tea.KeyMsg, cmds []tea.Cmd) (te
 			}
 
 			composedInput := a.composeMessageWithImageAttachments(input)
-			a.activeMessages = append(a.activeMessages, providertypes.Message{Role: roleUser, Parts: []providertypes.ContentPart{providertypes.NewTextPart(input)}})
+			a.activeMessages = append(a.activeMessages, providertypes.Message{
+				Role:  roleUser,
+				Parts: []providertypes.ContentPart{providertypes.NewTextPart(composedInput)},
+			})
 			a.rebuildTranscript()
 			runID := fmt.Sprintf("run-%d", a.now().UnixNano())
 			a.state.ActiveRunID = runID
@@ -617,6 +620,14 @@ func (a App) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return a, nil
 			}
 			return a, runModelSelection(a.providerSvc, item.id)
+		case pickerSession:
+			err := a.activateSelectedSession()
+			a.closePicker()
+			if err != nil {
+				a.state.ExecutionError = err.Error()
+				a.state.StatusText = err.Error()
+			}
+			return a, nil
 		case pickerHelp:
 			item, ok := a.helpPicker.SelectedItem().(selectionItem)
 			a.closePicker()
@@ -951,6 +962,9 @@ func runtimeEventRunContextHandler(a *App, event agentruntime.RuntimeEvent) bool
 		a.state.CurrentProvider = mapped.Provider
 	}
 	if strings.TrimSpace(mapped.Model) != "" {
+		if !strings.EqualFold(strings.TrimSpace(a.state.CurrentModel), strings.TrimSpace(mapped.Model)) {
+			a.invalidateModelCapabilityCache()
+		}
 		a.state.CurrentModel = mapped.Model
 	}
 	if strings.TrimSpace(mapped.Workdir) != "" {

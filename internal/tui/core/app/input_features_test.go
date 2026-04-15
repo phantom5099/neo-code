@@ -448,7 +448,8 @@ func TestUpdateSendWithImageAttachmentsComposesRuntimeInput(t *testing.T) {
 	if app.hasImageAttachments() {
 		t.Fatalf("expected attachments cleared after send")
 	}
-	if len(app.activeMessages) == 0 || !strings.Contains(app.activeMessages[len(app.activeMessages)-1].Content, "[Attached images]") {
+	if len(app.activeMessages) == 0 ||
+		!strings.Contains(providertypes.ExtractTextForProjection(app.activeMessages[len(app.activeMessages)-1].Parts), "[Attached images]") {
 		t.Fatalf("expected composed user message in transcript")
 	}
 
@@ -457,7 +458,8 @@ func TestUpdateSendWithImageAttachmentsComposesRuntimeInput(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected runFinishedMsg, got %T", msg)
 	}
-	if len(runtime.runInputs) != 1 || !strings.Contains(runtime.runInputs[0].Content, "[Attached images]") {
+	if len(runtime.runInputs) != 1 ||
+		!strings.Contains(providertypes.ExtractTextForProjection(runtime.runInputs[0].Parts), "[Attached images]") {
 		t.Fatalf("expected composed runtime input, got %+v", runtime.runInputs)
 	}
 }

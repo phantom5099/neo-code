@@ -515,6 +515,31 @@ func TestJSONStoreLoadRejectsMissingSchemaVersion(t *testing.T) {
 	}
 }
 
+func TestJSONStoreLoadAcceptsLegacySchemaVersion(t *testing.T) {
+	t.Parallel()
+
+	baseDir := t.TempDir()
+	workspaceRoot := t.TempDir()
+	store := NewJSONStore(baseDir, workspaceRoot)
+
+	mustWriteSessionFile(
+		t,
+		filepath.Join(sessionDirectory(baseDir, workspaceRoot), "legacy-schema.json"),
+		`{"schema_version":1,"id":"legacy-schema","title":"legacy","task_state":{"goal":"","progress":[],"open_items":[],"next_step":"","blockers":[],"key_artifacts":[],"decisions":[],"user_constraints":[],"last_updated_at":"0001-01-01T00:00:00Z"},"messages":[{"role":"user","content":"hello legacy"}]}`,
+	)
+
+	session, err := store.Load(context.Background(), "legacy-schema")
+	if err != nil {
+		t.Fatalf("expected legacy schema load to succeed, got %v", err)
+	}
+	if session.SchemaVersion != CurrentSchemaVersion {
+		t.Fatalf("expected migrated schema version %d, got %d", CurrentSchemaVersion, session.SchemaVersion)
+	}
+	if got := providertypes.ExtractTextForProjection(session.Messages[0].Parts); got != "hello legacy" {
+		t.Fatalf("expected legacy content migrated to parts, got %q", got)
+	}
+}
+
 func TestJSONStoreLoadRejectsMissingTaskState(t *testing.T) {
 	t.Parallel()
 
@@ -566,6 +591,28 @@ func TestJSONStoreListSummariesSkipsUnreadableAndMalformedEntries(t *testing.T) 
 	}
 	if len(summaries) != 1 || summaries[0].ID != valid.ID {
 		t.Fatalf("expected only valid summary, got %+v", summaries)
+	}
+}
+
+func TestJSONStoreListSummariesAcceptsLegacySchemaVersion(t *testing.T) {
+	t.Parallel()
+
+	baseDir := t.TempDir()
+	workspaceRoot := t.TempDir()
+	store := NewJSONStore(baseDir, workspaceRoot)
+
+	mustWriteSessionFile(
+		t,
+		filepath.Join(sessionDirectory(baseDir, workspaceRoot), "legacy-summary.json"),
+		`{"schema_version":1,"id":"legacy-summary","title":"Legacy Summary","created_at":"2026-04-13T00:00:00Z","updated_at":"2026-04-13T00:00:00Z","task_state":{"goal":"","progress":[],"open_items":[],"next_step":"","blockers":[],"key_artifacts":[],"decisions":[],"user_constraints":[],"last_updated_at":"0001-01-01T00:00:00Z"}}`,
+	)
+
+	summaries, err := store.ListSummaries(context.Background())
+	if err != nil {
+		t.Fatalf("ListSummaries() error: %v", err)
+	}
+	if len(summaries) != 1 || summaries[0].ID != "legacy-summary" {
+		t.Fatalf("expected legacy summary to be listed, got %+v", summaries)
 	}
 }
 
