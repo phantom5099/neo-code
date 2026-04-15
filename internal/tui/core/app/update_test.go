@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -56,10 +57,14 @@ func (s stubProviderService) SetCurrentModel(ctx context.Context, modelID string
 }
 
 type stubRuntime struct {
-	events        chan agentruntime.RuntimeEvent
-	resolveCalls  []agentruntime.PermissionResolutionInput
-	resolveErr    error
-	cancelInvoked bool
+	events          chan agentruntime.RuntimeEvent
+	resolveCalls    []agentruntime.PermissionResolutionInput
+	resolveErr      error
+	cancelInvoked   bool
+	listSessions    []agentsession.Summary
+	listSessionsErr error
+	loadSessions    map[string]agentsession.Session
+	loadSessionErr  error
 }
 
 func newStubRuntime() *stubRuntime {
@@ -89,10 +94,21 @@ func (s *stubRuntime) Events() <-chan agentruntime.RuntimeEvent {
 }
 
 func (s *stubRuntime) ListSessions(ctx context.Context) ([]agentsession.Summary, error) {
-	return nil, nil
+	if s.listSessionsErr != nil {
+		return nil, s.listSessionsErr
+	}
+	return s.listSessions, nil
 }
 
 func (s *stubRuntime) LoadSession(ctx context.Context, id string) (agentsession.Session, error) {
+	if s.loadSessionErr != nil {
+		return agentsession.Session{}, s.loadSessionErr
+	}
+	if s.loadSessions != nil {
+		if session, ok := s.loadSessions[id]; ok {
+			return session, nil
+		}
+	}
 	return agentsession.NewWithWorkdir("draft", ""), nil
 }
 
@@ -208,6 +224,26 @@ func TestAppUpdateBasic(t *testing.T) {
 	app = model.(App)
 	if cmd != nil {
 		t.Error("Update returned non-nil cmd for runFinishedMsg with canceled error")
+	}
+}
+
+func TestRefreshSessionPickerSelectsActiveSession(t *testing.T) {
+	app, runtime := newTestApp(t)
+	now := time.Now()
+	runtime.listSessions = []agentsession.Summary{
+		{ID: "session-1", Title: "Session One", UpdatedAt: now.Add(-time.Minute)},
+		{ID: "session-2", Title: "Session Two", UpdatedAt: now},
+	}
+	app.state.ActiveSessionID = "session-2"
+
+	if err := app.refreshSessionPicker(); err != nil {
+		t.Fatalf("refreshSessionPicker() error = %v", err)
+	}
+	if len(app.sessionPicker.Items()) != 2 {
+		t.Fatalf("expected 2 session items, got %d", len(app.sessionPicker.Items()))
+	}
+	if got := app.sessionPicker.Index(); got != 1 {
+		t.Fatalf("expected active session index 1, got %d", got)
 	}
 }
 
@@ -1097,9 +1133,9 @@ func TestShouldHandleTabAsInput(t *testing.T) {
 
 func TestFocusNextPrev(t *testing.T) {
 	app, _ := newTestApp(t)
-	app.focus = panelSessions
+	app.focus = panelTranscript
 	app.focusNext()
-	if app.focus == panelSessions {
+	if app.focus == panelTranscript {
 		t.Fatalf("expected focus to move")
 	}
 	app.focusPrev()

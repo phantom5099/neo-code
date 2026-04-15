@@ -39,7 +39,7 @@ const (
 	pasteBurstThreshold = tuistate.PasteBurstThreshold
 )
 
-var panelOrder = []panel{panelSessions, panelTranscript, panelActivity, panelInput}
+var panelOrder = []panel{panelTranscript, panelActivity, panelInput}
 
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
@@ -61,7 +61,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, a.deferredEventCmd)
 			a.deferredEventCmd = nil
 		}
-		_ = a.refreshSessions()
 		a.syncActiveSessionTitle()
 		if transcriptDirty {
 			a.rebuildTranscript()
@@ -99,7 +98,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !a.state.IsAgentRunning {
 			a.clearRunProgress()
 		}
-		_ = a.refreshSessions()
 		a.syncActiveSessionTitle()
 		return a, tea.Batch(cmds...)
 	case permissionResolutionFinishedMsg:
@@ -140,11 +138,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if typed.Err != nil && strings.TrimSpace(a.state.ExecutionError) == "" {
 			a.state.ExecutionError = typed.Err.Error()
 			a.state.StatusText = typed.Err.Error()
-		}
-		if err := a.refreshSessions(); err != nil {
-			a.state.ExecutionError = err.Error()
-			a.state.StatusText = err.Error()
-			a.appendInlineMessage(roleError, err.Error())
 		}
 		if err := a.refreshMessages(); err != nil && strings.TrimSpace(a.state.ActiveSessionID) != "" {
 			a.state.ExecutionError = err.Error()
@@ -280,22 +273,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch a.focus {
-		case panelSessions:
-			if key.Matches(typed, a.keys.OpenSession) && !a.sessions.SettingFilter() {
-				if err := a.activateSelectedSession(); err != nil {
-					a.state.StatusText = err.Error()
-					a.state.ExecutionError = err.Error()
-					a.appendActivity("system", "Failed to open session", err.Error(), true)
-				}
-				a.focus = panelInput
-				a.applyFocus()
-				return a, tea.Batch(cmds...)
-			}
-			var cmd tea.Cmd
-			a.sessions, cmd = a.sessions.Update(msg)
-			a.sessions.SetShowFilter(a.sessions.FilterState() != list.Unfiltered)
-			cmds = append(cmds, cmd)
-			return a, tea.Batch(cmds...)
 		case panelTranscript:
 			a.handleViewportKeys(&a.transcript, typed)
 			return a, tea.Batch(cmds...)
@@ -393,6 +370,15 @@ func (a App) updateInputPanel(msg tea.Msg, typed tea.KeyMsg, cmds []tea.Cmd) (te
 				if cmd := a.requestModelCatalogRefresh(a.state.CurrentProvider); cmd != nil {
 					cmds = append(cmds, cmd)
 				}
+				return a, tea.Batch(cmds...)
+			case slashCommandSession:
+				if err := a.refreshSessionPicker(); err != nil {
+					a.state.ExecutionError = err.Error()
+					a.state.StatusText = err.Error()
+					a.appendActivity("system", "Failed to refresh sessions", err.Error(), true)
+					return a, tea.Batch(cmds...)
+				}
+				a.openPicker(pickerSession, statusChooseSession, &a.sessionPicker, a.state.ActiveSessionID)
 				return a, tea.Batch(cmds...)
 			}
 
@@ -629,6 +615,18 @@ func (a App) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return a, nil
 			}
 			return a, runModelSelection(a.providerSvc, item.id)
+		case pickerSession:
+			item, ok := a.sessionPicker.SelectedItem().(sessionItem)
+			a.closePicker()
+			if !ok {
+				return a, nil
+			}
+			if err := a.activateSessionByID(item.Summary.ID); err != nil {
+				a.state.ExecutionError = err.Error()
+				a.state.StatusText = err.Error()
+				a.appendActivity("system", "Failed to switch session", err.Error(), true)
+			}
+			return a, nil
 		case pickerHelp:
 			item, ok := a.helpPicker.SelectedItem().(selectionItem)
 			a.closePicker()
@@ -645,6 +643,8 @@ func (a App) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.providerPicker, cmd = a.providerPicker.Update(msg)
 	case pickerModel:
 		a.modelPicker, cmd = a.modelPicker.Update(msg)
+	case pickerSession:
+		a.sessionPicker, cmd = a.sessionPicker.Update(msg)
 	case pickerHelp:
 		a.helpPicker, cmd = a.helpPicker.Update(msg)
 	case pickerFile:
@@ -675,7 +675,7 @@ func (a App) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return a, cmd
 }
 
-func (a *App) refreshSessions() error {
+func (a *App) refreshSessionPicker() error {
 	sessions, err := a.runtime.ListSessions(context.Background())
 	if err != nil {
 		return err
@@ -683,25 +683,25 @@ func (a *App) refreshSessions() error {
 
 	a.state.Sessions = sessions
 
-	var selectedID string
-	if item, ok := a.sessions.SelectedItem().(sessionItem); ok {
-		selectedID = item.Summary.ID
-	}
-
 	items := make([]list.Item, 0, len(sessions))
-	cursor := 0
+	selectedIndex := 0
+	hasSelection := false
 	for i, summary := range sessions {
 		items = append(items, sessionItem{Summary: summary, Active: summary.ID == a.state.ActiveSessionID})
-		if summary.ID == selectedID || summary.ID == a.state.ActiveSessionID {
-			cursor = i
+		if summary.ID == a.state.ActiveSessionID {
+			selectedIndex = i
+			hasSelection = true
 		}
 	}
 
-	a.sessions.SetItems(items)
+	a.sessionPicker.SetItems(items)
 	if len(items) > 0 {
-		a.sessions.Select(cursor)
+		if hasSelection {
+			a.sessionPicker.Select(selectedIndex)
+		} else {
+			a.sessionPicker.Select(0)
+		}
 	}
-
 	return nil
 }
 
@@ -726,7 +726,7 @@ func (a *App) refreshMessages() error {
 }
 
 func (a *App) activateSelectedSession() error {
-	item, ok := a.sessions.SelectedItem().(sessionItem)
+	item, ok := a.sessionPicker.SelectedItem().(sessionItem)
 	if !ok {
 		return nil
 	}
@@ -736,11 +736,20 @@ func (a *App) activateSelectedSession() error {
 	a.state.ExecutionError = ""
 	a.state.CurrentTool = ""
 
-	if err := a.refreshSessions(); err != nil {
-		return err
-	}
-
 	return a.refreshMessages()
+}
+
+func (a *App) activateSessionByID(sessionID string) error {
+	for _, s := range a.state.Sessions {
+		if s.ID == sessionID {
+			a.state.ActiveSessionID = s.ID
+			a.state.ActiveSessionTitle = s.Title
+			a.state.ExecutionError = ""
+			a.state.CurrentTool = ""
+			return a.refreshMessages()
+		}
+	}
+	return fmt.Errorf("session not found: %s", sessionID)
 }
 
 func (a *App) syncActiveSessionTitle() {
@@ -1576,15 +1585,16 @@ func (a *App) applyComponentLayout(rebuildTranscript bool) {
 		a.activity.Height = 0
 	}
 
-	a.providerPicker.SetSize(max(24, tuiutils.Clamp(lay.contentWidth-14, 28, 52)), max(4, tuiutils.Clamp(lay.contentHeight-10, 6, 10)))
-	a.modelPicker.SetSize(max(24, tuiutils.Clamp(lay.contentWidth-14, 28, 52)), max(4, tuiutils.Clamp(lay.contentHeight-10, 6, 10)))
-	helpPickerMaxHeight := max(8, lay.contentHeight-6)
+	pickerLayout := a.buildPickerLayout(lay.contentWidth, lay.contentHeight)
+	a.providerPicker.SetSize(pickerLayout.listWidth, pickerLayout.listHeight)
+	a.modelPicker.SetSize(pickerLayout.listWidth, pickerLayout.listHeight)
+	a.sessionPicker.SetSize(pickerLayout.listWidth, pickerLayout.listHeight)
 	helpPickerDesiredHeight := (len(a.helpPicker.Items()) * 3) + 1
 	a.helpPicker.SetSize(
-		max(24, tuiutils.Clamp(lay.contentWidth-14, 28, 52)),
-		max(6, tuiutils.Clamp(helpPickerDesiredHeight, 6, helpPickerMaxHeight)),
+		pickerLayout.listWidth,
+		tuiutils.Clamp(helpPickerDesiredHeight, pickerListMinHeight, pickerLayout.listHeight),
 	)
-	a.fileBrowser.SetHeight(max(6, tuiutils.Clamp(lay.contentHeight-8, 8, 16)))
+	a.fileBrowser.SetHeight(max(pickerListMinHeight, pickerLayout.listHeight))
 	if rebuildTranscript || prevTranscriptWidth != a.transcript.Width {
 		a.rebuildTranscript()
 	} else if a.transcript.AtBottom() || a.isBusy() {
@@ -1738,6 +1748,15 @@ func (a *App) handleImmediateSlashCommand(input string) (bool, tea.Cmd) {
 		return true, a.handleRememberCommand(rest)
 	case slashCommandForget:
 		return true, a.handleForgetCommand(rest)
+	case slashCommandSession:
+		if err := a.refreshSessionPicker(); err != nil {
+			a.state.ExecutionError = err.Error()
+			a.state.StatusText = err.Error()
+			a.appendActivity("system", "Failed to refresh sessions", err.Error(), true)
+			return true, nil
+		}
+		a.openPicker(pickerSession, statusChooseSession, &a.sessionPicker, a.state.ActiveSessionID)
+		return true, nil
 	default:
 		return false, nil
 	}

@@ -3,11 +3,13 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/lipgloss"
 
 	providertypes "neo-code/internal/provider/types"
+	agentsession "neo-code/internal/session"
 	tuistate "neo-code/internal/tui/state"
 )
 
@@ -22,6 +24,44 @@ func TestRenderPickerHelpMode(t *testing.T) {
 	}
 	if !strings.Contains(view, helpPickerSubtitle) {
 		t.Fatalf("expected help picker subtitle in view")
+	}
+}
+
+func TestRenderPickerSessionMode(t *testing.T) {
+	app, _ := newTestApp(t)
+	app.state.ActivePicker = pickerSession
+	app.sessionPicker.SetItems([]list.Item{
+		sessionItem{Summary: agentsession.Summary{
+			ID:        "session-1",
+			Title:     "Session One",
+			UpdatedAt: time.Now(),
+		}},
+	})
+
+	view := app.renderPicker(48, 14)
+	if !strings.Contains(view, sessionPickerTitle) {
+		t.Fatalf("expected session picker title in view")
+	}
+	if !strings.Contains(view, sessionPickerSubtitle) {
+		t.Fatalf("expected session picker subtitle in view")
+	}
+	if !strings.Contains(view, "Session One") {
+		t.Fatalf("expected session item in picker body")
+	}
+}
+
+func TestBuildPickerLayoutExpandsPopupSpace(t *testing.T) {
+	app, _ := newTestApp(t)
+
+	got := app.buildPickerLayout(100, 30)
+	if got.panelHeight < 20 {
+		t.Fatalf("expected expanded picker panel height, got %d", got.panelHeight)
+	}
+	if got.listHeight < pickerListMinHeight {
+		t.Fatalf("expected picker list height >= %d, got %d", pickerListMinHeight, got.listHeight)
+	}
+	if got.listWidth < pickerListMinWidth {
+		t.Fatalf("expected picker list width >= %d, got %d", pickerListMinWidth, got.listWidth)
 	}
 }
 

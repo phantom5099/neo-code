@@ -10,7 +10,6 @@ type keyMap struct {
 	NextPanel   key.Binding
 	PrevPanel   key.Binding
 	FocusInput  key.Binding
-	OpenSession key.Binding
 	ToggleHelp  key.Binding
 	Quit        key.Binding
 	ScrollUp    key.Binding
@@ -51,10 +50,6 @@ func newKeyMap() keyMap {
 		FocusInput: key.NewBinding(
 			key.WithKeys("esc"),
 			key.WithHelp("Esc", "Focus input"),
-		),
-		OpenSession: key.NewBinding(
-			key.WithKeys("enter"),
-			key.WithHelp("Enter", "Open session"),
 		),
 		ToggleHelp: key.NewBinding(
 			key.WithKeys("ctrl+q"),
@@ -102,7 +97,7 @@ func (k keyMap) ShortHelp() []key.Binding {
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Send, k.Newline, k.CancelAgent, k.NewSession},
-		{k.OpenSession, k.FocusInput, k.NextPanel, k.PrevPanel},
+		{k.FocusInput, k.NextPanel, k.PrevPanel},
 		{k.ToggleHelp, k.Quit, k.ScrollUp, k.ScrollDown},
 		{k.PageUp, k.PageDown, k.Top, k.Bottom},
 	}
