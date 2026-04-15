@@ -31,3 +31,24 @@ func TestServiceSubAgentFactoryRegistration(t *testing.T) {
 		t.Fatalf("expected reset to default sub-agent factory")
 	}
 }
+
+func TestServiceSubAgentFactoryIsolationAcrossInstances(t *testing.T) {
+	t.Parallel()
+
+	svcA := NewWithFactory(nil, nil, nil, nil, nil)
+	svcB := NewWithFactory(nil, nil, nil, nil, nil)
+
+	custom := fakeSubAgentFactory{}
+	svcA.SetSubAgentFactory(custom)
+
+	if svcA.SubAgentFactory() == nil {
+		t.Fatalf("expected service A factory to be set")
+	}
+	if svcB.SubAgentFactory() == nil {
+		t.Fatalf("expected service B default factory")
+	}
+
+	if svcA.SubAgentFactory() == svcB.SubAgentFactory() {
+		t.Fatalf("expected per-service factory isolation")
+	}
+}

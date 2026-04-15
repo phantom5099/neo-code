@@ -1,12 +1,6 @@
 package runtime
 
-import (
-	"sync"
-
-	"neo-code/internal/subagent"
-)
-
-var serviceSubAgentFactory sync.Map
+import "neo-code/internal/subagent"
 
 // defaultSubAgentFactory 返回默认的子代理工厂实例。
 func defaultSubAgentFactory() subagent.Factory {
@@ -18,11 +12,13 @@ func (s *Service) SetSubAgentFactory(factory subagent.Factory) {
 	if s == nil {
 		return
 	}
+	s.subAgentMu.Lock()
+	defer s.subAgentMu.Unlock()
 	if factory == nil {
-		serviceSubAgentFactory.Store(s, defaultSubAgentFactory())
+		s.subAgentFactory = defaultSubAgentFactory()
 		return
 	}
-	serviceSubAgentFactory.Store(s, factory)
+	s.subAgentFactory = factory
 }
 
 // SubAgentFactory 返回当前 runtime 持有的子代理运行时工厂。
@@ -30,12 +26,22 @@ func (s *Service) SubAgentFactory() subagent.Factory {
 	if s == nil {
 		return defaultSubAgentFactory()
 	}
-	if factory, ok := serviceSubAgentFactory.Load(s); ok {
-		if typed, valid := factory.(subagent.Factory); valid && typed != nil {
-			return typed
-		}
+	s.subAgentMu.RLock()
+	factory := s.subAgentFactory
+	s.subAgentMu.RUnlock()
+	if factory != nil {
+		return factory
 	}
+
 	defaultFactory := defaultSubAgentFactory()
-	serviceSubAgentFactory.Store(s, defaultFactory)
+	s.subAgentMu.Lock()
+	if s.subAgentFactory == nil {
+		s.subAgentFactory = defaultFactory
+	}
+	factory = s.subAgentFactory
+	s.subAgentMu.Unlock()
+	if factory != nil {
+		return factory
+	}
 	return defaultFactory
 }

@@ -23,7 +23,12 @@ func (defaultEngine) RunStep(ctx context.Context, input StepInput) (StepOutput, 
 		Delta: "default engine completed",
 		Done:  true,
 		Output: Output{
-			Summary: summary,
+			Summary:     summary,
+			Findings:    []string{"default-engine: no extra findings"},
+			Patches:     []string{"default-engine: no code changes"},
+			Risks:       []string{"default-engine: output generated without external verification"},
+			NextActions: []string{"replace default engine with role-specific implementation if deeper execution is required"},
+			Artifacts:   []string{"default-engine"},
 		},
 	}, nil
 }
