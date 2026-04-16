@@ -74,6 +74,7 @@ type relayConnection struct {
 	writeFn func(message RelayMessage) error
 	closeFn func()
 	queue   chan RelayMessage
+	writeMu sync.Mutex
 }
 
 type bindingKey struct {
@@ -273,6 +274,38 @@ func (r *StreamRelay) SendJSONRPCResponse(connectionID ConnectionID, response pr
 	})
 }
 
+// SendJSONRPCResponseSync 通过连接统一串行写路径同步发送 JSON-RPC 响应，适用于协议错误等即时反馈场景。
+func (r *StreamRelay) SendJSONRPCResponseSync(connectionID ConnectionID, response protocol.JSONRPCResponse) bool {
+	if r == nil {
+		return false
+	}
+
+	normalizedConnectionID := NormalizeConnectionID(connectionID)
+	if normalizedConnectionID == "" {
+		return false
+	}
+
+	r.mu.RLock()
+	connection := r.connections[normalizedConnectionID]
+	r.mu.RUnlock()
+	if connection == nil {
+		return false
+	}
+
+	writeErr := r.writeConnectionMessage(connection, RelayMessage{
+		Kind:     relayMessageKindJSON,
+		Payload:  response,
+		Enqueued: time.Now(),
+	})
+	if writeErr == nil {
+		return true
+	}
+
+	r.logger.Printf("connection %s sync write failed: %v", normalizedConnectionID, writeErr)
+	r.dropConnection(normalizedConnectionID)
+	return false
+}
+
 // SendJSONRPCPayload 将任意 JSON 载荷写入连接发送队列，适用于 IPC/WS 心跳与响应。
 func (r *StreamRelay) SendJSONRPCPayload(connectionID ConnectionID, payload any) bool {
 	return r.enqueueMessage(connectionID, RelayMessage{
@@ -335,6 +368,14 @@ func (r *StreamRelay) BindConnection(connectionID ConnectionID, binding StreamBi
 	if connectionBindingMap == nil {
 		connectionBindingMap = make(map[bindingKey]*bindingState)
 		r.connectionBindings[normalizedConnectionID] = connectionBindingMap
+	}
+	for existingKey, existingState := range connectionBindingMap {
+		if existingState == nil || existingState.expireAt.Before(now) {
+			delete(connectionBindingMap, existingKey)
+			if existingState != nil {
+				r.removeConnectionFromIndexesLocked(normalizedConnectionID, existingState.sessionID, existingState.runID)
+			}
+		}
 	}
 	if _, exists := connectionBindingMap[key]; !exists && len(connectionBindingMap) >= r.maxBindings {
 		r.mu.Unlock()
@@ -415,7 +456,6 @@ func (r *StreamRelay) RefreshConnectionBindings(connectionID ConnectionID) bool 
 			continue
 		}
 		state.expireAt = now.Add(r.bindingTTL)
-		state.lastSeen = now
 		refreshed = true
 	}
 	r.mu.Unlock()
@@ -489,13 +529,20 @@ func (r *StreamRelay) runConnectionWriter(connection *relayConnection) {
 			if !ok {
 				return
 			}
-			if err := connection.writeFn(message); err != nil {
+			if err := r.writeConnectionMessage(connection, message); err != nil {
 				r.logger.Printf("connection %s write failed: %v", connection.id, err)
 				r.dropConnection(connection.id)
 				return
 			}
 		}
 	}
+}
+
+// writeConnectionMessage 复用每连接单写互斥，保证队列写与同步写不会并发交错。
+func (r *StreamRelay) writeConnectionMessage(connection *relayConnection, message RelayMessage) error {
+	connection.writeMu.Lock()
+	defer connection.writeMu.Unlock()
+	return connection.writeFn(message)
 }
 
 // enqueueMessage 将消息尝试放入连接队列；队列满会触发慢连接剔除。

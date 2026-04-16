@@ -190,6 +190,10 @@ func (s *Server) Close(ctx context.Context) error {
 	s.listener = nil
 	s.mu.Unlock()
 
+	if s.relay != nil {
+		s.relay.Stop()
+	}
+
 	var closeErr error
 	if listener != nil {
 		closeErr = listener.Close()
@@ -326,7 +330,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn, runtimePor
 			}
 			if errors.Is(err, errFrameTooLarge) {
 				s.logger.Printf("decode frame failed: %v", err)
-				_ = s.writeRPCResponseDirect(conn, encoder, protocol.NewJSONRPCErrorResponse(
+				_ = relay.SendJSONRPCResponseSync(connectionID, protocol.NewJSONRPCErrorResponse(
 					nil,
 					protocol.NewJSONRPCError(
 						protocol.JSONRPCCodeInvalidRequest,
@@ -338,7 +342,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn, runtimePor
 			}
 
 			s.logger.Printf("decode frame failed: %v", err)
-			_ = s.writeRPCResponseDirect(conn, encoder, protocol.NewJSONRPCErrorResponse(
+			_ = relay.SendJSONRPCResponseSync(connectionID, protocol.NewJSONRPCErrorResponse(
 				nil,
 				protocol.NewJSONRPCError(
 					protocol.JSONRPCCodeParseError,
@@ -354,14 +358,6 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn, runtimePor
 			return
 		}
 	}
-}
-
-// writeRPCResponseDirect 在连接即将结束前同步写回关键响应，避免异步队列尚未消费即断连。
-func (s *Server) writeRPCResponseDirect(conn net.Conn, encoder *json.Encoder, response protocol.JSONRPCResponse) error {
-	if err := s.applyWriteDeadline(conn); err != nil {
-		return err
-	}
-	return encoder.Encode(response)
 }
 
 // applyReadDeadline 为当前连接设置下一次读操作超时，避免慢读连接长期占用协程。
