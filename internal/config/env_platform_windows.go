@@ -64,3 +64,32 @@ func DeleteUserEnvVar(key string) error {
 	}
 	return nil
 }
+
+// LookupUserEnvVar 查询 Windows 用户级环境变量，不存在时返回 exists=false。
+func LookupUserEnvVar(key string) (string, bool, error) {
+	normalizedKey := strings.TrimSpace(key)
+	if normalizedKey == "" {
+		return "", false, errors.New("config: env key is empty")
+	}
+	if strings.ContainsAny(normalizedKey, " \t\r\n=") {
+		return "", false, fmt.Errorf("config: env key %q is invalid", normalizedKey)
+	}
+
+	envKey, err := registry.OpenKey(registry.CURRENT_USER, windowsUserEnvironmentKey, registry.QUERY_VALUE)
+	if err != nil {
+		if errors.Is(err, registry.ErrNotExist) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("config: open windows user env: %w", err)
+	}
+	defer envKey.Close()
+
+	value, _, err := envKey.GetStringValue(normalizedKey)
+	if err != nil {
+		if errors.Is(err, registry.ErrNotExist) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("config: read windows user env %q: %w", normalizedKey, err)
+	}
+	return value, true, nil
+}

@@ -397,7 +397,7 @@ func TestSubmitProviderAddFormRollsBackPersistedStateOnSelectFailure(t *testing.
 	}
 
 	envData, readErr := os.ReadFile(config.EnvFilePath(app.configManager.BaseDir()))
-	if readErr != nil {
+	if readErr != nil && !os.IsNotExist(readErr) {
 		t.Fatalf("read env file: %v", readErr)
 	}
 	if strings.Contains(string(envData), envName+"=") {
@@ -450,7 +450,7 @@ func TestSubmitProviderAddFormRollsBackOnUserEnvPersistFailure(t *testing.T) {
 	}
 
 	envData, readErr := os.ReadFile(config.EnvFilePath(app.configManager.BaseDir()))
-	if readErr != nil {
+	if readErr != nil && !os.IsNotExist(readErr) {
 		t.Fatalf("read env file: %v", readErr)
 	}
 	if strings.Contains(string(envData), envName+"=") {
@@ -460,6 +460,200 @@ func TestSubmitProviderAddFormRollsBackOnUserEnvPersistFailure(t *testing.T) {
 	providerPath := filepath.Join(app.configManager.BaseDir(), "providers", providerName)
 	if _, err := os.Stat(providerPath); !os.IsNotExist(err) {
 		t.Fatalf("expected provider dir rollback, stat err = %v", err)
+	}
+}
+
+func TestSubmitProviderAddFormRestoresExistingStateOnSelectFailure(t *testing.T) {
+	restorePersistUserEnv := persistProviderUserEnvVar
+	restoreDeleteUserEnv := deleteProviderUserEnvVar
+	restoreLookupUserEnv := lookupProviderUserEnvVar
+	userEnvStore := map[string]string{}
+	persistProviderUserEnvVar = func(key string, value string) error {
+		userEnvStore[key] = value
+		return nil
+	}
+	deleteProviderUserEnvVar = func(key string) error {
+		delete(userEnvStore, key)
+		return nil
+	}
+	lookupProviderUserEnvVar = func(key string) (string, bool, error) {
+		value, ok := userEnvStore[key]
+		return value, ok, nil
+	}
+	t.Cleanup(func() { persistProviderUserEnvVar = restorePersistUserEnv })
+	t.Cleanup(func() { deleteProviderUserEnvVar = restoreDeleteUserEnv })
+	t.Cleanup(func() { lookupProviderUserEnvVar = restoreLookupUserEnv })
+
+	providerName := "restore-existing-provider"
+	envName := providerAddAPIKeyEnv(providerName)
+	restoreEnv := captureEnv(t, envName)
+	defer restoreEnv()
+
+	app, _ := newTestAppWithProviderService(t, stubProviderService{
+		selectErr: errors.New("select failed"),
+	})
+
+	if err := config.SaveCustomProvider(
+		app.configManager.BaseDir(),
+		providerName,
+		provider.DriverOpenAICompat,
+		"https://old.example.com/v1",
+		envName,
+		provider.OpenAICompatibleAPIStyleChatCompletions,
+		"",
+		"",
+	); err != nil {
+		t.Fatalf("SaveCustomProvider() error = %v", err)
+	}
+	if err := config.PersistEnvVar(app.configManager.BaseDir(), envName, "old-file-key"); err != nil {
+		t.Fatalf("PersistEnvVar() error = %v", err)
+	}
+	if err := os.Setenv(envName, "old-process-key"); err != nil {
+		t.Fatalf("Setenv() error = %v", err)
+	}
+	userEnvStore[envName] = "old-user-key"
+
+	app.startProviderAddForm()
+	app.providerAddForm.Name = providerName
+	app.providerAddForm.Driver = provider.DriverOpenAICompat
+	app.providerAddForm.BaseURL = "https://new.example.com/v1"
+	app.providerAddForm.APIKey = "new-key"
+	app.providerAddForm.APIStyle = provider.OpenAICompatibleAPIStyleChatCompletions
+
+	cmd := app.submitProviderAddForm()
+	if cmd == nil {
+		t.Fatalf("expected async command")
+	}
+	msg := cmd()
+	result, ok := msg.(providerAddResultMsg)
+	if !ok {
+		t.Fatalf("expected providerAddResultMsg, got %T", msg)
+	}
+	if strings.TrimSpace(result.Error) == "" {
+		t.Fatalf("expected failure result")
+	}
+
+	if got := os.Getenv(envName); got != "old-process-key" {
+		t.Fatalf("expected process env restored, got %q", got)
+	}
+	if got := userEnvStore[envName]; got != "old-user-key" {
+		t.Fatalf("expected user env restored, got %q", got)
+	}
+
+	envData, readErr := os.ReadFile(config.EnvFilePath(app.configManager.BaseDir()))
+	if readErr != nil {
+		t.Fatalf("read env file: %v", readErr)
+	}
+	if !strings.Contains(string(envData), envName+"=old-file-key") {
+		t.Fatalf("expected persisted env restored, got %q", string(envData))
+	}
+
+	providerPath := filepath.Join(app.configManager.BaseDir(), "providers", providerName, "provider.yaml")
+	providerData, readProviderErr := os.ReadFile(providerPath)
+	if readProviderErr != nil {
+		t.Fatalf("read provider config: %v", readProviderErr)
+	}
+	providerText := string(providerData)
+	if !strings.Contains(providerText, "https://old.example.com/v1") {
+		t.Fatalf("expected provider config restored, got %q", providerText)
+	}
+	if strings.Contains(providerText, "https://new.example.com/v1") {
+		t.Fatalf("expected new provider config to be rolled back, got %q", providerText)
+	}
+}
+
+func TestTrimLastRune(t *testing.T) {
+	if got := trimLastRune(""); got != "" {
+		t.Fatalf("trimLastRune(empty) = %q, want empty", got)
+	}
+	if got := trimLastRune("ab"); got != "a" {
+		t.Fatalf("trimLastRune(ascii) = %q, want a", got)
+	}
+	if got := trimLastRune("你好"); got != "你" {
+		t.Fatalf("trimLastRune(utf8) = %q, want 你", got)
+	}
+}
+
+func TestLoadAndRestoreEnvFileSnapshot(t *testing.T) {
+	tmp := t.TempDir()
+	envPath := filepath.Join(tmp, ".env")
+
+	missingSnapshot, err := loadFileSnapshot(envPath)
+	if err != nil {
+		t.Fatalf("loadFileSnapshot(missing) error = %v", err)
+	}
+	if missingSnapshot.Exists {
+		t.Fatalf("expected missing snapshot")
+	}
+
+	if err := os.WriteFile(envPath, []byte("A=1\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	existingSnapshot, err := loadFileSnapshot(envPath)
+	if err != nil {
+		t.Fatalf("loadFileSnapshot(existing) error = %v", err)
+	}
+	if !existingSnapshot.Exists {
+		t.Fatalf("expected existing snapshot")
+	}
+
+	if err := os.WriteFile(envPath, []byte("A=2\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if err := restoreEnvFileSnapshot(envPath, existingSnapshot); err != nil {
+		t.Fatalf("restoreEnvFileSnapshot(existing) error = %v", err)
+	}
+	data, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if string(data) != "A=1\n" {
+		t.Fatalf("expected snapshot content restored, got %q", string(data))
+	}
+
+	if err := restoreEnvFileSnapshot(envPath, missingSnapshot); err != nil {
+		t.Fatalf("restoreEnvFileSnapshot(missing) error = %v", err)
+	}
+	if _, err := os.Stat(envPath); !os.IsNotExist(err) {
+		t.Fatalf("expected env file removed for missing snapshot, stat err = %v", err)
+	}
+}
+
+func TestRestoreProviderConfigSnapshot(t *testing.T) {
+	baseDir := t.TempDir()
+	providerName := "snapshot-provider"
+	providerPath := filepath.Join(baseDir, "providers", providerName, "provider.yaml")
+	if err := os.MkdirAll(filepath.Dir(providerPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(providerPath, []byte("name: old\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	snapshot, err := loadFileSnapshot(providerPath)
+	if err != nil {
+		t.Fatalf("loadFileSnapshot() error = %v", err)
+	}
+	if err := os.WriteFile(providerPath, []byte("name: new\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if err := restoreProviderConfigSnapshot(baseDir, providerName, snapshot); err != nil {
+		t.Fatalf("restoreProviderConfigSnapshot(existing) error = %v", err)
+	}
+	data, err := os.ReadFile(providerPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if string(data) != "name: old\n" {
+		t.Fatalf("expected provider snapshot restored, got %q", string(data))
+	}
+
+	missingSnapshot := fileSnapshot{}
+	if err := restoreProviderConfigSnapshot(baseDir, providerName, missingSnapshot); err != nil {
+		t.Fatalf("restoreProviderConfigSnapshot(missing) error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(providerPath)); !os.IsNotExist(err) {
+		t.Fatalf("expected provider dir removed for missing snapshot, stat err = %v", err)
 	}
 }
 
@@ -2280,6 +2474,17 @@ func TestCurrentProviderAddFieldAndInputHandling(t *testing.T) {
 	app = *ptr
 	if app.providerAddForm.Name != "" {
 		t.Fatalf("expected backspace to remove name content")
+	}
+
+	app.providerAddForm.Name = "你好"
+	model, _ = app.handleProviderAddFormInput(tea.KeyMsg{Type: tea.KeyBackspace})
+	ptr, ok = model.(*App)
+	if !ok {
+		t.Fatalf("expected *App model, got %T", model)
+	}
+	app = *ptr
+	if app.providerAddForm.Name != "你" {
+		t.Fatalf("expected UTF-8 safe backspace result, got %q", app.providerAddForm.Name)
 	}
 
 	model, cmd = app.handleProviderAddFormInput(tea.KeyMsg{Type: tea.KeyEnter})

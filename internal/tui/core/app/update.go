@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
@@ -46,6 +47,7 @@ const providerAddSelectTimeout = 10 * time.Second
 var panelOrder = []panel{panelTranscript, panelActivity, panelInput}
 var persistProviderUserEnvVar = config.PersistUserEnvVar
 var deleteProviderUserEnvVar = config.DeleteUserEnvVar
+var lookupProviderUserEnvVar = config.LookupUserEnvVar
 
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
@@ -2141,29 +2143,17 @@ func (a *App) handleProviderAddFormInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case typed.Type == tea.KeyBackspace:
 		switch currentProviderAddField(a.providerAddForm) {
 		case providerAddFieldName:
-			if len(a.providerAddForm.Name) > 0 {
-				a.providerAddForm.Name = a.providerAddForm.Name[:len(a.providerAddForm.Name)-1]
-			}
+			a.providerAddForm.Name = trimLastRune(a.providerAddForm.Name)
 		case providerAddFieldBaseURL:
-			if len(a.providerAddForm.BaseURL) > 0 {
-				a.providerAddForm.BaseURL = a.providerAddForm.BaseURL[:len(a.providerAddForm.BaseURL)-1]
-			}
+			a.providerAddForm.BaseURL = trimLastRune(a.providerAddForm.BaseURL)
 		case providerAddFieldAPIStyle:
-			if len(a.providerAddForm.APIStyle) > 0 {
-				a.providerAddForm.APIStyle = a.providerAddForm.APIStyle[:len(a.providerAddForm.APIStyle)-1]
-			}
+			a.providerAddForm.APIStyle = trimLastRune(a.providerAddForm.APIStyle)
 		case providerAddFieldDeploymentMode:
-			if len(a.providerAddForm.DeploymentMode) > 0 {
-				a.providerAddForm.DeploymentMode = a.providerAddForm.DeploymentMode[:len(a.providerAddForm.DeploymentMode)-1]
-			}
+			a.providerAddForm.DeploymentMode = trimLastRune(a.providerAddForm.DeploymentMode)
 		case providerAddFieldAPIVersion:
-			if len(a.providerAddForm.APIVersion) > 0 {
-				a.providerAddForm.APIVersion = a.providerAddForm.APIVersion[:len(a.providerAddForm.APIVersion)-1]
-			}
+			a.providerAddForm.APIVersion = trimLastRune(a.providerAddForm.APIVersion)
 		case providerAddFieldAPIKey:
-			if len(a.providerAddForm.APIKey) > 0 {
-				a.providerAddForm.APIKey = a.providerAddForm.APIKey[:len(a.providerAddForm.APIKey)-1]
-			}
+			a.providerAddForm.APIKey = trimLastRune(a.providerAddForm.APIKey)
 		}
 		return a, nil
 	case typed.Type == tea.KeyUp:
@@ -2343,6 +2333,18 @@ func providerAddAPIKeyEnv(name string) string {
 	return normalized + "_API_KEY"
 }
 
+// trimLastRune 按 UTF-8 rune 删除字符串末尾一个字符，避免按字节截断导致乱码。
+func trimLastRune(value string) string {
+	if value == "" {
+		return ""
+	}
+	_, size := utf8.DecodeLastRuneInString(value)
+	if size <= 0 || size > len(value) {
+		return ""
+	}
+	return value[:len(value)-size]
+}
+
 func sanitizeProviderAddError(err error, secrets ...string) string {
 	if err == nil {
 		return ""
@@ -2361,6 +2363,56 @@ func sanitizeProviderAddError(err error, secrets ...string) string {
 	return text
 }
 
+type fileSnapshot struct {
+	Exists  bool
+	Content []byte
+}
+
+// loadFileSnapshot 读取目标文件当前快照，用于 provider add 失败时恢复原始状态。
+func loadFileSnapshot(path string) (fileSnapshot, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fileSnapshot{}, nil
+		}
+		return fileSnapshot{}, err
+	}
+	return fileSnapshot{
+		Exists:  true,
+		Content: append([]byte(nil), data...),
+	}, nil
+}
+
+// restoreEnvFileSnapshot 将 .env 恢复到提交前快照，避免覆盖场景下丢失原有键值。
+func restoreEnvFileSnapshot(path string, snapshot fileSnapshot) error {
+	if !snapshot.Exists {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, snapshot.Content, 0o600)
+}
+
+// restoreProviderConfigSnapshot 恢复 provider.yaml 快照；若原先不存在则清理新建目录。
+func restoreProviderConfigSnapshot(baseDir string, providerName string, snapshot fileSnapshot) error {
+	providerDir := filepath.Join(baseDir, "providers", providerName)
+	if !snapshot.Exists {
+		return config.DeleteCustomProvider(baseDir, providerName)
+	}
+	if err := os.RemoveAll(providerDir); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(providerDir, 0o755); err != nil {
+		return err
+	}
+	providerPath := filepath.Join(providerDir, "provider.yaml")
+	return os.WriteFile(providerPath, snapshot.Content, 0o644)
+}
+
 func (a *App) runProviderAddFlow(request providerAddRequest) tea.Cmd {
 	baseDir := a.configManager.BaseDir()
 	configManager := a.configManager
@@ -2368,7 +2420,32 @@ func (a *App) runProviderAddFlow(request providerAddRequest) tea.Cmd {
 
 	return func() tea.Msg {
 		apiKeyEnv := providerAddAPIKeyEnv(request.Name)
-		previousEnvValue, hadPreviousEnv := os.LookupEnv(apiKeyEnv)
+		previousProcessEnvValue, hadPreviousProcessEnv := os.LookupEnv(apiKeyEnv)
+		previousUserEnvValue, hadPreviousUserEnv, err := lookupProviderUserEnvVar(apiKeyEnv)
+		if err != nil {
+			return providerAddResultMsg{
+				Name:  request.Name,
+				Error: sanitizeProviderAddError(fmt.Errorf("lookup user environment variable: %w", err), request.APIKey, baseDir),
+			}
+		}
+
+		providerPath := filepath.Join(baseDir, "providers", request.Name, "provider.yaml")
+		providerSnapshot, err := loadFileSnapshot(providerPath)
+		if err != nil {
+			return providerAddResultMsg{
+				Name:  request.Name,
+				Error: sanitizeProviderAddError(fmt.Errorf("snapshot provider config: %w", err), request.APIKey, baseDir),
+			}
+		}
+
+		envPath := config.EnvFilePath(baseDir)
+		envSnapshot, err := loadFileSnapshot(envPath)
+		if err != nil {
+			return providerAddResultMsg{
+				Name:  request.Name,
+				Error: sanitizeProviderAddError(fmt.Errorf("snapshot env file: %w", err), request.APIKey, baseDir),
+			}
+		}
 
 		rollback := func(processEnvApplied bool, userEnvPersisted bool, envPersisted bool, providerSaved bool, originalErr error) error {
 			return rollbackProviderAddSideEffects(
@@ -2378,9 +2455,14 @@ func (a *App) runProviderAddFlow(request providerAddRequest) tea.Cmd {
 				processEnvApplied,
 				userEnvPersisted,
 				envPersisted,
-				hadPreviousEnv,
-				previousEnvValue,
+				hadPreviousProcessEnv,
+				previousProcessEnvValue,
+				hadPreviousUserEnv,
+				previousUserEnvValue,
 				providerSaved,
+				envPath,
+				envSnapshot,
+				providerSnapshot,
 				originalErr,
 			)
 		}
@@ -2477,7 +2559,12 @@ func rollbackProviderAddSideEffects(
 	envPersisted bool,
 	hadPreviousEnv bool,
 	previousEnvValue string,
+	hadPreviousUserEnv bool,
+	previousUserEnvValue string,
 	providerSaved bool,
+	envPath string,
+	envSnapshot fileSnapshot,
+	providerSnapshot fileSnapshot,
 	originalErr error,
 ) error {
 	rollbackErrs := make([]error, 0, 4)
@@ -2495,20 +2582,26 @@ func rollbackProviderAddSideEffects(
 	}
 
 	if userEnvPersisted {
-		if err := deleteProviderUserEnvVar(apiKeyEnv); err != nil {
-			rollbackErrs = append(rollbackErrs, fmt.Errorf("delete user env: %w", err))
+		if hadPreviousUserEnv {
+			if err := persistProviderUserEnvVar(apiKeyEnv, previousUserEnvValue); err != nil {
+				rollbackErrs = append(rollbackErrs, fmt.Errorf("restore user env: %w", err))
+			}
+		} else {
+			if err := deleteProviderUserEnvVar(apiKeyEnv); err != nil {
+				rollbackErrs = append(rollbackErrs, fmt.Errorf("delete user env: %w", err))
+			}
 		}
 	}
 
 	if envPersisted {
-		if err := config.RemovePersistedEnvVar(baseDir, apiKeyEnv); err != nil {
-			rollbackErrs = append(rollbackErrs, fmt.Errorf("remove persisted env: %w", err))
+		if err := restoreEnvFileSnapshot(envPath, envSnapshot); err != nil {
+			rollbackErrs = append(rollbackErrs, fmt.Errorf("restore persisted env: %w", err))
 		}
 	}
 
 	if providerSaved {
-		if err := config.DeleteCustomProvider(baseDir, providerName); err != nil {
-			rollbackErrs = append(rollbackErrs, fmt.Errorf("delete provider config: %w", err))
+		if err := restoreProviderConfigSnapshot(baseDir, providerName, providerSnapshot); err != nil {
+			rollbackErrs = append(rollbackErrs, fmt.Errorf("restore provider config: %w", err))
 		}
 	}
 
