@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"neo-code/internal/config"
 	configstate "neo-code/internal/config/state"
 	"neo-code/internal/memo"
+	"neo-code/internal/provider"
 	providertypes "neo-code/internal/provider/types"
 	agentruntime "neo-code/internal/runtime"
 	approvalflow "neo-code/internal/runtime/approval"
@@ -24,8 +26,11 @@ import (
 )
 
 type stubProviderService struct {
-	providers []configstate.ProviderOption
-	models    []providertypes.ModelDescriptor
+	providers      []configstate.ProviderOption
+	models         []providertypes.ModelDescriptor
+	selectErr      error
+	selectDelay    time.Duration
+	selectResponse configstate.Selection
 }
 
 func (s stubProviderService) ListProviderOptions(ctx context.Context) ([]configstate.ProviderOption, error) {
@@ -33,6 +38,22 @@ func (s stubProviderService) ListProviderOptions(ctx context.Context) ([]configs
 }
 
 func (s stubProviderService) SelectProvider(ctx context.Context, providerID string) (configstate.Selection, error) {
+	if s.selectDelay > 0 {
+		timer := time.NewTimer(s.selectDelay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return configstate.Selection{}, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	if s.selectErr != nil {
+		return configstate.Selection{}, s.selectErr
+	}
+	if strings.TrimSpace(s.selectResponse.ProviderID) != "" || strings.TrimSpace(s.selectResponse.ModelID) != "" {
+		return s.selectResponse, nil
+	}
+
 	modelID := ""
 	if len(s.models) > 0 {
 		modelID = s.models[0].ID
@@ -140,7 +161,7 @@ func newDefaultAppConfig() *config.Config {
 	return cfg
 }
 
-func newTestApp(t *testing.T) (App, *stubRuntime) {
+func newTestAppWithProviderService(t *testing.T, providerSvc ProviderController) (App, *stubRuntime) {
 	t.Helper()
 
 	cfg := newDefaultAppConfig()
@@ -151,34 +172,149 @@ func newTestApp(t *testing.T) (App, *stubRuntime) {
 		t.Fatalf("Load() error = %v", err)
 	}
 
-	var providers []configstate.ProviderOption
-	var models []providertypes.ModelDescriptor
-	if len(cfg.Providers) > 0 {
-		provider := cfg.Providers[0]
-		providers = []configstate.ProviderOption{
-			{
-				ID:   provider.Name,
-				Name: provider.Name,
-				Models: []providertypes.ModelDescriptor{
-					{ID: provider.Model, Name: provider.Model},
-				},
-			},
-		}
-		models = []providertypes.ModelDescriptor{{ID: provider.Model, Name: provider.Model}}
-	}
-
 	runtime := newStubRuntime()
 	app, err := newApp(tuibootstrap.Container{
 		Config:          *cfg,
 		ConfigManager:   manager,
 		Runtime:         runtime,
-		ProviderService: stubProviderService{providers: providers, models: models},
+		ProviderService: providerSvc,
 	})
 	if err != nil {
 		t.Fatalf("newApp() error = %v", err)
 	}
 
 	return app, runtime
+}
+
+func newTestApp(t *testing.T) (App, *stubRuntime) {
+	t.Helper()
+
+	cfg := newDefaultAppConfig()
+	var providers []configstate.ProviderOption
+	var models []providertypes.ModelDescriptor
+	if len(cfg.Providers) > 0 {
+		providerCfg := cfg.Providers[0]
+		providers = []configstate.ProviderOption{
+			{
+				ID:   providerCfg.Name,
+				Name: providerCfg.Name,
+				Models: []providertypes.ModelDescriptor{
+					{ID: providerCfg.Model, Name: providerCfg.Model},
+				},
+			},
+		}
+		models = []providertypes.ModelDescriptor{{ID: providerCfg.Model, Name: providerCfg.Model}}
+	}
+
+	return newTestAppWithProviderService(t, stubProviderService{providers: providers, models: models})
+}
+
+func TestSubmitProviderAddFormRequiresAnthropicBaseURL(t *testing.T) {
+	app, _ := newTestApp(t)
+	app.startProviderAddForm()
+
+	app.providerAddForm.Name = "anthropic-gateway"
+	app.providerAddForm.Driver = provider.DriverAnthropic
+	app.providerAddForm.APIKey = "test-key"
+	app.providerAddForm.BaseURL = ""
+
+	cmd := app.submitProviderAddForm()
+	if cmd != nil {
+		t.Fatalf("expected nil command for invalid anthropic form")
+	}
+	if !strings.Contains(app.providerAddForm.Error, "Base URL is required") {
+		t.Fatalf("expected base URL validation error, got %q", app.providerAddForm.Error)
+	}
+}
+
+func TestSubmitProviderAddFormAsyncSuccess(t *testing.T) {
+	providerName := "team-gateway"
+	modelID := "gateway-model"
+	service := stubProviderService{
+		providers: []configstate.ProviderOption{
+			{
+				ID:   providerName,
+				Name: providerName,
+				Models: []providertypes.ModelDescriptor{
+					{ID: modelID, Name: modelID},
+				},
+			},
+		},
+		models: []providertypes.ModelDescriptor{{ID: modelID, Name: modelID}},
+		selectResponse: configstate.Selection{
+			ProviderID: providerName,
+			ModelID:    modelID,
+		},
+	}
+	app, _ := newTestAppWithProviderService(t, service)
+	app.startProviderAddForm()
+
+	app.providerAddForm.Name = providerName
+	app.providerAddForm.Driver = provider.DriverOpenAICompat
+	app.providerAddForm.BaseURL = "https://team-gateway.example.com/v1"
+	app.providerAddForm.APIKey = "sk-test-123"
+	app.providerAddForm.APIStyle = provider.OpenAICompatibleAPIStyleChatCompletions
+
+	cmd := app.submitProviderAddForm()
+	if cmd == nil {
+		t.Fatalf("expected async command for provider add")
+	}
+	if !app.providerAddForm.Submitting {
+		t.Fatalf("expected form to enter submitting state")
+	}
+
+	envName := providerAddAPIKeyEnv(providerName)
+	defer os.Unsetenv(envName)
+
+	msg := cmd()
+	if _, ok := msg.(providerAddResultMsg); !ok {
+		t.Fatalf("expected providerAddResultMsg, got %T", msg)
+	}
+	if got := strings.TrimSpace(os.Getenv(envName)); got != "sk-test-123" {
+		t.Fatalf("expected API key in env %s, got %q", envName, got)
+	}
+
+	next, _ := app.Update(msg)
+	app = next.(App)
+	if app.providerAddForm != nil {
+		t.Fatalf("expected provider add form to close on success")
+	}
+	if app.state.CurrentProvider != providerName {
+		t.Fatalf("expected current provider %q, got %q", providerName, app.state.CurrentProvider)
+	}
+	if app.state.CurrentModel != modelID {
+		t.Fatalf("expected current model %q, got %q", modelID, app.state.CurrentModel)
+	}
+}
+
+func TestSubmitProviderAddFormRedactsSensitiveError(t *testing.T) {
+	secretKey := "sk-secret-456"
+	service := stubProviderService{
+		selectErr: errors.New("authentication failed for key " + secretKey),
+	}
+	app, _ := newTestAppWithProviderService(t, service)
+	app.startProviderAddForm()
+
+	app.providerAddForm.Name = "redact-gateway"
+	app.providerAddForm.Driver = provider.DriverOpenAICompat
+	app.providerAddForm.BaseURL = "https://redact-gateway.example.com/v1"
+	app.providerAddForm.APIKey = secretKey
+
+	cmd := app.submitProviderAddForm()
+	if cmd == nil {
+		t.Fatalf("expected async command for provider add failure")
+	}
+	next, _ := app.Update(cmd())
+	app = next.(App)
+	if app.providerAddForm == nil {
+		t.Fatalf("expected form to stay open on failure")
+	}
+	if strings.Contains(app.providerAddForm.Error, secretKey) {
+		t.Fatalf("expected error to redact api key, got %q", app.providerAddForm.Error)
+	}
+	if !strings.Contains(app.providerAddForm.Error, "[REDACTED]") {
+		t.Fatalf("expected redaction marker in error, got %q", app.providerAddForm.Error)
+	}
 }
 
 func TestAppUpdateBasic(t *testing.T) {

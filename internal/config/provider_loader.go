@@ -206,3 +206,65 @@ func resolveCustomProviderSettings(file customProviderFile) customProviderSettin
 
 	return settings
 }
+
+// SaveCustomProvider 保存自定义 provider 到文件系统。
+func SaveCustomProvider(
+	baseDir string,
+	name string,
+	driver string,
+	baseURL string,
+	apiKeyEnv string,
+	apiStyle string,
+	deploymentMode string,
+	apiVersion string,
+) error {
+	providersDir := filepath.Join(baseDir, providersDirName, name)
+	if err := os.MkdirAll(providersDir, 0o755); err != nil {
+		return fmt.Errorf("config: create provider dir: %w", err)
+	}
+
+	normalizedDriver := normalizeProviderDriver(driver)
+	cfg := customProviderFile{
+		Name:      name,
+		Driver:    normalizedDriver,
+		APIKeyEnv: apiKeyEnv,
+	}
+
+	switch normalizedDriver {
+	case provider.DriverOpenAICompat:
+		cfg.OpenAICompatible = customOpenAICompatibleFile{
+			BaseURL:  baseURL,
+			APIStyle: strings.TrimSpace(apiStyle),
+		}
+	case provider.DriverGemini:
+		cfg.Gemini = customGeminiProviderFile{
+			BaseURL:        baseURL,
+			DeploymentMode: strings.TrimSpace(deploymentMode),
+		}
+	case provider.DriverAnthropic:
+		cfg.Anthropic = customAnthropicProviderFile{
+			BaseURL:    baseURL,
+			APIVersion: strings.TrimSpace(apiVersion),
+		}
+	default:
+		cfg.BaseURL = baseURL
+	}
+
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("config: marshal provider: %w", err)
+	}
+
+	providerPath := filepath.Join(providersDir, customProviderConfigName)
+	if err := os.WriteFile(providerPath, data, 0o644); err != nil {
+		return fmt.Errorf("config: write provider: %w", err)
+	}
+
+	return nil
+}
+
+// DeleteCustomProvider 删除自定义 provider。
+func DeleteCustomProvider(baseDir string, name string) error {
+	providersDir := filepath.Join(baseDir, providersDirName, name)
+	return os.RemoveAll(providersDir)
+}

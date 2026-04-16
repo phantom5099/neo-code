@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -16,6 +17,7 @@ import (
 
 	"neo-code/internal/config"
 	"neo-code/internal/memo"
+	"neo-code/internal/provider"
 	providertypes "neo-code/internal/provider/types"
 	agentruntime "neo-code/internal/runtime"
 	approvalflow "neo-code/internal/runtime/approval"
@@ -39,6 +41,8 @@ const (
 	pasteBurstThreshold = tuistate.PasteBurstThreshold
 )
 
+const providerAddSelectTimeout = 10 * time.Second
+
 var panelOrder = []panel{panelTranscript, panelActivity, panelInput}
 
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -55,6 +59,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.height = typed.Height
 		a.applyComponentLayout(true)
 		return a, tea.Batch(cmds...)
+	case providerAddResultMsg:
+		a.handleProviderAddResultMsg(typed)
+		return a, nil
 	case RuntimeMsg:
 		transcriptDirty := a.handleRuntimeEvent(typed.Event)
 		if a.deferredEventCmd != nil {
@@ -229,6 +236,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.state.ActivePicker != pickerNone {
 			return a.updatePicker(typed)
 		}
+
 		if a.focus == panelInput {
 			if cmd, handled := a.updateCommandMenuSelection(typed); handled {
 				if cmd != nil {
@@ -379,6 +387,9 @@ func (a App) updateInputPanel(msg tea.Msg, typed tea.KeyMsg, cmds []tea.Cmd) (te
 					return a, tea.Batch(cmds...)
 				}
 				a.openPicker(pickerSession, statusChooseSession, &a.sessionPicker, a.state.ActiveSessionID)
+				return a, tea.Batch(cmds...)
+			case slashCommandProviderAdd:
+				a.startProviderAddForm()
 				return a, tea.Batch(cmds...)
 			}
 
@@ -673,6 +684,8 @@ func (a App) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if disabled, path := a.fileBrowser.DidSelectDisabledFile(msg); disabled {
 			a.state.StatusText = fmt.Sprintf("[System] %s is not selectable.", filepath.Base(path))
 		}
+	case pickerProviderAdd:
+		return a.handleProviderAddFormInput(msg)
 	}
 	return a, cmd
 }
@@ -1769,6 +1782,9 @@ func (a *App) handleImmediateSlashCommand(input string) (bool, tea.Cmd) {
 		}
 		a.openPicker(pickerSession, statusChooseSession, &a.sessionPicker, a.state.ActiveSessionID)
 		return true, nil
+	case slashCommandProviderAdd:
+		a.startProviderAddForm()
+		return true, nil
 	default:
 		return false, nil
 	}
@@ -2014,4 +2030,425 @@ func (a *App) setCurrentWorkdir(workdir string) {
 	}
 	a.state.CurrentWorkdir = trimmed
 
+}
+
+type providerAddFieldID int
+
+const (
+	providerAddFieldName providerAddFieldID = iota
+	providerAddFieldDriver
+	providerAddFieldBaseURL
+	providerAddFieldAPIStyle
+	providerAddFieldDeploymentMode
+	providerAddFieldAPIVersion
+	providerAddFieldAPIKey
+)
+
+func providerAddVisibleFields(driver string) []providerAddFieldID {
+	fields := []providerAddFieldID{
+		providerAddFieldName,
+		providerAddFieldDriver,
+		providerAddFieldBaseURL,
+	}
+
+	switch provider.NormalizeProviderDriver(driver) {
+	case provider.DriverOpenAICompat:
+		fields = append(fields, providerAddFieldAPIStyle)
+	case provider.DriverGemini:
+		fields = append(fields, providerAddFieldDeploymentMode)
+	case provider.DriverAnthropic:
+		fields = append(fields, providerAddFieldAPIVersion)
+	}
+
+	fields = append(fields, providerAddFieldAPIKey)
+	return fields
+}
+
+func clampProviderAddStep(form *providerAddFormState) {
+	if form == nil {
+		return
+	}
+	fields := providerAddVisibleFields(form.Driver)
+	if len(fields) == 0 {
+		form.Step = 0
+		return
+	}
+	if form.Step < 0 {
+		form.Step = 0
+	}
+	if form.Step >= len(fields) {
+		form.Step = len(fields) - 1
+	}
+}
+
+func currentProviderAddField(form *providerAddFormState) providerAddFieldID {
+	if form == nil {
+		return providerAddFieldName
+	}
+	clampProviderAddStep(form)
+	fields := providerAddVisibleFields(form.Driver)
+	if len(fields) == 0 {
+		return providerAddFieldName
+	}
+	return fields[form.Step]
+}
+
+func (a *App) startProviderAddForm() {
+	a.providerAddForm = &providerAddFormState{
+		Step:           0,
+		Name:           "",
+		Driver:         provider.DriverOpenAICompat,
+		BaseURL:        "",
+		APIStyle:       provider.OpenAICompatibleAPIStyleChatCompletions,
+		DeploymentMode: "",
+		APIVersion:     "",
+		APIKey:         "",
+		Error:          "",
+		ErrorIsHard:    false,
+		Drivers:        []string{provider.DriverOpenAICompat, provider.DriverGemini, provider.DriverAnthropic},
+	}
+	a.state.ActivePicker = pickerProviderAdd
+	a.state.StatusText = "Add new provider"
+	a.state.ExecutionError = ""
+}
+
+func (a *App) handleProviderAddFormInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if a.providerAddForm == nil || a.providerAddForm.Submitting {
+		return a, nil
+	}
+
+	typed := msg
+	prevStep := a.providerAddForm.Step
+	fields := providerAddVisibleFields(a.providerAddForm.Driver)
+	fieldCount := len(fields)
+	if fieldCount == 0 {
+		fieldCount = 1
+	}
+
+	switch {
+	case key.Matches(typed, a.keys.PrevPanel):
+		a.providerAddForm.Step = (a.providerAddForm.Step + fieldCount - 1) % fieldCount
+	case key.Matches(typed, a.keys.NextPanel):
+		a.providerAddForm.Step = (a.providerAddForm.Step + 1) % fieldCount
+	case key.Matches(typed, a.keys.Send):
+		return a, a.submitProviderAddForm()
+	case key.Matches(typed, a.keys.FocusInput):
+		a.providerAddForm = nil
+		a.state.ActivePicker = pickerNone
+		a.state.StatusText = statusReady
+	case typed.Type == tea.KeyBackspace:
+		switch currentProviderAddField(a.providerAddForm) {
+		case providerAddFieldName:
+			if len(a.providerAddForm.Name) > 0 {
+				a.providerAddForm.Name = a.providerAddForm.Name[:len(a.providerAddForm.Name)-1]
+			}
+		case providerAddFieldBaseURL:
+			if len(a.providerAddForm.BaseURL) > 0 {
+				a.providerAddForm.BaseURL = a.providerAddForm.BaseURL[:len(a.providerAddForm.BaseURL)-1]
+			}
+		case providerAddFieldAPIStyle:
+			if len(a.providerAddForm.APIStyle) > 0 {
+				a.providerAddForm.APIStyle = a.providerAddForm.APIStyle[:len(a.providerAddForm.APIStyle)-1]
+			}
+		case providerAddFieldDeploymentMode:
+			if len(a.providerAddForm.DeploymentMode) > 0 {
+				a.providerAddForm.DeploymentMode = a.providerAddForm.DeploymentMode[:len(a.providerAddForm.DeploymentMode)-1]
+			}
+		case providerAddFieldAPIVersion:
+			if len(a.providerAddForm.APIVersion) > 0 {
+				a.providerAddForm.APIVersion = a.providerAddForm.APIVersion[:len(a.providerAddForm.APIVersion)-1]
+			}
+		case providerAddFieldAPIKey:
+			if len(a.providerAddForm.APIKey) > 0 {
+				a.providerAddForm.APIKey = a.providerAddForm.APIKey[:len(a.providerAddForm.APIKey)-1]
+			}
+		}
+		return a, nil
+	case typed.Type == tea.KeyUp:
+		if currentProviderAddField(a.providerAddForm) == providerAddFieldDriver {
+			currentIdx := 0
+			for i, d := range a.providerAddForm.Drivers {
+				if d == a.providerAddForm.Driver {
+					currentIdx = i
+					break
+				}
+			}
+			currentIdx = (currentIdx - 1 + len(a.providerAddForm.Drivers)) % len(a.providerAddForm.Drivers)
+			a.providerAddForm.Driver = a.providerAddForm.Drivers[currentIdx]
+			clampProviderAddStep(a.providerAddForm)
+		}
+		return a, nil
+	case typed.Type == tea.KeyDown:
+		if currentProviderAddField(a.providerAddForm) == providerAddFieldDriver {
+			currentIdx := 0
+			for i, d := range a.providerAddForm.Drivers {
+				if d == a.providerAddForm.Driver {
+					currentIdx = i
+					break
+				}
+			}
+			currentIdx = (currentIdx + 1) % len(a.providerAddForm.Drivers)
+			a.providerAddForm.Driver = a.providerAddForm.Drivers[currentIdx]
+			clampProviderAddStep(a.providerAddForm)
+		}
+		return a, nil
+	default:
+		if len(typed.Runes) > 0 {
+			switch currentProviderAddField(a.providerAddForm) {
+			case providerAddFieldName:
+				a.providerAddForm.Name += string(typed.Runes)
+			case providerAddFieldBaseURL:
+				a.providerAddForm.BaseURL += string(typed.Runes)
+			case providerAddFieldAPIStyle:
+				a.providerAddForm.APIStyle += string(typed.Runes)
+			case providerAddFieldDeploymentMode:
+				a.providerAddForm.DeploymentMode += string(typed.Runes)
+			case providerAddFieldAPIVersion:
+				a.providerAddForm.APIVersion += string(typed.Runes)
+			case providerAddFieldAPIKey:
+				a.providerAddForm.APIKey += string(typed.Runes)
+			}
+		}
+	}
+
+	if prevStep != a.providerAddForm.Step {
+		a.providerAddForm.Error = ""
+		a.providerAddForm.ErrorIsHard = false
+	}
+
+	return a, nil
+}
+
+func (a *App) submitProviderAddForm() tea.Cmd {
+	if a.providerAddForm == nil {
+		return nil
+	}
+
+	request, validationErr := buildProviderAddRequest(*a.providerAddForm)
+	if validationErr != "" {
+		a.providerAddForm.Error = "Please update the form: " + validationErr
+		a.providerAddForm.ErrorIsHard = false
+		return nil
+	}
+
+	a.providerAddForm.Submitting = true
+	a.providerAddForm.Error = ""
+	a.providerAddForm.ErrorIsHard = false
+	a.state.StatusText = "Adding provider..."
+	a.appendActivity("provider", "Adding provider", request.Name, false)
+
+	return a.runProviderAddFlow(request)
+}
+
+type providerAddRequest struct {
+	Name           string
+	Driver         string
+	BaseURL        string
+	APIStyle       string
+	DeploymentMode string
+	APIVersion     string
+	APIKey         string
+}
+
+type providerAddResultMsg struct {
+	Name  string
+	Model string
+	Error string
+}
+
+func buildProviderAddRequest(form providerAddFormState) (providerAddRequest, string) {
+	request := providerAddRequest{
+		Name:           strings.TrimSpace(form.Name),
+		Driver:         provider.NormalizeProviderDriver(form.Driver),
+		BaseURL:        strings.TrimSpace(form.BaseURL),
+		APIStyle:       strings.TrimSpace(form.APIStyle),
+		DeploymentMode: strings.TrimSpace(form.DeploymentMode),
+		APIVersion:     strings.TrimSpace(form.APIVersion),
+		APIKey:         strings.TrimSpace(form.APIKey),
+	}
+
+	if request.Name == "" {
+		return providerAddRequest{}, "Name is required"
+	}
+	if request.Driver == "" {
+		return providerAddRequest{}, "Driver is required"
+	}
+	if request.APIKey == "" {
+		return providerAddRequest{}, "API Key is required"
+	}
+
+	switch request.Driver {
+	case provider.DriverOpenAICompat:
+		if request.BaseURL == "" {
+			request.BaseURL = config.OpenAIDefaultBaseURL
+		}
+		if request.APIStyle == "" {
+			request.APIStyle = provider.OpenAICompatibleAPIStyleChatCompletions
+		}
+		request.DeploymentMode = ""
+		request.APIVersion = ""
+	case provider.DriverGemini:
+		if request.BaseURL == "" {
+			request.BaseURL = config.GeminiDefaultBaseURL
+		}
+		request.APIStyle = ""
+		request.APIVersion = ""
+	case provider.DriverAnthropic:
+		if request.BaseURL == "" {
+			return providerAddRequest{}, "Base URL is required for anthropic provider"
+		}
+		request.APIStyle = ""
+		request.DeploymentMode = ""
+	default:
+		if request.BaseURL == "" {
+			return providerAddRequest{}, "Base URL is required for custom driver"
+		}
+		request.APIStyle = ""
+		request.DeploymentMode = ""
+		request.APIVersion = ""
+	}
+
+	return request, ""
+}
+
+func providerAddAPIKeyEnv(name string) string {
+	upper := strings.ToUpper(strings.TrimSpace(name))
+	if upper == "" {
+		return "CUSTOM_PROVIDER_API_KEY"
+	}
+
+	var b strings.Builder
+	lastUnderscore := false
+	for _, r := range upper {
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastUnderscore = false
+			continue
+		}
+		if !lastUnderscore {
+			b.WriteByte('_')
+			lastUnderscore = true
+		}
+	}
+
+	normalized := strings.Trim(b.String(), "_")
+	if normalized == "" {
+		normalized = "CUSTOM_PROVIDER"
+	}
+	if normalized[0] >= '0' && normalized[0] <= '9' {
+		normalized = "P_" + normalized
+	}
+	return normalized + "_API_KEY"
+}
+
+func sanitizeProviderAddError(err error, secrets ...string) string {
+	if err == nil {
+		return ""
+	}
+	text := strings.TrimSpace(err.Error())
+	if text == "" {
+		return "unknown error"
+	}
+
+	for _, secret := range secrets {
+		if trimmed := strings.TrimSpace(secret); trimmed != "" {
+			text = strings.ReplaceAll(text, trimmed, "[REDACTED]")
+			text = strings.ReplaceAll(text, filepath.ToSlash(trimmed), "[REDACTED]")
+		}
+	}
+	return text
+}
+
+func (a *App) runProviderAddFlow(request providerAddRequest) tea.Cmd {
+	baseDir := a.configManager.BaseDir()
+	configManager := a.configManager
+	providerSvc := a.providerSvc
+
+	return func() tea.Msg {
+		apiKeyEnv := providerAddAPIKeyEnv(request.Name)
+		_ = os.Setenv(apiKeyEnv, request.APIKey)
+
+		if err := config.SaveCustomProvider(
+			baseDir,
+			request.Name,
+			request.Driver,
+			request.BaseURL,
+			apiKeyEnv,
+			request.APIStyle,
+			request.DeploymentMode,
+			request.APIVersion,
+		); err != nil {
+			return providerAddResultMsg{
+				Name:  request.Name,
+				Error: sanitizeProviderAddError(fmt.Errorf("save provider config: %w", err), request.APIKey, baseDir),
+			}
+		}
+		if _, err := configManager.Reload(context.Background()); err != nil {
+			if rollbackErr := config.DeleteCustomProvider(baseDir, request.Name); rollbackErr != nil {
+				err = fmt.Errorf("%w (rollback failed: %v)", err, rollbackErr)
+			}
+			return providerAddResultMsg{
+				Name:  request.Name,
+				Error: sanitizeProviderAddError(fmt.Errorf("reload config snapshot: %w", err), request.APIKey, baseDir),
+			}
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), providerAddSelectTimeout)
+		defer cancel()
+
+		selection, err := providerSvc.SelectProvider(ctx, request.Name)
+		if err != nil {
+			if rollbackErr := config.DeleteCustomProvider(baseDir, request.Name); rollbackErr != nil {
+				err = fmt.Errorf("%w (rollback failed: %v)", err, rollbackErr)
+			}
+			if errors.Is(err, context.DeadlineExceeded) {
+				err = fmt.Errorf(
+					"model discovery timed out after %s; check base URL, API key, and network connectivity",
+					providerAddSelectTimeout,
+				)
+			}
+			return providerAddResultMsg{
+				Name:  request.Name,
+				Error: sanitizeProviderAddError(fmt.Errorf("select provider: %w", err), request.APIKey, baseDir),
+			}
+		}
+
+		return providerAddResultMsg{
+			Name:  request.Name,
+			Model: strings.TrimSpace(selection.ModelID),
+		}
+	}
+}
+
+func (a *App) handleProviderAddResultMsg(msg providerAddResultMsg) {
+	if a.providerAddForm == nil {
+		return
+	}
+
+	if msg.Error != "" {
+		a.providerAddForm.Error = msg.Error
+		a.providerAddForm.ErrorIsHard = true
+		a.providerAddForm.Submitting = false
+		a.state.ExecutionError = msg.Error
+		a.state.StatusText = "Failed to add provider"
+		a.appendActivity("provider", "Failed to add provider", msg.Error, true)
+		return
+	}
+
+	a.providerAddForm = nil
+	a.state.ActivePicker = pickerNone
+	a.state.ExecutionError = ""
+	a.state.StatusText = "Provider added: " + msg.Name
+	a.state.CurrentProvider = msg.Name
+	if msg.Model != "" {
+		a.state.CurrentModel = msg.Model
+	}
+	a.appendActivity("provider", "Provider added", msg.Name, false)
+
+	if err := a.refreshProviderPicker(); err != nil {
+		a.appendActivity("system", "Failed to refresh providers", err.Error(), true)
+	}
+	if err := a.refreshModelPicker(); err != nil {
+		a.appendActivity("system", "Failed to refresh models", err.Error(), true)
+	}
 }

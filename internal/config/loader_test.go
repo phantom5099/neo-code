@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"neo-code/internal/provider"
 )
 
 func writeLoaderConfig(t *testing.T, loader *Loader, raw string) {
@@ -849,6 +851,127 @@ func TestResolveCustomProviderSettingsByDriver(t *testing.T) {
 			if got != tt.want {
 				t.Fatalf("resolveCustomProviderSettings() = %+v, want %+v", got, tt.want)
 			}
+		})
+	}
+}
+
+func TestSaveCustomProviderPersistsDriverSpecificSettings(t *testing.T) {
+	t.Parallel()
+
+	baseDir := t.TempDir()
+	tests := []struct {
+		name           string
+		driver         string
+		baseURL        string
+		apiStyle       string
+		deploymentMode string
+		apiVersion     string
+		assert         func(t *testing.T, cfg ProviderConfig)
+	}{
+		{
+			name:           "openaicompat settings",
+			driver:         provider.DriverOpenAICompat,
+			baseURL:        "https://llm.example.com/v1",
+			apiStyle:       provider.OpenAICompatibleAPIStyleResponses,
+			deploymentMode: "ignored",
+			apiVersion:     "ignored",
+			assert: func(t *testing.T, cfg ProviderConfig) {
+				t.Helper()
+				if cfg.APIStyle != provider.OpenAICompatibleAPIStyleResponses {
+					t.Fatalf("expected APIStyle=%q, got %q", provider.OpenAICompatibleAPIStyleResponses, cfg.APIStyle)
+				}
+				if cfg.DeploymentMode != "" || cfg.APIVersion != "" {
+					t.Fatalf("expected non-openai specific settings to be empty, got %+v", cfg)
+				}
+			},
+		},
+		{
+			name:           "gemini settings",
+			driver:         provider.DriverGemini,
+			baseURL:        "https://generativelanguage.googleapis.com/v1beta/openai",
+			apiStyle:       "ignored",
+			deploymentMode: "vertex",
+			apiVersion:     "ignored",
+			assert: func(t *testing.T, cfg ProviderConfig) {
+				t.Helper()
+				if cfg.DeploymentMode != "vertex" {
+					t.Fatalf("expected DeploymentMode=vertex, got %q", cfg.DeploymentMode)
+				}
+				if cfg.APIStyle != "" || cfg.APIVersion != "" {
+					t.Fatalf("expected non-gemini specific settings to be empty, got %+v", cfg)
+				}
+			},
+		},
+		{
+			name:           "anthropic settings",
+			driver:         provider.DriverAnthropic,
+			baseURL:        "https://api.anthropic.com/v1",
+			apiStyle:       "ignored",
+			deploymentMode: "ignored",
+			apiVersion:     "2023-06-01",
+			assert: func(t *testing.T, cfg ProviderConfig) {
+				t.Helper()
+				if cfg.APIVersion != "2023-06-01" {
+					t.Fatalf("expected APIVersion=2023-06-01, got %q", cfg.APIVersion)
+				}
+				if cfg.APIStyle != "" || cfg.DeploymentMode != "" {
+					t.Fatalf("expected non-anthropic specific settings to be empty, got %+v", cfg)
+				}
+			},
+		},
+		{
+			name:           "unknown driver keeps top-level base url",
+			driver:         "custom-driver",
+			baseURL:        "https://custom.example.com/v1",
+			apiStyle:       "responses",
+			deploymentMode: "vertex",
+			apiVersion:     "2023-06-01",
+			assert: func(t *testing.T, cfg ProviderConfig) {
+				t.Helper()
+				if cfg.BaseURL != "https://custom.example.com/v1" {
+					t.Fatalf("expected BaseURL=https://custom.example.com/v1, got %q", cfg.BaseURL)
+				}
+				if cfg.APIStyle != "" || cfg.DeploymentMode != "" || cfg.APIVersion != "" {
+					t.Fatalf("expected unknown driver protocol settings to be empty, got %+v", cfg)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			providerName := strings.ReplaceAll(tt.name, " ", "-")
+			apiKeyEnv := strings.ToUpper(strings.ReplaceAll(providerName, "-", "_")) + "_API_KEY"
+			if err := SaveCustomProvider(
+				baseDir,
+				providerName,
+				tt.driver,
+				tt.baseURL,
+				apiKeyEnv,
+				tt.apiStyle,
+				tt.deploymentMode,
+				tt.apiVersion,
+			); err != nil {
+				t.Fatalf("SaveCustomProvider() error = %v", err)
+			}
+
+			cfg, err := loadCustomProvider(filepath.Join(baseDir, providersDirName, providerName))
+			if err != nil {
+				t.Fatalf("loadCustomProvider() error = %v", err)
+			}
+			if cfg.Driver != tt.driver {
+				t.Fatalf("expected driver %q, got %q", tt.driver, cfg.Driver)
+			}
+			if cfg.BaseURL != tt.baseURL {
+				t.Fatalf("expected baseURL %q, got %q", tt.baseURL, cfg.BaseURL)
+			}
+			if cfg.APIKeyEnv != apiKeyEnv {
+				t.Fatalf("expected api_key_env %q, got %q", apiKeyEnv, cfg.APIKeyEnv)
+			}
+			tt.assert(t, cfg)
 		})
 	}
 }
