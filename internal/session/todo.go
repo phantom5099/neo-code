@@ -434,7 +434,7 @@ func normalizeTodoItem(item TodoItem) (TodoItem, error) {
 		return TodoItem{}, fmt.Errorf("session: invalid todo owner_type %q", item.OwnerType)
 	}
 
-	if item.Status != TodoStatusFailed && item.Status != TodoStatusPending {
+	if item.Status != TodoStatusFailed && item.Status != TodoStatusPending && item.Status != TodoStatusBlocked {
 		item.FailureReason = ""
 	}
 	if item.Status != TodoStatusPending && item.Status != TodoStatusFailed {

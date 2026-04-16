@@ -20,6 +20,11 @@ type schedulerStore struct {
 	updateConflicts map[string]int
 }
 
+type schedulerStoreWithClaimError struct {
+	*schedulerStore
+	claimErrors map[string]error
+}
+
 func newSchedulerStore(t *testing.T, items []agentsession.TodoItem) *schedulerStore {
 	t.Helper()
 	session := agentsession.New("scheduler")
@@ -75,6 +80,17 @@ func (s *schedulerStore) FailTodo(id string, reason string, expectedRevision int
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.session.FailTodo(id, reason, expectedRevision)
+}
+
+func (s *schedulerStoreWithClaimError) ClaimTodo(id string, ownerType string, ownerID string, expectedRevision int64) error {
+	s.mu.Lock()
+	if err, ok := s.claimErrors[id]; ok && err != nil {
+		delete(s.claimErrors, id)
+		s.mu.Unlock()
+		return err
+	}
+	s.mu.Unlock()
+	return s.schedulerStore.ClaimTodo(id, ownerType, ownerID, expectedRevision)
 }
 
 type scriptedFactory struct {
@@ -148,8 +164,8 @@ func TestSchedulerConfigNormalize(t *testing.T) {
 	}
 
 	role := cfg.RoleSelector(agentsession.TodoItem{OwnerID: string(RoleReviewer)})
-	if role != RoleReviewer {
-		t.Fatalf("RoleSelector() = %q, want %q", role, RoleReviewer)
+	if role != cfg.DefaultRole {
+		t.Fatalf("RoleSelector() = %q, want default %q", role, cfg.DefaultRole)
 	}
 	role = cfg.RoleSelector(agentsession.TodoItem{OwnerID: "unknown"})
 	if role != cfg.DefaultRole {
@@ -161,6 +177,74 @@ func TestSchedulerConfigNormalize(t *testing.T) {
 	if got := cfg.BudgetSelector(agentsession.TodoItem{}, cfg.DefaultBudget); got != cfg.DefaultBudget {
 		t.Fatalf("BudgetSelector() = %+v, want %+v", got, cfg.DefaultBudget)
 	}
+}
+
+func TestNewSchedulerValidationErrors(t *testing.T) {
+	t.Parallel()
+
+	store := newSchedulerStore(t, []agentsession.TodoItem{{ID: "a", Content: "a"}})
+	factory := newScriptedFactory(func(ctx context.Context, taskID string, attempt int, input StepInput) (StepOutput, error) {
+		_ = ctx
+		_ = taskID
+		_ = attempt
+		_ = input
+		return successStep("a"), nil
+	})
+
+	if _, err := NewScheduler(nil, factory, SchedulerConfig{}); err == nil {
+		t.Fatalf("NewScheduler(nil, factory) should fail")
+	}
+	if _, err := NewScheduler(store, nil, SchedulerConfig{}); err == nil {
+		t.Fatalf("NewScheduler(store, nil) should fail")
+	}
+}
+
+func TestSchedulerRunEarlyErrorPaths(t *testing.T) {
+	t.Parallel()
+
+	t.Run("context canceled before run", func(t *testing.T) {
+		t.Parallel()
+		store := newSchedulerStore(t, []agentsession.TodoItem{{ID: "a", Content: "a"}})
+		factory := newScriptedFactory(func(ctx context.Context, taskID string, attempt int, input StepInput) (StepOutput, error) {
+			_ = ctx
+			_ = taskID
+			_ = attempt
+			_ = input
+			return successStep("a"), nil
+		})
+		scheduler, err := NewScheduler(store, factory, SchedulerConfig{})
+		if err != nil {
+			t.Fatalf("NewScheduler() error = %v", err)
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := scheduler.Run(ctx); !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run() error = %v, want context canceled", err)
+		}
+	})
+
+	t.Run("invalid graph", func(t *testing.T) {
+		t.Parallel()
+		store := newSchedulerStore(t, []agentsession.TodoItem{{ID: "a", Content: "a"}})
+		store.session.Todos = append(store.session.Todos, agentsession.TodoItem{ID: "", Content: "bad"})
+		factory := newScriptedFactory(func(ctx context.Context, taskID string, attempt int, input StepInput) (StepOutput, error) {
+			_ = ctx
+			_ = taskID
+			_ = attempt
+			_ = input
+			return successStep("a"), nil
+		})
+		scheduler, err := NewScheduler(store, factory, SchedulerConfig{})
+		if err != nil {
+			t.Fatalf("NewScheduler() error = %v", err)
+		}
+
+		_, err = scheduler.Run(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "empty todo id") {
+			t.Fatalf("Run() error = %v, want empty todo id", err)
+		}
+	})
 }
 
 func TestBuildTaskGraphValidation(t *testing.T) {
@@ -538,6 +622,48 @@ func TestSchedulerRunCancellationWriteback(t *testing.T) {
 	}
 }
 
+func TestSchedulerRunClaimErrorCancelsRunningTodo(t *testing.T) {
+	t.Parallel()
+
+	baseStore := newSchedulerStore(t, []agentsession.TodoItem{
+		{ID: "a", Content: "task-a"},
+		{ID: "b", Content: "task-b"},
+	})
+	store := &schedulerStoreWithClaimError{
+		schedulerStore: baseStore,
+		claimErrors: map[string]error{
+			"b": errors.New("injected claim failure"),
+		},
+	}
+	factory := newScriptedFactory(func(ctx context.Context, taskID string, attempt int, input StepInput) (StepOutput, error) {
+		_ = ctx
+		_ = taskID
+		_ = attempt
+		_ = input
+		return successStep(taskID), nil
+	})
+	scheduler, err := NewScheduler(store, factory, SchedulerConfig{
+		MaxConcurrency: 2,
+		PollInterval:   2 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewScheduler() error = %v", err)
+	}
+
+	_, err = scheduler.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "claim todo") {
+		t.Fatalf("Run() error = %v, want claim todo error", err)
+	}
+
+	item, ok := store.FindTodo("a")
+	if !ok {
+		t.Fatalf("FindTodo(a) not found")
+	}
+	if item.Status != agentsession.TodoStatusCanceled {
+		t.Fatalf("todo a status = %q, want canceled", item.Status)
+	}
+}
+
 type fakeFactory struct {
 	create func(role Role) (WorkerRuntime, error)
 }
@@ -550,6 +676,7 @@ type fakeWorker struct {
 	startErr   error
 	stepResult StepResult
 	stepErr    error
+	stepFunc   func(ctx context.Context) (StepResult, error)
 	result     Result
 	resultErr  error
 	state      State
@@ -567,6 +694,9 @@ func (w *fakeWorker) Start(task Task, budget Budget, capability Capability) erro
 }
 
 func (w *fakeWorker) Step(ctx context.Context) (StepResult, error) {
+	if w.stepFunc != nil {
+		return w.stepFunc(ctx)
+	}
 	_ = ctx
 	return w.stepResult, w.stepErr
 }
@@ -678,6 +808,90 @@ func TestExecuteTaskWithFactoryBranches(t *testing.T) {
 			t.Fatalf("error = %v, want fallback state error", err)
 		}
 	})
+
+	t.Run("step error fallback without result", func(t *testing.T) {
+		t.Parallel()
+		result, err := executeTaskWithFactory(context.Background(), fakeFactory{
+			create: func(role Role) (WorkerRuntime, error) {
+				_ = role
+				return &fakeWorker{
+					stepErr:   errors.New("step failed"),
+					resultErr: errors.New("result unavailable"),
+				}, nil
+			},
+		}, scheduleTaskInput{Role: RoleCoder, Task: Task{ID: "t", Goal: "g"}})
+		if err == nil || !strings.Contains(err.Error(), "step failed") {
+			t.Fatalf("error = %v, want step failed", err)
+		}
+		if result.State != StateFailed || result.StopReason != StopReasonError {
+			t.Fatalf("result = %+v, want failed fallback", result)
+		}
+	})
+
+	t.Run("step retry then success", func(t *testing.T) {
+		t.Parallel()
+		result, err := executeTaskWithFactory(context.Background(), fakeFactory{
+			create: func(role Role) (WorkerRuntime, error) {
+				_ = role
+				calls := 0
+				return &fakeWorker{
+					stepFunc: func(ctx context.Context) (StepResult, error) {
+						_ = ctx
+						calls++
+						if calls == 1 {
+							return StepResult{Done: false}, nil
+						}
+						return StepResult{Done: true}, nil
+					},
+					result: Result{
+						State:      StateSucceeded,
+						StopReason: StopReasonCompleted,
+					},
+				}, nil
+			},
+		}, scheduleTaskInput{Role: RoleCoder, Task: Task{ID: "t", Goal: "g"}})
+		if err != nil {
+			t.Fatalf("error = %v, want nil", err)
+		}
+		if result.State != StateSucceeded {
+			t.Fatalf("result state = %q, want succeeded", result.State)
+		}
+	})
+
+	t.Run("done but result failed with explicit message", func(t *testing.T) {
+		t.Parallel()
+		_, err := executeTaskWithFactory(context.Background(), fakeFactory{
+			create: func(role Role) (WorkerRuntime, error) {
+				_ = role
+				return &fakeWorker{
+					stepResult: StepResult{Done: true},
+					result: Result{
+						State: StateFailed,
+						Error: "explicit fail",
+					},
+				}, nil
+			},
+		}, scheduleTaskInput{Role: RoleCoder, Task: Task{ID: "t", Goal: "g"}})
+		if err == nil || !strings.Contains(err.Error(), "explicit fail") {
+			t.Fatalf("error = %v, want explicit fail", err)
+		}
+	})
+
+	t.Run("done but result unavailable", func(t *testing.T) {
+		t.Parallel()
+		_, err := executeTaskWithFactory(context.Background(), fakeFactory{
+			create: func(role Role) (WorkerRuntime, error) {
+				_ = role
+				return &fakeWorker{
+					stepResult: StepResult{Done: true},
+					resultErr:  errors.New("result unavailable"),
+				}, nil
+			},
+		}, scheduleTaskInput{Role: RoleCoder, Task: Task{ID: "t", Goal: "g"}})
+		if err == nil || !strings.Contains(err.Error(), "result unavailable") {
+			t.Fatalf("error = %v, want result unavailable", err)
+		}
+	})
 }
 
 func TestSchedulerHelpersCoverage(t *testing.T) {
@@ -740,6 +954,17 @@ func TestSchedulerHelpersCoverage(t *testing.T) {
 	}
 	if got := resolveTaskFailureReason(taskOutcome{}); got == "" {
 		t.Fatalf("resolveTaskFailureReason() should return fallback")
+	}
+
+	if got := defaultRetryBackoff(0); got != 0 {
+		t.Fatalf("defaultRetryBackoff(0) = %v, want 0", got)
+	}
+	cfg := (SchedulerConfig{MaxRetries: -1}).normalize()
+	if cfg.MaxRetries != 0 {
+		t.Fatalf("normalize MaxRetries = %d, want 0", cfg.MaxRetries)
+	}
+	if _, err := buildTaskGraph([]agentsession.TodoItem{{ID: " ", Content: "bad"}}); err == nil {
+		t.Fatalf("buildTaskGraph should reject empty id")
 	}
 }
 

@@ -92,6 +92,7 @@ func (s *Scheduler) Run(ctx context.Context) (ScheduleResult, error) {
 		snapshot := mapTodosByID(s.store.ListTodos())
 		ready, err := s.collectReadyTasks(snapshot, graph, state)
 		if err != nil {
+			s.cancelRunningTodos(state, err)
 			return finalize(result), err
 		}
 
@@ -100,6 +101,7 @@ func (s *Scheduler) Run(ctx context.Context) (ScheduleResult, error) {
 
 		started, err := s.startReadyTasks(ctx, ready, state)
 		if err != nil {
+			s.cancelRunningTodos(state, err)
 			return finalize(result), err
 		}
 		if started > 0 {

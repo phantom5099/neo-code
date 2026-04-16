@@ -374,6 +374,24 @@ func TestTodoInternalHelpers(t *testing.T) {
 	if got := normalizeTodoDependencies([]string{" a ", "a", "b"}); len(got) != 2 {
 		t.Fatalf("normalizeTodoDependencies unexpected result: %+v", got)
 	}
+
+	normalized, err := normalizeTodoItem(TodoItem{
+		ID:            "n1",
+		Content:       "content",
+		Status:        TodoStatusBlocked,
+		FailureReason: " retry failed ",
+		RetryCount:    -3,
+		RetryLimit:    -2,
+	})
+	if err != nil {
+		t.Fatalf("normalizeTodoItem error = %v", err)
+	}
+	if normalized.FailureReason != "retry failed" {
+		t.Fatalf("blocked todo should keep failure reason, got %q", normalized.FailureReason)
+	}
+	if normalized.RetryCount != 0 || normalized.RetryLimit != 0 {
+		t.Fatalf("negative retry fields should be normalized to 0, got count=%d limit=%d", normalized.RetryCount, normalized.RetryLimit)
+	}
 }
 
 func TestApplyTodoPatchCoverage(t *testing.T) {
@@ -436,6 +454,20 @@ func TestApplyTodoPatchCoverage(t *testing.T) {
 	}
 	if !next.NextRetryAt.IsZero() {
 		t.Fatalf("in_progress should clear next_retry_at, got %+v", next)
+	}
+
+	blocked := TodoStatusBlocked
+	blockedReason := "retry later"
+	blockedPatch := TodoPatch{
+		Status:        &blocked,
+		FailureReason: &blockedReason,
+	}
+	blockedNext, err := applyTodoPatch(base, blockedPatch)
+	if err != nil {
+		t.Fatalf("applyTodoPatch(blocked) error = %v", err)
+	}
+	if blockedNext.FailureReason != blockedReason {
+		t.Fatalf("blocked status should preserve failure reason, got %q", blockedNext.FailureReason)
 	}
 
 	invalidStatus := TodoStatus("paused")

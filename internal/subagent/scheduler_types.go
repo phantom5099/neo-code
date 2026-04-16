@@ -136,13 +136,10 @@ func (c SchedulerConfig) normalize() SchedulerConfig {
 	return out
 }
 
-// defaultRoleSelector 生成默认角色选择器：优先读取 owner_id 中的合法角色，否则回退默认角色。
+// defaultRoleSelector 生成默认角色选择器：仅使用调度器可信默认角色，避免读取任务可变元数据。
 func defaultRoleSelector(defaultRole Role) RoleSelector {
 	return func(todo agentsession.TodoItem) Role {
-		candidate := Role(todo.OwnerID)
-		if candidate.Valid() {
-			return candidate
-		}
+		_ = todo
 		return defaultRole
 	}
 }
