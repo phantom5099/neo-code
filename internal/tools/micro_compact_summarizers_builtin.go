@@ -6,19 +6,30 @@ import (
 	"unicode/utf8"
 )
 
+type builtinSummarizerRegistration struct {
+	toolName   string
+	summarizer ContentSummarizer
+}
+
+var builtinSummarizers = []builtinSummarizerRegistration{
+	{toolName: ToolNameBash, summarizer: bashSummarizer},
+	{toolName: ToolNameFilesystemReadFile, summarizer: readFileSummarizer},
+	{toolName: ToolNameFilesystemWriteFile, summarizer: writeFileSummarizer},
+	{toolName: ToolNameFilesystemEdit, summarizer: editSummarizer},
+	{toolName: ToolNameFilesystemGrep, summarizer: grepSummarizer},
+	{toolName: ToolNameFilesystemGlob, summarizer: globSummarizer},
+	{toolName: ToolNameWebFetch, summarizer: webfetchSummarizer},
+}
+
 // RegisterBuiltinSummarizers 将所有内置工具的内容摘要器注册到 Registry。
 // 应在所有工具注册完成后调用一次。
 func RegisterBuiltinSummarizers(registry *Registry) {
 	if registry == nil {
 		return
 	}
-	registry.RegisterSummarizer(ToolNameBash, bashSummarizer)
-	registry.RegisterSummarizer(ToolNameFilesystemReadFile, readFileSummarizer)
-	registry.RegisterSummarizer(ToolNameFilesystemWriteFile, writeFileSummarizer)
-	registry.RegisterSummarizer(ToolNameFilesystemEdit, editSummarizer)
-	registry.RegisterSummarizer(ToolNameFilesystemGrep, grepSummarizer)
-	registry.RegisterSummarizer(ToolNameFilesystemGlob, globSummarizer)
-	registry.RegisterSummarizer(ToolNameWebFetch, webfetchSummarizer)
+	for _, item := range builtinSummarizers {
+		registry.RegisterSummarizer(item.toolName, item.summarizer)
+	}
 }
 
 const summaryMaxRunes = 200
@@ -171,14 +182,11 @@ func globSummarizer(content string, metadata map[string]string, isError bool) st
 	return truncateRunes(strings.Join(parts, " "), summaryMaxRunes)
 }
 
-// webfetchSummarizer 保留 URL、截断标记等持久化元数据。
+// webfetchSummarizer 保留可稳定持久化的 webfetch 结果标记。
 func webfetchSummarizer(content string, metadata map[string]string, isError bool) string {
 	var parts []string
 	parts = append(parts, "[summary] webfetch")
 
-	if url := metadata["url"]; url != "" {
-		parts = append(parts, url)
-	}
 	if truncated := metadata["truncated"]; truncated == "true" {
 		parts = append(parts, "truncated=true")
 	}
