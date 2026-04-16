@@ -134,6 +134,9 @@ func TestQiniuProviderConfig(t *testing.T) {
 	if provider.Model != QiniuDefaultModel {
 		t.Fatalf("expected default model %q, got %q", QiniuDefaultModel, provider.Model)
 	}
+	if provider.Model != "openai/gpt-5" {
+		t.Fatalf("expected compatibility default model %q, got %q", "openai/gpt-5", provider.Model)
+	}
 	if provider.APIKeyEnv != QiniuDefaultAPIKeyEnv {
 		t.Fatalf("expected API key env %q, got %q", QiniuDefaultAPIKeyEnv, provider.APIKeyEnv)
 	}

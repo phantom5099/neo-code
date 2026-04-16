@@ -55,10 +55,7 @@ func renderImagePlaceholder(image *providertypes.ImagePart, mode imageRenderMode
 		if url == "" {
 			return "[Image]"
 		}
-		if mode == imageRenderModeDisplay {
-			return "[Image]"
-		}
-		return "[Image:remote] " + url
+		return renderImageByMode(mode, "[Image]", "[Image:remote]", "[Image:remote] "+url)
 	case providertypes.ImageSourceSessionAsset:
 		if image.Asset == nil {
 			return "[Image]"
@@ -68,14 +65,24 @@ func renderImagePlaceholder(image *providertypes.ImagePart, mode imageRenderMode
 		if assetID == "" {
 			return "[Image]"
 		}
-		if mode == imageRenderModeDisplay {
-			return "[Image]"
-		}
+		verbose := "[Image:session_asset] " + assetID
 		if mime == "" {
-			return "[Image:session_asset] " + assetID
+			return renderImageByMode(mode, "[Image]", "[Image:session_asset]", verbose)
 		}
-		return "[Image:session_asset] " + assetID + " (" + mime + ")"
+		return renderImageByMode(mode, "[Image]", "[Image:session_asset]", verbose+" ("+mime+")")
 	default:
 		return "[Image]"
+	}
+}
+
+// renderImageByMode 根据渲染模式选择图片占位文本，统一不同场景的脱敏与详细输出分支。
+func renderImageByMode(mode imageRenderMode, displayText string, transcriptText string, compactText string) string {
+	switch mode {
+	case imageRenderModeDisplay:
+		return displayText
+	case imageRenderModeTranscript:
+		return transcriptText
+	default:
+		return compactText
 	}
 }

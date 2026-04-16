@@ -49,6 +49,47 @@ func TestTranscriptStoreSaveSanitizesSessionIDAndWritesJSONL(t *testing.T) {
 	}
 }
 
+func TestTranscriptStoreSaveRedactsImageIdentifiersInTranscriptContent(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	store := transcriptStore{
+		now:         func() time.Time { return time.Unix(1712052000, 123456789) },
+		randomToken: func() (string, error) { return "token1234", nil },
+		userHomeDir: func() (string, error) { return home, nil },
+		mkdirAll:    os.MkdirAll,
+		writeFile:   os.WriteFile,
+		rename:      os.Rename,
+		remove:      os.Remove,
+	}
+
+	_, path, err := store.Save([]providertypes.Message{
+		{
+			Role: providertypes.RoleUser,
+			Parts: []providertypes.ContentPart{
+				providertypes.NewTextPart("look "),
+				providertypes.NewRemoteImagePart("https://example.com/a.png?token=secret"),
+				providertypes.NewSessionAssetImagePart("asset-123", "image/png"),
+			},
+		},
+	}, "session", filepath.Join(home, "workspace"))
+	if err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read transcript: %v", err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "[Image:remote]") || !strings.Contains(text, "[Image:session_asset]") {
+		t.Fatalf("expected redacted image markers in transcript, got %q", text)
+	}
+	if strings.Contains(text, "token=secret") || strings.Contains(text, "asset-123") {
+		t.Fatalf("expected transcript to redact image identifiers, got %q", text)
+	}
+}
+
 func TestTranscriptFileModeForOS(t *testing.T) {
 	t.Parallel()
 

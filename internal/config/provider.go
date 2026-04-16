@@ -198,7 +198,7 @@ const (
 
 	QiniuName             = "qiniu"
 	QiniuDefaultBaseURL   = "https://api.qnaigc.com/v1"
-	QiniuDefaultModel     = "z-ai/glm-5.1"
+	QiniuDefaultModel     = "openai/gpt-5"
 	QiniuDefaultAPIKeyEnv = "QINIU_API_KEY"
 )
 
