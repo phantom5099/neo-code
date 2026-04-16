@@ -44,6 +44,7 @@ type ServerOptions struct {
 	MaxConnections int
 	ReadTimeout    time.Duration
 	WriteTimeout   time.Duration
+	Relay          *StreamRelay
 	listenFn       func(address string) (net.Listener, error)
 }
 
@@ -55,6 +56,7 @@ type Server struct {
 	maxConnections int
 	readTimeout    time.Duration
 	writeTimeout   time.Duration
+	relay          *StreamRelay
 
 	mu       sync.Mutex
 	listener net.Listener
@@ -102,6 +104,13 @@ func NewServer(options ServerOptions) (*Server, error) {
 		writeTimeout = DefaultWriteTimeout
 	}
 
+	relay := options.Relay
+	if relay == nil {
+		relay = NewStreamRelay(StreamRelayOptions{
+			Logger: logger,
+		})
+	}
+
 	return &Server{
 		listenAddress:  listenAddress,
 		logger:         logger,
@@ -109,6 +118,7 @@ func NewServer(options ServerOptions) (*Server, error) {
 		maxConnections: maxConnections,
 		readTimeout:    readTimeout,
 		writeTimeout:   writeTimeout,
+		relay:          relay,
 		conns:          make(map[net.Conn]struct{}),
 	}, nil
 }
@@ -135,6 +145,10 @@ func (s *Server) Serve(ctx context.Context, runtimePort RuntimePort) error {
 	s.mu.Unlock()
 
 	s.logger.Printf("listening on %s", s.listenAddress)
+	if s.relay == nil {
+		s.relay = NewStreamRelay(StreamRelayOptions{Logger: s.logger})
+	}
+	s.relay.Start(ctx, runtimePort)
 
 	go func() {
 		<-ctx.Done()
@@ -248,11 +262,47 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn, runtimePor
 	}()
 
 	reader := bufio.NewReader(conn)
+
+	connectionContext, cancelConnection := context.WithCancel(ctx)
+	defer cancelConnection()
+
+	relay := s.relay
+	if relay == nil {
+		relay = NewStreamRelay(StreamRelayOptions{Logger: s.logger})
+	}
+
+	connectionID := NewConnectionID()
+	connectionContext = WithConnectionID(connectionContext, connectionID)
+	connectionContext = WithStreamRelay(connectionContext, relay)
+
 	encoder := json.NewEncoder(conn)
+	registerErr := relay.RegisterConnection(ConnectionRegistration{
+		ConnectionID: connectionID,
+		Channel:      StreamChannelIPC,
+		Context:      connectionContext,
+		Cancel:       cancelConnection,
+		Write: func(message RelayMessage) error {
+			if message.Kind != relayMessageKindJSON {
+				return fmt.Errorf("ipc connection only supports json messages")
+			}
+			if err := s.applyWriteDeadline(conn); err != nil {
+				return err
+			}
+			return encoder.Encode(message.Payload)
+		},
+		Close: func() {
+			_ = conn.Close()
+		},
+	})
+	if registerErr != nil {
+		s.logger.Printf("register ipc connection failed: %v", registerErr)
+		return
+	}
+	defer relay.dropConnection(connectionID)
 
 	for {
 		select {
-		case <-ctx.Done():
+		case <-connectionContext.Done():
 			return
 		default:
 		}
@@ -276,7 +326,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn, runtimePor
 			}
 			if errors.Is(err, errFrameTooLarge) {
 				s.logger.Printf("decode frame failed: %v", err)
-				_ = s.writeRPCResponse(conn, encoder, protocol.NewJSONRPCErrorResponse(
+				_ = s.writeRPCResponseDirect(conn, encoder, protocol.NewJSONRPCErrorResponse(
 					nil,
 					protocol.NewJSONRPCError(
 						protocol.JSONRPCCodeInvalidRequest,
@@ -288,7 +338,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn, runtimePor
 			}
 
 			s.logger.Printf("decode frame failed: %v", err)
-			_ = s.writeRPCResponse(conn, encoder, protocol.NewJSONRPCErrorResponse(
+			_ = s.writeRPCResponseDirect(conn, encoder, protocol.NewJSONRPCErrorResponse(
 				nil,
 				protocol.NewJSONRPCError(
 					protocol.JSONRPCCodeParseError,
@@ -299,11 +349,19 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn, runtimePor
 			return
 		}
 
-		rpcResponse := s.dispatchRPCRequest(ctx, rpcRequest, runtimePort)
-		if !s.writeRPCResponse(conn, encoder, rpcResponse) {
+		rpcResponse := s.dispatchRPCRequest(connectionContext, rpcRequest, runtimePort)
+		if !relay.SendJSONRPCResponse(connectionID, rpcResponse) {
 			return
 		}
 	}
+}
+
+// writeRPCResponseDirect 在连接即将结束前同步写回关键响应，避免异步队列尚未消费即断连。
+func (s *Server) writeRPCResponseDirect(conn net.Conn, encoder *json.Encoder, response protocol.JSONRPCResponse) error {
+	if err := s.applyWriteDeadline(conn); err != nil {
+		return err
+	}
+	return encoder.Encode(response)
 }
 
 // applyReadDeadline 为当前连接设置下一次读操作超时，避免慢读连接长期占用协程。
@@ -320,19 +378,6 @@ func (s *Server) applyWriteDeadline(conn net.Conn) error {
 		return nil
 	}
 	return conn.SetWriteDeadline(time.Now().Add(s.writeTimeout))
-}
-
-// writeRPCResponse 统一处理 JSON-RPC 响应写回及写超时设置，失败时返回 false 供上层快速终止连接循环。
-func (s *Server) writeRPCResponse(conn net.Conn, encoder *json.Encoder, response protocol.JSONRPCResponse) bool {
-	if err := s.applyWriteDeadline(conn); err != nil {
-		s.logger.Printf("set write deadline failed: %v", err)
-		return false
-	}
-	if err := encoder.Encode(response); err != nil {
-		s.logger.Printf("write frame failed: %v", err)
-		return false
-	}
-	return true
 }
 
 // isTimeoutError 判断错误是否为网络超时，用于区分慢连接超时与协议错误。
