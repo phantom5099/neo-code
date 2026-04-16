@@ -282,8 +282,18 @@ func TestWorkerStartCapabilityPolicyGuard(t *testing.T) {
 	}
 	if err := wPath.Start(Task{ID: "t-cap-path", Goal: "goal"}, Budget{}, Capability{
 		AllowedPaths: []string{"/tmp/workspace"},
-	}); err == nil {
-		t.Fatalf("expected unsupported allowed paths to fail")
+	}); err != nil {
+		t.Fatalf("expected allowed paths to pass, got %v", err)
+	}
+	if err := wPath.Stop(StopReasonCanceled); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	resultWithPath, err := wPath.Result()
+	if err != nil {
+		t.Fatalf("Result() error = %v", err)
+	}
+	if len(resultWithPath.Capability.AllowedPaths) != 1 || resultWithPath.Capability.AllowedPaths[0] != "/tmp/workspace" {
+		t.Fatalf("capability paths = %v, want [/tmp/workspace]", resultWithPath.Capability.AllowedPaths)
 	}
 
 	w2, err := NewWorker(RoleReviewer, policy, nil)
@@ -302,6 +312,24 @@ func TestWorkerStartCapabilityPolicyGuard(t *testing.T) {
 	}
 	if len(result.Capability.AllowedTools) != len(policy.AllowedTools) {
 		t.Fatalf("capability tools = %v, want policy tools %v", result.Capability.AllowedTools, policy.AllowedTools)
+	}
+
+	w3, err := NewWorker(RoleReviewer, policy, nil)
+	if err != nil {
+		t.Fatalf("NewWorker() error = %v", err)
+	}
+	if err := w3.Start(Task{ID: "t-cap-workspace-default", Goal: "goal", Workspace: "/tmp/sub-task"}, Budget{}, Capability{}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := w3.Stop(StopReasonCanceled); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	resultWithWorkspace, err := w3.Result()
+	if err != nil {
+		t.Fatalf("Result() error = %v", err)
+	}
+	if len(resultWithWorkspace.Capability.AllowedPaths) != 1 || resultWithWorkspace.Capability.AllowedPaths[0] != "/tmp/sub-task" {
+		t.Fatalf("workspace capability path = %v, want [/tmp/sub-task]", resultWithWorkspace.Capability.AllowedPaths)
 	}
 }
 

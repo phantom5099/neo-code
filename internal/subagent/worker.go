@@ -72,7 +72,11 @@ func (w *worker) Start(task Task, budget Budget, capability Capability) error {
 
 	w.task = task
 	w.budget = budget.normalize(w.policy.DefaultBudget)
-	effectiveCapability, err := bindCapabilityToPolicy(capability.normalize(), w.policy)
+	capabilityInput := capability.normalize()
+	if len(capabilityInput.AllowedPaths) == 0 && strings.TrimSpace(task.Workspace) != "" {
+		capabilityInput.AllowedPaths = []string{strings.TrimSpace(task.Workspace)}
+	}
+	effectiveCapability, err := bindCapabilityToPolicy(capabilityInput, w.policy)
 	if err != nil {
 		return err
 	}
@@ -174,10 +178,6 @@ func (w *worker) Step(ctx context.Context) (StepResult, error) {
 
 // bindCapabilityToPolicy 将 capability 约束在角色策略允许的工具集合内。
 func bindCapabilityToPolicy(capability Capability, policy RolePolicy) (Capability, error) {
-	if len(capability.AllowedPaths) > 0 {
-		return Capability{}, errorsf("capability allowed paths is not supported yet")
-	}
-
 	allowedPolicyTools := dedupeAndTrim(policy.AllowedTools)
 	allowedSet := make(map[string]struct{}, len(allowedPolicyTools))
 	for _, tool := range allowedPolicyTools {
