@@ -298,11 +298,17 @@ func (m *DefaultManager) verifyCapabilityToken(action security.Action) error {
 
 	normalized := token.Normalize()
 	taskID := strings.TrimSpace(action.Payload.TaskID)
-	if taskID != "" && normalized.TaskID != taskID {
+	if taskID == "" {
+		return errors.New("capability token requires non-empty action task_id")
+	}
+	if normalized.TaskID != taskID {
 		return errors.New("capability token task_id does not match action")
 	}
 	agentID := strings.TrimSpace(action.Payload.AgentID)
-	if agentID != "" && normalized.AgentID != agentID {
+	if agentID == "" {
+		return errors.New("capability token requires non-empty action agent_id")
+	}
+	if normalized.AgentID != agentID {
 		return errors.New("capability token agent_id does not match action")
 	}
 	if err := normalized.ValidateAt(time.Now().UTC()); err != nil {

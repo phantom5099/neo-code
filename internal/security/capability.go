@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -544,13 +545,17 @@ func normalizeLowerDistinctList(values []string) []string {
 	return out
 }
 
-// normalizePathKey 生成统一比较用路径键，屏蔽大小写与分隔符差异。
+// normalizePathKey 生成统一比较用路径键：始终清理路径与分隔符，仅在 Windows 下忽略大小写。
 func normalizePathKey(path string) string {
 	trimmed := strings.TrimSpace(path)
 	if trimmed == "" {
 		return ""
 	}
-	return filepath.ToSlash(strings.ToLower(filepath.Clean(trimmed)))
+	normalized := filepath.ToSlash(filepath.Clean(trimmed))
+	if runtime.GOOS == "windows" {
+		return strings.ToLower(normalized)
+	}
+	return normalized
 }
 
 // resolveActionPath 基于 workdir 解析 action 的路径目标，确保相对路径能与 allowlist 比较。

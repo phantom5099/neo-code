@@ -1471,6 +1471,46 @@ func TestDefaultManagerExecuteCapabilityTokenValidation(t *testing.T) {
 			},
 			expectErr: "task_id does not match action",
 		},
+		{
+			name: "deny missing task id binding",
+			buildInput: func(t *testing.T, manager *DefaultManager) ToolCallInput {
+				t.Helper()
+				signed, err := manager.CapabilitySigner().Sign(baseToken)
+				if err != nil {
+					t.Fatalf("sign token: %v", err)
+				}
+				return ToolCallInput{
+					ID:              "call-missing-task",
+					Name:            "filesystem_read_file",
+					Arguments:       []byte(`{"path":"README.md"}`),
+					Workdir:         workdir,
+					TaskID:          "",
+					AgentID:         baseToken.AgentID,
+					CapabilityToken: &signed,
+				}
+			},
+			expectErr: "requires non-empty action task_id",
+		},
+		{
+			name: "deny missing agent id binding",
+			buildInput: func(t *testing.T, manager *DefaultManager) ToolCallInput {
+				t.Helper()
+				signed, err := manager.CapabilitySigner().Sign(baseToken)
+				if err != nil {
+					t.Fatalf("sign token: %v", err)
+				}
+				return ToolCallInput{
+					ID:              "call-missing-agent",
+					Name:            "filesystem_read_file",
+					Arguments:       []byte(`{"path":"README.md"}`),
+					Workdir:         workdir,
+					TaskID:          baseToken.TaskID,
+					AgentID:         "",
+					CapabilityToken: &signed,
+				}
+			},
+			expectErr: "requires non-empty action agent_id",
+		},
 	}
 
 	for _, tt := range testCases {

@@ -2,6 +2,7 @@ package security
 
 import (
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -298,5 +299,28 @@ func TestEvaluateCapabilityForEngine(t *testing.T) {
 	}
 	if !IsCapabilityDeniedResult(result) {
 		t.Fatalf("expected IsCapabilityDeniedResult to be true")
+	}
+}
+
+func TestNormalizePathKeyPlatformSemantics(t *testing.T) {
+	t.Parallel()
+
+	raw := filepath.Join("Workspace", "Sub", "..", "File.txt")
+	got := normalizePathKey(raw)
+	if got == "" {
+		t.Fatalf("expected normalized path key, got empty")
+	}
+
+	upper := normalizePathKey(filepath.Join("Workspace", "File.txt"))
+	lower := normalizePathKey(filepath.Join("workspace", "file.txt"))
+
+	if runtime.GOOS == "windows" {
+		if upper != lower {
+			t.Fatalf("windows path key should ignore case: %q vs %q", upper, lower)
+		}
+		return
+	}
+	if upper == lower {
+		t.Fatalf("non-windows path key should keep case sensitivity: %q vs %q", upper, lower)
 	}
 }
