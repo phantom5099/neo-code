@@ -34,7 +34,7 @@ func DetectImageMimeType(path string) string {
 	}
 
 	detected := mime.TypeByExtension(ext)
-	if detected != "" {
+	if detected != "" && detected != "application/octet-stream" {
 		return detected
 	}
 
