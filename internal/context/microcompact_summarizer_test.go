@@ -347,3 +347,33 @@ func TestCompactableToolCallIDsEmptyInput(t *testing.T) {
 		t.Fatalf("expected nil maps for empty input, got ids=%v names=%v", ids, names)
 	}
 }
+
+// TestHasCompactableToolMessage 验证工具块可压缩消息探测逻辑。
+func TestHasCompactableToolMessage(t *testing.T) {
+	t.Parallel()
+
+	span := internalcompact.MessageSpan{Start: 0, End: 3}
+	ids := map[string]struct{}{"call-1": {}}
+
+	t.Run("true_when_matching_tool_message_exists", func(t *testing.T) {
+		messages := []providertypes.Message{
+			{Role: providertypes.RoleAssistant, ToolCalls: []providertypes.ToolCall{{ID: "call-1", Name: "bash"}}},
+			{Role: providertypes.RoleTool, ToolCallID: "call-1", Parts: []providertypes.ContentPart{providertypes.NewTextPart("output")}},
+			{Role: providertypes.RoleUser, Parts: []providertypes.ContentPart{providertypes.NewTextPart("u")}},
+		}
+		if !hasCompactableToolMessage(messages, span, ids) {
+			t.Fatal("expected compactable tool message to be found")
+		}
+	})
+
+	t.Run("false_when_tool_messages_are_not_compactable", func(t *testing.T) {
+		messages := []providertypes.Message{
+			{Role: providertypes.RoleAssistant, ToolCalls: []providertypes.ToolCall{{ID: "call-1", Name: "bash"}}},
+			{Role: providertypes.RoleTool, ToolCallID: "call-1", IsError: true, Parts: []providertypes.ContentPart{providertypes.NewTextPart("error")}},
+			{Role: providertypes.RoleTool, ToolCallID: "call-2", Parts: []providertypes.ContentPart{providertypes.NewTextPart("other")}},
+		}
+		if hasCompactableToolMessage(messages, span, ids) {
+			t.Fatal("expected no compactable tool message")
+		}
+	})
+}

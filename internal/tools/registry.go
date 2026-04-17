@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sort"
 	"strings"
+	"sync"
 
 	providertypes "neo-code/internal/provider/types"
 	"neo-code/internal/security"
@@ -15,6 +16,7 @@ type Registry struct {
 	tools                   map[string]Tool
 	microCompactPolicies    map[string]MicroCompactPolicy
 	microCompactSummarizers map[string]ContentSummarizer
+	microCompactSummaryMu   sync.RWMutex
 	mcpRegistry             *mcp.Registry
 	mcpFactory              *mcp.AdapterFactory
 	mcpExposureFilter       mcp.ExposureFilter
@@ -110,6 +112,8 @@ func (r *Registry) RegisterSummarizer(toolName string, summarizer ContentSummari
 		return
 	}
 	name := strings.ToLower(strings.TrimSpace(toolName))
+	r.microCompactSummaryMu.Lock()
+	defer r.microCompactSummaryMu.Unlock()
 	if summarizer == nil {
 		delete(r.microCompactSummarizers, name)
 		return
@@ -119,7 +123,12 @@ func (r *Registry) RegisterSummarizer(toolName string, summarizer ContentSummari
 
 // MicroCompactSummarizer 返回指定工具的内容摘要器；无注册时返回 nil。
 func (r *Registry) MicroCompactSummarizer(name string) ContentSummarizer {
-	if r == nil || r.microCompactSummarizers == nil {
+	if r == nil {
+		return nil
+	}
+	r.microCompactSummaryMu.RLock()
+	defer r.microCompactSummaryMu.RUnlock()
+	if r.microCompactSummarizers == nil {
 		return nil
 	}
 	return r.microCompactSummarizers[strings.ToLower(strings.TrimSpace(name))]

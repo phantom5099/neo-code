@@ -2,6 +2,7 @@ package tools
 
 import (
 	"strings"
+	"sync"
 	"testing"
 	"unicode/utf8"
 )
@@ -354,6 +355,36 @@ func TestRegisterSummarizerNilRegistry(t *testing.T) {
 		t.Fatal("expected nil summarizer on nil registry")
 	}
 }
+
+func TestRegisterSummarizerConcurrentAccess(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	var wg sync.WaitGroup
+
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 200; j++ {
+				if j%3 == 0 {
+					registry.RegisterSummarizer("concurrent_tool", nil)
+					continue
+				}
+				registry.RegisterSummarizer("concurrent_tool", func(content string, metadata map[string]string, isError bool) string {
+					return "worker"
+				})
+				s := registry.MicroCompactSummarizer("concurrent_tool")
+				if s != nil {
+					_ = s("content", nil, false)
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+}
+
 func TestTruncateRunes(t *testing.T) {
 	t.Parallel()
 

@@ -50,12 +50,15 @@ func microCompactMessagesWithPolicies(messages []providertypes.Message, policies
 		if len(compactableIDs) == 0 {
 			continue
 		}
-		compactableContents := compactableToolMessageContents(cloned, span, compactableIDs)
-		if len(compactableContents) == 0 {
+		if retainedCompactableSpans < retainedToolSpans {
+			if hasCompactableToolMessage(cloned, span, compactableIDs) {
+				retainedCompactableSpans++
+			}
 			continue
 		}
-		if retainedCompactableSpans < retainedToolSpans {
-			retainedCompactableSpans++
+
+		compactableContents := compactableToolMessageContents(cloned, span, compactableIDs)
+		if len(compactableContents) == 0 {
 			continue
 		}
 
@@ -150,6 +153,16 @@ func compactableToolMessageContents(messages []providertypes.Message, span inter
 		contents[messageIndex] = content
 	}
 	return contents
+}
+
+// hasCompactableToolMessage 判断工具块中是否存在至少一条可压缩的工具消息。
+func hasCompactableToolMessage(messages []providertypes.Message, span internalcompact.MessageSpan, compactableIDs map[string]struct{}) bool {
+	for messageIndex := span.Start + 1; messageIndex < span.End; messageIndex++ {
+		if _, ok := compactableToolMessageContent(messages[messageIndex], compactableIDs); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // compactableToolMessageContent 判断 tool 消息是否可压缩，并返回渲染后的内容文本。

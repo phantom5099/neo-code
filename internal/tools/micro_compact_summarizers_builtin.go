@@ -22,7 +22,7 @@ var builtinSummarizers = []builtinSummarizerRegistration{
 }
 
 // RegisterBuiltinSummarizers 将所有内置工具的内容摘要器注册到 Registry。
-// 应在所有工具注册完成后调用一次。
+// 建议在启动装配阶段调用；可重复调用并覆盖同名摘要器。
 func RegisterBuiltinSummarizers(registry *Registry) {
 	if registry == nil {
 		return
