@@ -11,6 +11,7 @@ import (
 	"neo-code/internal/provider"
 	providertypes "neo-code/internal/provider/types"
 	"neo-code/internal/runtime/approval"
+	"neo-code/internal/security"
 	agentsession "neo-code/internal/session"
 	"neo-code/internal/skills"
 	"neo-code/internal/tools"
@@ -41,10 +42,13 @@ type Runtime interface {
 
 // UserInput 描述一次用户输入请求的最小运行参数。
 type UserInput struct {
-	SessionID string
-	RunID     string
-	Parts     []providertypes.ContentPart
-	Workdir   string
+	SessionID       string
+	RunID           string
+	Parts           []providertypes.ContentPart
+	Workdir         string
+	TaskID          string
+	AgentID         string
+	CapabilityToken *security.CapabilityToken
 }
 
 // ProviderFactory 负责基于运行期配置创建 provider 实例。
@@ -67,6 +71,7 @@ type AutoCompactThresholdResolver interface {
 type Service struct {
 	configManager                *config.Manager
 	sessionStore                 agentsession.Store
+	sessionAssetStore            agentsession.AssetStore
 	toolManager                  tools.Manager
 	providerFactory              ProviderFactory
 	contextBuilder               agentcontext.Builder
@@ -134,6 +139,11 @@ func NewWithFactory(
 // SetMemoExtractor 设置可选记忆提取钩子，由 Run 在结束时异步触发。
 func (s *Service) SetMemoExtractor(extractor MemoExtractor) {
 	s.memoExtractor = extractor
+}
+
+// SetSessionAssetStore 设置会话附件存储实现，用于 provider 请求阶段读取 session_asset。
+func (s *Service) SetSessionAssetStore(store agentsession.AssetStore) {
+	s.sessionAssetStore = store
 }
 
 // SetSkillsRegistry 设置运行时可选的 skills registry，用于激活校验与上下文注入。
