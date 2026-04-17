@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"neo-code/internal/config"
@@ -20,7 +21,10 @@ var saveCustomProviderForCreate = config.SaveCustomProvider
 
 const providerCreateRollbackReloadTimeout = 3 * time.Second
 const providerCreateCrossProcessLockName = ".provider-create.lock"
+const providerCreateCrossProcessLockLeaseName = ".lease"
 const providerCreateCrossProcessLockRetryInterval = 50 * time.Millisecond
+const providerCreateCrossProcessLockStaleThreshold = 30 * time.Second
+const providerCreateCrossProcessLockHeartbeatInterval = 2 * time.Second
 
 // CreateCustomProviderInput 定义新增自定义 Provider 所需的输入参数。
 type CreateCustomProviderInput struct {
@@ -294,11 +298,24 @@ func lockProviderCreateCrossProcess(ctx context.Context, baseDir string) (func()
 	lockPath := filepath.Join(baseDir, providerCreateCrossProcessLockName)
 	for {
 		if err := os.Mkdir(lockPath, 0o700); err == nil {
+			if err := touchProviderCreateLockLease(lockPath, time.Now()); err != nil {
+				_ = os.RemoveAll(lockPath)
+				return nil, fmt.Errorf("selection: initialize create lock lease: %w", err)
+			}
+			stopHeartbeat := startProviderCreateLockHeartbeat(lockPath)
 			return func() {
-				_ = os.Remove(lockPath)
+				stopHeartbeat()
+				_ = os.RemoveAll(lockPath)
 			}, nil
 		} else if !os.IsExist(err) {
 			return nil, fmt.Errorf("selection: acquire create lock: %w", err)
+		}
+		reclaimed, reclaimErr := tryReclaimStaleProviderCreateLock(lockPath, time.Now())
+		if reclaimErr != nil {
+			return nil, fmt.Errorf("selection: reclaim stale create lock: %w", reclaimErr)
+		}
+		if reclaimed {
+			continue
 		}
 
 		timer := time.NewTimer(providerCreateCrossProcessLockRetryInterval)
@@ -311,4 +328,70 @@ func lockProviderCreateCrossProcess(ctx context.Context, baseDir string) (func()
 		case <-timer.C:
 		}
 	}
+}
+
+// startProviderCreateLockHeartbeat 周期性刷新锁租约，避免长流程被误判为陈旧锁。
+func startProviderCreateLockHeartbeat(lockPath string) func() {
+	done := make(chan struct{})
+	var once sync.Once
+
+	go func() {
+		ticker := time.NewTicker(providerCreateCrossProcessLockHeartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				_ = touchProviderCreateLockLease(lockPath, time.Now())
+			}
+		}
+	}()
+
+	return func() {
+		once.Do(func() {
+			close(done)
+		})
+	}
+}
+
+// tryReclaimStaleProviderCreateLock 尝试回收超时未续租的锁目录。
+func tryReclaimStaleProviderCreateLock(lockPath string, now time.Time) (bool, error) {
+	leasePath := providerCreateLockLeasePath(lockPath)
+	info, err := os.Stat(leasePath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return false, err
+		}
+		// 兼容旧锁：租约文件缺失时使用目录时间判定陈旧。
+		info, err = os.Stat(lockPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return true, nil
+			}
+			return false, err
+		}
+	}
+
+	if now.Sub(info.ModTime()) < providerCreateCrossProcessLockStaleThreshold {
+		return false, nil
+	}
+	if err := os.RemoveAll(lockPath); err != nil && !os.IsNotExist(err) {
+		return false, err
+	}
+	return true, nil
+}
+
+// touchProviderCreateLockLease 写入/刷新锁租约时间戳。
+func touchProviderCreateLockLease(lockPath string, now time.Time) error {
+	leasePath := providerCreateLockLeasePath(lockPath)
+	if err := os.WriteFile(leasePath, []byte(now.UTC().Format(time.RFC3339Nano)), 0o600); err != nil {
+		return err
+	}
+	return os.Chtimes(leasePath, now, now)
+}
+
+// providerCreateLockLeasePath 返回锁租约文件路径。
+func providerCreateLockLeasePath(lockPath string) string {
+	return filepath.Join(lockPath, providerCreateCrossProcessLockLeaseName)
 }

@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -409,6 +410,56 @@ func TestCreateCustomProviderSerializesAcrossManagersSharingBaseDir(t *testing.T
 	}
 	if err := <-errBCh; err != nil {
 		t.Fatalf("expected second manager create to succeed, got %v", err)
+	}
+}
+
+func TestLockProviderCreateCrossProcessReclaimsStaleLock(t *testing.T) {
+	baseDir := t.TempDir()
+	lockPath := filepath.Join(baseDir, providerCreateCrossProcessLockName)
+	if err := os.Mkdir(lockPath, 0o700); err != nil {
+		t.Fatalf("Mkdir() error = %v", err)
+	}
+
+	staleTime := time.Now().Add(-providerCreateCrossProcessLockStaleThreshold - time.Second)
+	if err := touchProviderCreateLockLease(lockPath, staleTime); err != nil {
+		t.Fatalf("touchProviderCreateLockLease() error = %v", err)
+	}
+
+	release, err := lockProviderCreateCrossProcess(context.Background(), baseDir)
+	if err != nil {
+		t.Fatalf("lockProviderCreateCrossProcess() error = %v", err)
+	}
+	defer release()
+
+	leaseInfo, statErr := os.Stat(providerCreateLockLeasePath(lockPath))
+	if statErr != nil {
+		t.Fatalf("Stat() lease error = %v", statErr)
+	}
+	if !leaseInfo.ModTime().After(staleTime) {
+		t.Fatalf("expected reclaimed lock lease modtime after stale time, got %v <= %v", leaseInfo.ModTime(), staleTime)
+	}
+}
+
+func TestLockProviderCreateCrossProcessWaitsForFreshLockUntilContextDone(t *testing.T) {
+	baseDir := t.TempDir()
+	lockPath := filepath.Join(baseDir, providerCreateCrossProcessLockName)
+	if err := os.Mkdir(lockPath, 0o700); err != nil {
+		t.Fatalf("Mkdir() error = %v", err)
+	}
+	if err := touchProviderCreateLockLease(lockPath, time.Now()); err != nil {
+		t.Fatalf("touchProviderCreateLockLease() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+	defer cancel()
+
+	release, err := lockProviderCreateCrossProcess(ctx, baseDir)
+	if err == nil {
+		release()
+		t.Fatal("expected lockProviderCreateCrossProcess() to fail on context timeout")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context deadline exceeded, got %v", err)
 	}
 }
 
