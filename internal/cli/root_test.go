@@ -21,6 +21,10 @@ import (
 	gatewayauth "neo-code/internal/gateway/auth"
 )
 
+func init() {
+	runSilentUpdateCheck = func(context.Context) {}
+}
+
 func TestNewRootCommandPassesWorkdirFlagToLauncher(t *testing.T) {
 	originalLauncher := launchRootProgram
 	t.Cleanup(func() { launchRootProgram = originalLauncher })
@@ -1189,6 +1193,67 @@ func TestShouldSkipGlobalPreload(t *testing.T) {
 	}
 	if shouldSkipGlobalPreload(nil) {
 		t.Fatal("nil command should not skip global preload")
+	}
+}
+
+func TestRootCommandRunsSilentUpdateCheckAfterPreload(t *testing.T) {
+	originalLauncher := launchRootProgram
+	originalPreload := runGlobalPreload
+	originalSilentCheck := runSilentUpdateCheck
+	t.Cleanup(func() { launchRootProgram = originalLauncher })
+	t.Cleanup(func() { runGlobalPreload = originalPreload })
+	t.Cleanup(func() { runSilentUpdateCheck = originalSilentCheck })
+
+	events := make([]string, 0, 3)
+	runGlobalPreload = func(context.Context) error {
+		events = append(events, "preload")
+		return nil
+	}
+	runSilentUpdateCheck = func(context.Context) {
+		events = append(events, "check")
+	}
+	launchRootProgram = func(context.Context, app.BootstrapOptions) error {
+		events = append(events, "run")
+		return nil
+	}
+
+	command := NewRootCommand()
+	command.SetArgs([]string{})
+	if err := command.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext() error = %v", err)
+	}
+	want := []string{"preload", "check", "run"}
+	if len(events) != len(want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+	for i := range want {
+		if events[i] != want[i] {
+			t.Fatalf("events[%d] = %q, want %q", i, events[i], want[i])
+		}
+	}
+}
+
+func TestURLDispatchSkipsSilentUpdateCheck(t *testing.T) {
+	originalSilentCheck := runSilentUpdateCheck
+	originalRunner := runURLDispatchCommand
+	t.Cleanup(func() { runSilentUpdateCheck = originalSilentCheck })
+	t.Cleanup(func() { runURLDispatchCommand = originalRunner })
+
+	var called bool
+	runSilentUpdateCheck = func(context.Context) {
+		called = true
+	}
+	runURLDispatchCommand = func(context.Context, urlDispatchCommandOptions) error {
+		return nil
+	}
+
+	command := NewRootCommand()
+	command.SetArgs([]string{"url-dispatch", "--url", "neocode://review?path=README.md"})
+	if err := command.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext() error = %v", err)
+	}
+	if called {
+		t.Fatal("expected silent update check to be skipped for url-dispatch")
 	}
 }
 

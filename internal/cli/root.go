@@ -3,18 +3,25 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
 	"neo-code/internal/app"
 	"neo-code/internal/config"
+	"neo-code/internal/updater"
+	"neo-code/internal/version"
 )
 
 var launchRootProgram = defaultRootProgramLauncher
 var newRootProgram = app.NewProgram
 var runGlobalPreload = defaultGlobalPreload
+var runSilentUpdateCheck = defaultSilentUpdateCheck
+
+const silentUpdateCheckTimeout = 3 * time.Second
 
 // GlobalFlags 描述 CLI 根命令当前支持的全局参数。
 type GlobalFlags struct {
@@ -24,6 +31,7 @@ type GlobalFlags struct {
 // Execute 负责执行 NeoCode 的 CLI 根命令。
 func Execute(ctx context.Context) error {
 	app.EnsureConsoleUTF8()
+	_ = ConsumeUpdateNotice()
 	return NewRootCommand().ExecuteContext(ctx)
 }
 
@@ -41,7 +49,11 @@ func NewRootCommand() *cobra.Command {
 			if shouldSkipGlobalPreload(cmd) {
 				return nil
 			}
-			return runGlobalPreload(cmd.Context())
+			if err := runGlobalPreload(cmd.Context()); err != nil {
+				return err
+			}
+			runSilentUpdateCheck(cmd.Context())
+			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			flags.Workdir = strings.TrimSpace(settings.GetString("workdir"))
@@ -56,6 +68,7 @@ func NewRootCommand() *cobra.Command {
 	cmd.AddCommand(
 		newGatewayCommand(),
 		newURLDispatchCommand(),
+		newUpdateCommand(),
 	)
 
 	return cmd
@@ -90,6 +103,32 @@ func defaultGlobalPreload(ctx context.Context) error {
 		return err
 	}
 	return config.LoadPersistedEnv("")
+}
+
+// defaultSilentUpdateCheck 在后台异步检查新版本并缓存退出后提示文案。
+func defaultSilentUpdateCheck(ctx context.Context) {
+	currentVersion := version.Current()
+	if !version.IsSemverRelease(currentVersion) {
+		return
+	}
+	parentCtx := context.WithoutCancel(ctx)
+
+	go func(parent context.Context, currentVersion string) {
+		checkCtx, cancel := context.WithTimeout(parent, silentUpdateCheckTimeout)
+		defer cancel()
+
+		result, err := updater.CheckLatest(checkCtx, updater.CheckOptions{
+			CurrentVersion:    currentVersion,
+			IncludePrerelease: false,
+		})
+		if err != nil || !result.HasUpdate {
+			return
+		}
+		if strings.TrimSpace(result.LatestVersion) == "" {
+			return
+		}
+		setUpdateNotice(fmt.Sprintf("🚀 发现新版本: %s，运行 neocode update 即可升级", result.LatestVersion))
+	}(parentCtx, currentVersion)
 }
 
 // shouldSkipGlobalPreload 判断当前命令是否应跳过全局预加载逻辑。
