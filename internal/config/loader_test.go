@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -1044,11 +1045,19 @@ func TestDeleteCustomProviderRemovesProviderDir(t *testing.T) {
 
 func TestLoadCustomProvidersReadDirAndStatErrors(t *testing.T) {
 	t.Run("providers dir read error", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Windows does not support chmod 000 for directories")
+		}
+
 		baseDir := t.TempDir()
 		providersPath := filepath.Join(baseDir, providersDirName)
-		if err := os.WriteFile(providersPath, []byte("file"), 0o600); err != nil {
-			t.Fatalf("WriteFile() error = %v", err)
+		if err := os.MkdirAll(providersPath, 0o755); err != nil {
+			t.Fatalf("MkdirAll() error = %v", err)
 		}
+		if err := os.Chmod(providersPath, 0o000); err != nil {
+			t.Fatalf("Chmod() error = %v", err)
+		}
+		defer func() { _ = os.Chmod(providersPath, 0o755) }()
 
 		_, err := loadCustomProviders(baseDir)
 		if err == nil {
