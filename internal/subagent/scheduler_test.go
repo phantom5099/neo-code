@@ -460,6 +460,43 @@ func TestSchedulerBuildsTaskContextSlice(t *testing.T) {
 	}
 }
 
+func TestSchedulerContextBuilderUsesReadOnlySnapshot(t *testing.T) {
+	t.Parallel()
+
+	store := newSchedulerStore(t, []agentsession.TodoItem{
+		{ID: "task", Content: "task"},
+	})
+	factory := newScriptedFactory(func(ctx context.Context, taskID string, attempt int, input StepInput) (StepOutput, error) {
+		_ = ctx
+		_ = attempt
+		_ = input
+		return successStep(taskID), nil
+	})
+
+	var seenReadOnly bool
+	builder := func(input TaskContextSliceInput) TaskContextSlice {
+		seenReadOnly = input.ReadOnlyTodos
+		return BuildTaskContextSlice(input)
+	}
+	scheduler, err := NewScheduler(store, factory, SchedulerConfig{
+		MaxConcurrency: 1,
+		PollInterval:   2 * time.Millisecond,
+		ContextBuilder: builder,
+	})
+	if err != nil {
+		t.Fatalf("NewScheduler() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := scheduler.Run(ctx); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !seenReadOnly {
+		t.Fatalf("ContextBuilder input ReadOnlyTodos = false, want true")
+	}
+}
+
 func TestSchedulerRunConcurrencyLimit(t *testing.T) {
 	t.Parallel()
 

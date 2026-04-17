@@ -89,6 +89,7 @@ func (s TaskContextSlice) Render() string {
 type TaskContextSliceInput struct {
 	Task                   agentsession.TodoItem
 	Todos                  map[string]agentsession.TodoItem
+	ReadOnlyTodos          bool
 	ActivatedSkills        []string
 	RelatedFiles           []TaskContextFileSummary
 	MaxChars               int
@@ -155,6 +156,7 @@ func RebuildTaskContextSlice(input TaskContextRebuildInput) (TaskContextSlice, e
 	slice := BuildTaskContextSlice(TaskContextSliceInput{
 		Task:                   task,
 		Todos:                  input.Todos,
+		ReadOnlyTodos:          true,
 		ActivatedSkills:        activatedSkills,
 		RelatedFiles:           relatedFiles,
 		MaxChars:               input.MaxChars,
@@ -163,12 +165,10 @@ func RebuildTaskContextSlice(input TaskContextRebuildInput) (TaskContextSlice, e
 		MaxRelatedFiles:        input.MaxRelatedFiles,
 	})
 
-	allowedTodoIDs := dedupeAndTrim(descriptor.TodoFragmentIDs)
-	if len(allowedTodoIDs) > 0 {
-		slice.TodoFragment = filterTodoFragmentsByID(slice.TodoFragment, allowedTodoIDs)
-		slice.Truncated = enforceTaskContextBudget(&slice, slice.BudgetChars) || slice.Truncated
-		slice.Descriptor = buildTaskContextDescriptor(slice, descriptor.DependencyTaskIDs)
-	}
+	slice.DependencyArtifacts = filterByAllowlist(slice.DependencyArtifacts, descriptor.ArtifactRefs)
+	slice.TodoFragment = filterTodoFragmentsByID(slice.TodoFragment, descriptor.TodoFragmentIDs)
+	slice.Truncated = enforceTaskContextBudget(&slice, slice.BudgetChars) || slice.Truncated
+	slice.Descriptor = buildTaskContextDescriptor(slice, descriptor.DependencyTaskIDs)
 	return slice, nil
 }
 
@@ -187,9 +187,12 @@ func normalizeTaskContextSliceInput(input TaskContextSliceInput) TaskContextSlic
 	if out.MaxRelatedFiles <= 0 {
 		out.MaxRelatedFiles = defaultTaskContextMaxRelatedFiles
 	}
-	out.Todos = cloneTodoMap(out.Todos)
-	if strings.TrimSpace(out.Task.ID) != "" {
-		out.Todos[strings.TrimSpace(out.Task.ID)] = out.Task.Clone()
+	if out.ReadOnlyTodos {
+		if out.Todos == nil {
+			out.Todos = make(map[string]agentsession.TodoItem)
+		}
+	} else {
+		out.Todos = cloneTodoMap(out.Todos)
 	}
 	out.ActivatedSkills = dedupeAndTrim(out.ActivatedSkills)
 	out.RelatedFiles = normalizeContextFileSummaries(out.RelatedFiles)

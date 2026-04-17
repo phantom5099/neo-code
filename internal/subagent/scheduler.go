@@ -277,6 +277,7 @@ func (s *Scheduler) startReadyTasks(
 		contextSlice := s.cfg.ContextBuilder(TaskContextSliceInput{
 			Task:                   item,
 			Todos:                  snapshot,
+			ReadOnlyTodos:          true,
 			ActivatedSkills:        s.cfg.ContextSkills(item, snapshot),
 			RelatedFiles:           s.cfg.ContextFiles(item, snapshot),
 			MaxChars:               s.cfg.ContextMaxChars,

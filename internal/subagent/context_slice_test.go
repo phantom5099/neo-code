@@ -215,6 +215,89 @@ func TestRebuildTaskContextSliceFromDescriptor(t *testing.T) {
 	}
 }
 
+func TestRebuildTaskContextSliceFiltersArtifactRefs(t *testing.T) {
+	t.Parallel()
+
+	task := agentsession.TodoItem{
+		ID:           "task-rebuild-artifacts",
+		Content:      "重建产物过滤",
+		Status:       agentsession.TodoStatusInProgress,
+		Dependencies: []string{"dep-a"},
+	}
+	todos := map[string]agentsession.TodoItem{
+		"task-rebuild-artifacts": task,
+		"dep-a": {
+			ID:        "dep-a",
+			Status:    agentsession.TodoStatusCompleted,
+			Artifacts: []string{"artifacts/keep.txt", "artifacts/drop.txt"},
+		},
+	}
+
+	rebuilt, err := RebuildTaskContextSlice(TaskContextRebuildInput{
+		Descriptor: TaskContextDescriptor{
+			TaskID:            "task-rebuild-artifacts",
+			DependencyTaskIDs: []string{"dep-a"},
+			ArtifactRefs:      []string{"artifacts/keep.txt"},
+		},
+		Todos:    todos,
+		MaxChars: 4000,
+	})
+	if err != nil {
+		t.Fatalf("RebuildTaskContextSlice() error = %v", err)
+	}
+
+	if !slices.Equal(rebuilt.DependencyArtifacts, []string{"artifacts/keep.txt"}) {
+		t.Fatalf("DependencyArtifacts = %v, want [artifacts/keep.txt]", rebuilt.DependencyArtifacts)
+	}
+	if !slices.Equal(rebuilt.Descriptor.ArtifactRefs, []string{"artifacts/keep.txt"}) {
+		t.Fatalf("Descriptor.ArtifactRefs = %v, want [artifacts/keep.txt]", rebuilt.Descriptor.ArtifactRefs)
+	}
+}
+
+func TestRebuildTaskContextSliceEmptyTodoAllowlistMeansNone(t *testing.T) {
+	t.Parallel()
+
+	task := agentsession.TodoItem{
+		ID:           "task-rebuild-empty-fragments",
+		Content:      "空白名单语义",
+		Status:       agentsession.TodoStatusInProgress,
+		Dependencies: []string{"dep-a"},
+	}
+	todos := map[string]agentsession.TodoItem{
+		"task-rebuild-empty-fragments": task,
+		"dep-a": {
+			ID:      "dep-a",
+			Content: "依赖",
+			Status:  agentsession.TodoStatusCompleted,
+		},
+		"extra": {
+			ID:      "extra",
+			Content: "额外运行中任务",
+			Status:  agentsession.TodoStatusInProgress,
+		},
+	}
+
+	rebuilt, err := RebuildTaskContextSlice(TaskContextRebuildInput{
+		Descriptor: TaskContextDescriptor{
+			TaskID:            "task-rebuild-empty-fragments",
+			DependencyTaskIDs: []string{"dep-a"},
+			TodoFragmentIDs:   nil,
+		},
+		Todos:    todos,
+		MaxChars: 4000,
+	})
+	if err != nil {
+		t.Fatalf("RebuildTaskContextSlice() error = %v", err)
+	}
+
+	if len(rebuilt.TodoFragment) != 0 {
+		t.Fatalf("TodoFragment len = %d, want 0", len(rebuilt.TodoFragment))
+	}
+	if len(rebuilt.Descriptor.TodoFragmentIDs) != 0 {
+		t.Fatalf("Descriptor.TodoFragmentIDs = %v, want empty", rebuilt.Descriptor.TodoFragmentIDs)
+	}
+}
+
 func TestBuildTaskContextSliceStableOrder(t *testing.T) {
 	t.Parallel()
 
@@ -275,5 +358,51 @@ func TestRebuildTaskContextSliceErrors(t *testing.T) {
 		Todos:      map[string]agentsession.TodoItem{},
 	}); err == nil {
 		t.Fatalf("expected task not found error")
+	}
+}
+
+func TestNormalizeTaskContextSliceInputReadOnlyTodos(t *testing.T) {
+	t.Parallel()
+
+	input := TaskContextSliceInput{
+		Task:          agentsession.TodoItem{ID: "task", Content: "goal"},
+		ReadOnlyTodos: true,
+	}
+	out := normalizeTaskContextSliceInput(input)
+	if out.Todos == nil {
+		t.Fatalf("Todos should be initialized for read-only input")
+	}
+	if len(out.Todos) != 0 {
+		t.Fatalf("Todos len = %d, want 0", len(out.Todos))
+	}
+}
+
+func TestTodoStatusRankAndTruncateRunesEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	if got := todoStatusRank(agentsession.TodoStatusInProgress); got != 0 {
+		t.Fatalf("todoStatusRank(in_progress) = %d, want 0", got)
+	}
+	if got := todoStatusRank(agentsession.TodoStatusBlocked); got != 1 {
+		t.Fatalf("todoStatusRank(blocked) = %d, want 1", got)
+	}
+	if got := todoStatusRank(agentsession.TodoStatusPending); got != 2 {
+		t.Fatalf("todoStatusRank(pending) = %d, want 2", got)
+	}
+	if got := todoStatusRank(agentsession.TodoStatusCompleted); got != 3 {
+		t.Fatalf("todoStatusRank(completed) = %d, want 3", got)
+	}
+
+	if got := truncateRunes("  ", 3); got != "" {
+		t.Fatalf("truncateRunes(blank, 3) = %q, want empty", got)
+	}
+	if got := truncateRunes("abcdef", 1); got != "…" {
+		t.Fatalf("truncateRunes(abcdef, 1) = %q, want …", got)
+	}
+	if got := truncateRunes("abc", 4); got != "abc" {
+		t.Fatalf("truncateRunes(abc, 4) = %q, want abc", got)
+	}
+	if got := truncateRunes("abcdef", 0); got != "" {
+		t.Fatalf("truncateRunes(abcdef, 0) = %q, want empty", got)
 	}
 }
