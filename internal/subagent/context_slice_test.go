@@ -2,6 +2,7 @@ package subagent
 
 import (
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -266,9 +267,10 @@ func TestRebuildTaskContextSliceEmptyTodoAllowlistMeansNone(t *testing.T) {
 	todos := map[string]agentsession.TodoItem{
 		"task-rebuild-empty-fragments": task,
 		"dep-a": {
-			ID:      "dep-a",
-			Content: "依赖",
-			Status:  agentsession.TodoStatusCompleted,
+			ID:        "dep-a",
+			Content:   "依赖",
+			Status:    agentsession.TodoStatusCompleted,
+			Artifacts: []string{"artifacts/dep-a.txt"},
 		},
 		"extra": {
 			ID:      "extra",
@@ -281,7 +283,7 @@ func TestRebuildTaskContextSliceEmptyTodoAllowlistMeansNone(t *testing.T) {
 		Descriptor: TaskContextDescriptor{
 			TaskID:            "task-rebuild-empty-fragments",
 			DependencyTaskIDs: []string{"dep-a"},
-			TodoFragmentIDs:   nil,
+			TodoFragmentIDs:   []string{},
 		},
 		Todos:    todos,
 		MaxChars: 4000,
@@ -295,6 +297,56 @@ func TestRebuildTaskContextSliceEmptyTodoAllowlistMeansNone(t *testing.T) {
 	}
 	if len(rebuilt.Descriptor.TodoFragmentIDs) != 0 {
 		t.Fatalf("Descriptor.TodoFragmentIDs = %v, want empty", rebuilt.Descriptor.TodoFragmentIDs)
+	}
+}
+
+func TestRebuildTaskContextSliceNilTodoAllowlistKeepsSnapshotFragments(t *testing.T) {
+	t.Parallel()
+
+	task := agentsession.TodoItem{
+		ID:           "task-rebuild-nil-fragments",
+		Content:      "nil 白名单语义",
+		Status:       agentsession.TodoStatusInProgress,
+		Dependencies: []string{"dep-a"},
+	}
+	todos := map[string]agentsession.TodoItem{
+		"task-rebuild-nil-fragments": task,
+		"dep-a": {
+			ID:        "dep-a",
+			Content:   "依赖",
+			Status:    agentsession.TodoStatusCompleted,
+			Artifacts: []string{"artifacts/dep-a.txt"},
+		},
+		"extra": {
+			ID:      "extra",
+			Content: "额外运行中任务",
+			Status:  agentsession.TodoStatusInProgress,
+		},
+	}
+
+	rebuilt, err := RebuildTaskContextSlice(TaskContextRebuildInput{
+		Descriptor: TaskContextDescriptor{
+			TaskID:            "task-rebuild-nil-fragments",
+			DependencyTaskIDs: []string{"dep-a"},
+			TodoFragmentIDs:   nil,
+			ArtifactRefs:      nil,
+			SkillIDs:          nil,
+		},
+		Todos:           todos,
+		ActivatedSkills: []string{"skill-a"},
+		MaxChars:        4000,
+	})
+	if err != nil {
+		t.Fatalf("RebuildTaskContextSlice() error = %v", err)
+	}
+	if len(rebuilt.TodoFragment) == 0 {
+		t.Fatalf("TodoFragment should keep snapshot fragments when allowlist is nil")
+	}
+	if len(rebuilt.DependencyArtifacts) == 0 {
+		t.Fatalf("DependencyArtifacts should keep snapshot artifacts when allowlist is nil")
+	}
+	if !slices.Equal(rebuilt.ActivatedSkills, []string{"skill-a"}) {
+		t.Fatalf("ActivatedSkills = %v, want [skill-a]", rebuilt.ActivatedSkills)
 	}
 }
 
@@ -404,5 +456,72 @@ func TestTodoStatusRankAndTruncateRunesEdgeCases(t *testing.T) {
 	}
 	if got := truncateRunes("abcdef", 0); got != "" {
 		t.Fatalf("truncateRunes(abcdef, 0) = %q, want empty", got)
+	}
+}
+
+func TestBuildTaskContextSliceExtremeBudgetKeepsNonEmptyGoal(t *testing.T) {
+	t.Parallel()
+
+	task := agentsession.TodoItem{
+		ID:         "task-extreme-budget",
+		Content:    "极小预算仍需保留目标语义",
+		Status:     agentsession.TodoStatusInProgress,
+		Acceptance: []string{"验收条件"},
+	}
+	slice := BuildTaskContextSlice(TaskContextSliceInput{
+		Task:     task,
+		Todos:    map[string]agentsession.TodoItem{"task-extreme-budget": task},
+		MaxChars: 18,
+	})
+	if strings.TrimSpace(slice.Goal) == "" {
+		t.Fatalf("Goal should remain non-empty under extreme budget")
+	}
+}
+
+func TestTaskContextSliceRenderSanitizesControlChars(t *testing.T) {
+	t.Parallel()
+
+	slice := TaskContextSlice{
+		TaskID:              "task-1\nforged",
+		Goal:                "goal\r\nline2",
+		Acceptance:          []string{"ok\n- forged"},
+		DependencyArtifacts: []string{"a\tb"},
+		RelatedFiles: []TaskContextFileSummary{
+			{Path: "internal/x.go\ninject", Summary: "sum\r\nline"},
+		},
+		ActivatedSkills: []string{"skill\nbreak"},
+		TodoFragment: []TaskTodoFragment{
+			{ID: "todo-1\nx", Status: agentsession.TodoStatusInProgress, Content: "content\r\nx"},
+		},
+	}
+	rendered := slice.Render()
+	if strings.Contains(rendered, "\n- forged") {
+		t.Fatalf("rendered text should sanitize embedded newlines, got %q", rendered)
+	}
+	if strings.Contains(rendered, "\r") {
+		t.Fatalf("rendered text should not contain carriage return, got %q", rendered)
+	}
+}
+
+func TestContextSliceRuneCountMatchesRenderLength(t *testing.T) {
+	t.Parallel()
+
+	slice := TaskContextSlice{
+		TaskID:              "task-1",
+		Goal:                "goal",
+		Acceptance:          []string{"a", "b"},
+		DependencyArtifacts: []string{"artifacts/a.txt"},
+		RelatedFiles: []TaskContextFileSummary{
+			{Path: "internal/subagent/context_slice.go", Summary: "summary"},
+		},
+		ActivatedSkills: []string{"skill-a"},
+		TodoFragment: []TaskTodoFragment{
+			{ID: "todo-1", Status: agentsession.TodoStatusInProgress, Content: "do it", Priority: 2},
+		},
+	}
+	got := contextSliceRuneCount(slice)
+	want := len([]rune(slice.Render()))
+	if got != want {
+		t.Fatalf("contextSliceRuneCount() = %d, want %d", got, want)
 	}
 }

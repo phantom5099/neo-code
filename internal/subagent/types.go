@@ -84,6 +84,10 @@ func (t Task) Validate() error {
 	if strings.TrimSpace(t.Goal) == "" {
 		return errorsf("task goal is required")
 	}
+	contextTaskID := strings.TrimSpace(t.ContextSlice.TaskID)
+	if contextTaskID != "" && !strings.EqualFold(contextTaskID, strings.TrimSpace(t.ID)) {
+		return errorsf("task context slice task id %q mismatched task id %q", contextTaskID, strings.TrimSpace(t.ID))
+	}
 	return nil
 }
 

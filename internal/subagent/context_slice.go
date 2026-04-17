@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 
 	agentsession "neo-code/internal/session"
 )
@@ -42,11 +43,11 @@ type TaskContextDescriptor struct {
 // normalize 规整 descriptor 字段，保证 compact 后重建输入稳定。
 func (d TaskContextDescriptor) normalize() TaskContextDescriptor {
 	d.TaskID = strings.TrimSpace(d.TaskID)
-	d.DependencyTaskIDs = dedupeAndTrim(d.DependencyTaskIDs)
-	d.TodoFragmentIDs = dedupeAndTrim(d.TodoFragmentIDs)
-	d.ArtifactRefs = dedupeAndTrim(d.ArtifactRefs)
-	d.RelatedFilePaths = dedupeAndTrim(d.RelatedFilePaths)
-	d.SkillIDs = dedupeAndTrim(d.SkillIDs)
+	d.DependencyTaskIDs = normalizeDescriptorOptionalSlice(d.DependencyTaskIDs)
+	d.TodoFragmentIDs = normalizeDescriptorOptionalSlice(d.TodoFragmentIDs)
+	d.ArtifactRefs = normalizeDescriptorOptionalSlice(d.ArtifactRefs)
+	d.RelatedFilePaths = normalizeDescriptorOptionalSlice(d.RelatedFilePaths)
+	d.SkillIDs = normalizeDescriptorOptionalSlice(d.SkillIDs)
 	return d
 }
 
@@ -67,14 +68,14 @@ type TaskContextSlice struct {
 // Render 以稳定顺序渲染切片，供执行引擎直接消费。
 func (s TaskContextSlice) Render() string {
 	var b strings.Builder
-	if strings.TrimSpace(s.TaskID) != "" {
+	if taskID := sanitizeRenderValue(s.TaskID); taskID != "" {
 		b.WriteString("task_id: ")
-		b.WriteString(strings.TrimSpace(s.TaskID))
+		b.WriteString(taskID)
 		b.WriteString("\n")
 	}
-	if strings.TrimSpace(s.Goal) != "" {
+	if goal := sanitizeRenderValue(s.Goal); goal != "" {
 		b.WriteString("goal: ")
-		b.WriteString(strings.TrimSpace(s.Goal))
+		b.WriteString(goal)
 		b.WriteString("\n")
 	}
 	writeBulletSection(&b, "acceptance", s.Acceptance)
@@ -373,26 +374,33 @@ func enforceTaskContextBudget(slice *TaskContextSlice, maxChars int) bool {
 	if slice == nil || maxChars <= 0 {
 		return false
 	}
-	if contextSliceRuneCount(*slice) <= maxChars {
+	currentChars := contextSliceRuneCount(*slice)
+	if currentChars <= maxChars {
 		return false
 	}
 	truncated := false
+	refreshChars := func() {
+		currentChars = contextSliceRuneCount(*slice)
+	}
 	trimList := func(list *[]string, minKeep int) {
-		for len(*list) > minKeep && contextSliceRuneCount(*slice) > maxChars {
+		for len(*list) > minKeep && currentChars > maxChars {
 			*list = (*list)[:len(*list)-1]
 			truncated = true
+			refreshChars()
 		}
 	}
 	trimFiles := func(minKeep int) {
-		for len(slice.RelatedFiles) > minKeep && contextSliceRuneCount(*slice) > maxChars {
+		for len(slice.RelatedFiles) > minKeep && currentChars > maxChars {
 			slice.RelatedFiles = slice.RelatedFiles[:len(slice.RelatedFiles)-1]
 			truncated = true
+			refreshChars()
 		}
 	}
 	trimTodos := func(minKeep int) {
-		for len(slice.TodoFragment) > minKeep && contextSliceRuneCount(*slice) > maxChars {
+		for len(slice.TodoFragment) > minKeep && currentChars > maxChars {
 			slice.TodoFragment = slice.TodoFragment[:len(slice.TodoFragment)-1]
 			truncated = true
+			refreshChars()
 		}
 	}
 
@@ -401,20 +409,33 @@ func enforceTaskContextBudget(slice *TaskContextSlice, maxChars int) bool {
 	trimTodos(1)
 	trimList(&slice.DependencyArtifacts, 0)
 	trimList(&slice.Acceptance, 1)
-	if contextSliceRuneCount(*slice) <= maxChars {
+	if currentChars <= maxChars {
 		return truncated
 	}
 
-	slice.Goal = truncateRunes(slice.Goal, maxChars/2)
+	goalLimit := maxChars / 2
+	if goalLimit < 1 {
+		goalLimit = 1
+	}
+	slice.Goal = truncateRunes(slice.Goal, goalLimit)
 	if len(slice.Acceptance) > 0 {
+		acceptanceLimit := maxChars / 6
+		if acceptanceLimit < 1 {
+			acceptanceLimit = 1
+		}
 		for idx := range slice.Acceptance {
-			slice.Acceptance[idx] = truncateRunes(slice.Acceptance[idx], maxChars/6)
+			slice.Acceptance[idx] = truncateRunes(slice.Acceptance[idx], acceptanceLimit)
 		}
 	}
 	if len(slice.TodoFragment) > 0 {
-		slice.TodoFragment[0].Content = truncateRunes(slice.TodoFragment[0].Content, maxChars/3)
+		todoLimit := maxChars / 3
+		if todoLimit < 1 {
+			todoLimit = 1
+		}
+		slice.TodoFragment[0].Content = truncateRunes(slice.TodoFragment[0].Content, todoLimit)
 	}
-	if contextSliceRuneCount(*slice) <= maxChars {
+	refreshChars()
+	if currentChars <= maxChars {
 		return true
 	}
 
@@ -427,11 +448,12 @@ func enforceTaskContextBudget(slice *TaskContextSlice, maxChars int) bool {
 	if len(slice.TodoFragment) > 1 {
 		slice.TodoFragment = slice.TodoFragment[:1]
 	}
-	if contextSliceRuneCount(*slice) <= maxChars {
+	refreshChars()
+	if currentChars <= maxChars {
 		return true
 	}
 
-	for contextSliceRuneCount(*slice) > maxChars {
+	for currentChars > maxChars {
 		switch {
 		case len(slice.TodoFragment) > 0 && len([]rune(slice.TodoFragment[0].Content)) > 0:
 			slice.TodoFragment[0].Content = trimOneRune(slice.TodoFragment[0].Content)
@@ -447,11 +469,20 @@ func enforceTaskContextBudget(slice *TaskContextSlice, maxChars int) bool {
 				slice.Acceptance = nil
 			case len(slice.TodoFragment) > 0:
 				slice.TodoFragment = nil
-			case len(slice.Goal) > 0:
-				slice.Goal = ""
+			case strings.TrimSpace(slice.Goal) == "":
+				slice.Goal = "…"
 			default:
 				return true
 			}
+		}
+		refreshChars()
+		if strings.TrimSpace(slice.Goal) == "" {
+			slice.Goal = "…"
+			refreshChars()
+		}
+		if currentChars > maxChars && len(slice.Acceptance) == 0 && len(slice.TodoFragment) == 0 &&
+			len([]rune(strings.TrimSpace(slice.Goal))) <= 1 {
+			return true
 		}
 	}
 	return true
@@ -515,9 +546,12 @@ func normalizeContextFileSummaries(items []TaskContextFileSummary) []TaskContext
 
 // filterRelatedFilesByPath 根据路径白名单过滤文件摘要，保持输入顺序。
 func filterRelatedFilesByPath(items []TaskContextFileSummary, allow []string) []TaskContextFileSummary {
+	if allow == nil {
+		return normalizeContextFileSummaries(items)
+	}
 	allowed := dedupeAndTrim(allow)
 	if len(allowed) == 0 {
-		return normalizeContextFileSummaries(items)
+		return nil
 	}
 	set := make(map[string]struct{}, len(allowed))
 	for _, path := range allowed {
@@ -535,6 +569,9 @@ func filterRelatedFilesByPath(items []TaskContextFileSummary, allow []string) []
 
 // filterByAllowlist 根据白名单过滤字符串切片，并保持原始顺序。
 func filterByAllowlist(items []string, allow []string) []string {
+	if allow == nil {
+		return dedupeAndTrim(items)
+	}
 	allowed := dedupeAndTrim(allow)
 	if len(allowed) == 0 {
 		return nil
@@ -565,6 +602,11 @@ func filterByAllowlist(items []string, allow []string) []string {
 
 // filterTodoFragmentsByID 根据 Todo ID 白名单过滤片段。
 func filterTodoFragmentsByID(fragments []TaskTodoFragment, allow []string) []TaskTodoFragment {
+	if allow == nil {
+		result := make([]TaskTodoFragment, len(fragments))
+		copy(result, fragments)
+		return result
+	}
 	allowed := dedupeAndTrim(allow)
 	if len(allowed) == 0 {
 		return nil
@@ -621,7 +663,26 @@ func todoStatusRank(status agentsession.TodoStatus) int {
 
 // contextSliceRuneCount 计算渲染后上下文切片字符数，作为预算近似指标。
 func contextSliceRuneCount(slice TaskContextSlice) int {
-	return len([]rune(slice.Render()))
+	lines := make([]string, 0, 16)
+	if taskID := sanitizeRenderValue(slice.TaskID); taskID != "" {
+		lines = append(lines, "task_id: "+taskID)
+	}
+	if goal := sanitizeRenderValue(slice.Goal); goal != "" {
+		lines = append(lines, "goal: "+goal)
+	}
+	lines = append(lines, renderedBulletLines("acceptance", slice.Acceptance)...)
+	lines = append(lines, renderedBulletLines("dependency_artifacts", slice.DependencyArtifacts)...)
+	lines = append(lines, renderedFileSummaryLines("related_files", slice.RelatedFiles)...)
+	lines = append(lines, renderedBulletLines("activated_skills", slice.ActivatedSkills)...)
+	lines = append(lines, renderedTodoLines("todo_fragment", slice.TodoFragment)...)
+	if len(lines) == 0 {
+		return 0
+	}
+	total := len(lines) - 1
+	for _, line := range lines {
+		total += len([]rune(line))
+	}
+	return total
 }
 
 // truncateRunes 按 rune 长度裁剪文本并保留省略标记。
@@ -655,11 +716,8 @@ func writeBulletSection(builder *strings.Builder, title string, items []string) 
 	if builder == nil || len(items) == 0 {
 		return
 	}
-	builder.WriteString(title)
-	builder.WriteString(":\n")
-	for _, item := range items {
-		builder.WriteString("- ")
-		builder.WriteString(strings.TrimSpace(item))
+	for _, line := range renderedBulletLines(title, items) {
+		builder.WriteString(line)
 		builder.WriteString("\n")
 	}
 }
@@ -669,15 +727,8 @@ func writeFileSummarySection(builder *strings.Builder, title string, items []Tas
 	if builder == nil || len(items) == 0 {
 		return
 	}
-	builder.WriteString(title)
-	builder.WriteString(":\n")
-	for _, file := range items {
-		builder.WriteString("- path: ")
-		builder.WriteString(strings.TrimSpace(file.Path))
-		if summary := strings.TrimSpace(file.Summary); summary != "" {
-			builder.WriteString(" | summary: ")
-			builder.WriteString(summary)
-		}
+	for _, line := range renderedFileSummaryLines(title, items) {
+		builder.WriteString(line)
 		builder.WriteString("\n")
 	}
 }
@@ -687,22 +738,109 @@ func writeTodoFragmentSection(builder *strings.Builder, title string, items []Ta
 	if builder == nil || len(items) == 0 {
 		return
 	}
-	builder.WriteString(title)
-	builder.WriteString(":\n")
-	for _, item := range items {
-		builder.WriteString("- ")
-		builder.WriteString(item.ID)
-		builder.WriteString(" [")
-		builder.WriteString(string(item.Status))
-		builder.WriteString("]")
-		if item.Priority != 0 {
-			builder.WriteString(" p=")
-			builder.WriteString(fmt.Sprintf("%d", item.Priority))
-		}
-		if content := strings.TrimSpace(item.Content); content != "" {
-			builder.WriteString(": ")
-			builder.WriteString(content)
-		}
+	for _, line := range renderedTodoLines(title, items) {
+		builder.WriteString(line)
 		builder.WriteString("\n")
 	}
+}
+
+// renderedBulletLines 生成 bullet section 的稳定渲染行。
+func renderedBulletLines(title string, items []string) []string {
+	rows := make([]string, 0, len(items)+1)
+	for _, item := range items {
+		sanitized := sanitizeRenderValue(item)
+		if sanitized == "" {
+			continue
+		}
+		if len(rows) == 0 {
+			rows = append(rows, title+":")
+		}
+		rows = append(rows, "- "+sanitized)
+	}
+	return rows
+}
+
+// renderedFileSummaryLines 生成相关文件 section 的稳定渲染行。
+func renderedFileSummaryLines(title string, items []TaskContextFileSummary) []string {
+	rows := make([]string, 0, len(items)+1)
+	for _, file := range items {
+		path := sanitizeRenderValue(file.Path)
+		if path == "" {
+			continue
+		}
+		line := "- path: " + path
+		if summary := sanitizeRenderValue(file.Summary); summary != "" {
+			line += " | summary: " + summary
+		}
+		if len(rows) == 0 {
+			rows = append(rows, title+":")
+		}
+		rows = append(rows, line)
+	}
+	return rows
+}
+
+// renderedTodoLines 生成 Todo 片段 section 的稳定渲染行。
+func renderedTodoLines(title string, items []TaskTodoFragment) []string {
+	rows := make([]string, 0, len(items)+1)
+	for _, item := range items {
+		id := sanitizeRenderValue(item.ID)
+		if id == "" {
+			continue
+		}
+		line := "- " + id + " [" + sanitizeRenderValue(string(item.Status)) + "]"
+		if item.Priority != 0 {
+			line += " p=" + fmt.Sprintf("%d", item.Priority)
+		}
+		if content := sanitizeRenderValue(item.Content); content != "" {
+			line += ": " + content
+		}
+		if len(rows) == 0 {
+			rows = append(rows, title+":")
+		}
+		rows = append(rows, line)
+	}
+	return rows
+}
+
+// sanitizeRenderValue 把换行和控制字符规整为空格，避免渲染结构被注入。
+func sanitizeRenderValue(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return ""
+	}
+	var builder strings.Builder
+	builder.Grow(len(trimmed))
+	lastSpace := false
+	for _, r := range trimmed {
+		switch {
+		case r == '\n' || r == '\r' || r == '\t':
+			r = ' '
+		case unicode.IsControl(r):
+			continue
+		}
+		if unicode.IsSpace(r) {
+			if lastSpace {
+				continue
+			}
+			lastSpace = true
+			builder.WriteRune(' ')
+			continue
+		}
+		lastSpace = false
+		builder.WriteRune(r)
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+// normalizeDescriptorOptionalSlice 规整 descriptor 列表字段并保留“显式空列表”语义。
+func normalizeDescriptorOptionalSlice(items []string) []string {
+	if items == nil {
+		return nil
+	}
+	normalized := dedupeAndTrim(items)
+	if normalized == nil {
+		return []string{}
+	}
+	return normalized
 }

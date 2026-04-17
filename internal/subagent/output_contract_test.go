@@ -73,7 +73,7 @@ func TestValidateOutputContractUnsupportedSection(t *testing.T) {
 	}
 }
 
-func TestValidateOutputContractAlwaysRequiresFullStructure(t *testing.T) {
+func TestValidateOutputContractOnlyRequiresConfiguredSections(t *testing.T) {
 	t.Parallel()
 
 	policy := RolePolicy{
@@ -82,17 +82,7 @@ func TestValidateOutputContractAlwaysRequiresFullStructure(t *testing.T) {
 		AllowedTools:     []string{"bash"},
 		RequiredSections: []string{"summary"},
 	}
-	if err := validateOutputContract(policy, Output{Summary: "ok"}); err == nil {
-		t.Fatalf("expected mandatory structure validation error")
-	}
-	if err := validateOutputContract(policy, Output{
-		Summary:     "ok",
-		Findings:    []string{"f"},
-		Patches:     []string{"p"},
-		Risks:       []string{"r"},
-		NextActions: []string{"n"},
-		Artifacts:   []string{"a"},
-	}); err != nil {
+	if err := validateOutputContract(policy, Output{Summary: "ok"}); err != nil {
 		t.Fatalf("validateOutputContract() error = %v", err)
 	}
 }

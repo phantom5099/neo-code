@@ -11,22 +11,14 @@ var supportedOutputSections = map[string]struct{}{
 	"artifacts":    {},
 }
 
-var mandatoryOutputSections = []string{
-	"summary",
-	"findings",
-	"patches",
-	"risks",
-	"next_actions",
-	"artifacts",
-}
-
 // validateOutputContract 校验子代理输出是否满足统一结构化契约。
 func validateOutputContract(policy RolePolicy, output Output) error {
-	if _, err := normalizeRequiredSections(policy.RequiredSections); err != nil {
+	requiredSections, err := normalizeRequiredSections(policy.RequiredSections)
+	if err != nil {
 		return err
 	}
 	out := output.normalize()
-	for _, section := range mandatoryOutputSections {
+	for _, section := range requiredSections {
 		if !hasOutputSectionContent(out, section) {
 			return errorsf("output section %q is required", section)
 		}
