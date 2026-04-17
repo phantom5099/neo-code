@@ -131,12 +131,12 @@ gateway:
 			t.Fatalf("write config: %v", err)
 		}
 
-		cfg, err := LoadGatewayConfig(context.Background(), baseDir)
-		if err != nil {
-			t.Fatalf("load gateway config: %v", err)
+		_, err := LoadGatewayConfig(context.Background(), baseDir)
+		if err == nil {
+			t.Fatal("expected invalid gateway config error")
 		}
-		if cfg.Limits.MaxFrameBytes != DefaultGatewayMaxFrameBytes {
-			t.Fatalf("max_frame_bytes = %d, want fallback %d", cfg.Limits.MaxFrameBytes, DefaultGatewayMaxFrameBytes)
+		if !strings.Contains(err.Error(), "max_frame_bytes") {
+			t.Fatalf("error = %v, want max_frame_bytes validation", err)
 		}
 	})
 }

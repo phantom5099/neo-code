@@ -379,6 +379,10 @@ func (s *NetworkServer) handleHealthzRequest(writer http.ResponseWriter, request
 		http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !s.isControlPlaneHTTPRequestAuthorized(request) {
+		http.Error(writer, "unauthorized", http.StatusUnauthorized)
+		return
+	}
 
 	connectionSnapshot := map[string]int{}
 	if s.relay != nil {
@@ -400,6 +404,10 @@ func (s *NetworkServer) handleHealthzRequest(writer http.ResponseWriter, request
 func (s *NetworkServer) handleVersionRequest(writer http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodGet {
 		http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.isControlPlaneHTTPRequestAuthorized(request) {
+		http.Error(writer, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	writeJSONResponse(writer, http.StatusOK, ResolvedBuildInfo())
@@ -449,6 +457,11 @@ func (s *NetworkServer) handleJSONMetrics(writer http.ResponseWriter, request *h
 
 // isObservabilityRequestAuthorized 校验 metrics 端点访问 Token。
 func (s *NetworkServer) isObservabilityRequestAuthorized(request *http.Request) bool {
+	return s.isControlPlaneHTTPRequestAuthorized(request)
+}
+
+// isControlPlaneHTTPRequestAuthorized 校验 HTTP 控制面请求是否携带并通过 Bearer Token。
+func (s *NetworkServer) isControlPlaneHTTPRequestAuthorized(request *http.Request) bool {
 	if s.authenticator == nil {
 		return true
 	}
@@ -466,14 +479,15 @@ func (s *NetworkServer) handleRPCRequest(writer http.ResponseWriter, request *ht
 	request.Body = http.MaxBytesReader(writer, request.Body, s.maxRequestBytes)
 	rpcRequest, rpcErr := decodeJSONRPCRequestFromReader(request.Body)
 	if rpcErr != nil {
-		writeJSONRPCHTTPResponse(writer, protocol.NewJSONRPCErrorResponse(nil, rpcErr))
+		writeJSONRPCHTTPResponse(writer, http.StatusOK, protocol.NewJSONRPCErrorResponse(nil, rpcErr))
 		return
 	}
 
 	token := extractBearerToken(request.Header.Get("Authorization"))
 	rpcCtx := s.decorateRequestContext(request.Context(), RequestSourceHTTP, token)
 	rpcResponse := dispatchRPCRequestFn(rpcCtx, rpcRequest, runtimePort)
-	writeJSONRPCHTTPResponse(writer, rpcResponse)
+	statusCode := resolveJSONRPCHTTPStatusCode(rpcResponse)
+	writeJSONRPCHTTPResponse(writer, statusCode, rpcResponse)
 }
 
 // handleWebSocket 处理 WS 入口请求，连接上下文会在关停或异常时主动取消。
@@ -801,12 +815,24 @@ func decodeJSONRPCRequestFromReader(reader io.Reader) (protocol.JSONRPCRequest, 
 	return request, nil
 }
 
-// writeJSONRPCHTTPResponse 以 JSON 形式写回 HTTP JSON-RPC 响应。
-func writeJSONRPCHTTPResponse(writer http.ResponseWriter, response protocol.JSONRPCResponse) {
+// writeJSONRPCHTTPResponse 以 JSON 形式写回 HTTP JSON-RPC 响应，并按状态码输出 HTTP 头。
+func writeJSONRPCHTTPResponse(writer http.ResponseWriter, statusCode int, response protocol.JSONRPCResponse) {
 	writer.Header().Set("Content-Type", "application/json")
+	writer.WriteHeader(statusCode)
 	encoder := json.NewEncoder(writer)
 	encoder.SetEscapeHTML(false)
 	_ = encoder.Encode(response)
+}
+
+// resolveJSONRPCHTTPStatusCode 根据网关错误码映射 HTTP 响应状态，未命中时回退 200。
+func resolveJSONRPCHTTPStatusCode(response protocol.JSONRPCResponse) int {
+	gatewayCode := protocol.GatewayCodeFromJSONRPCError(response.Error)
+	switch gatewayCode {
+	case ErrorCodeUnauthorized.String(), ErrorCodeAccessDenied.String():
+		return http.StatusUnauthorized
+	default:
+		return http.StatusOK
+	}
 }
 
 // writeJSONResponse 以 JSON 形式输出普通 HTTP 响应。

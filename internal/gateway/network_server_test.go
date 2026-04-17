@@ -299,6 +299,94 @@ func TestNetworkServerRPCErrorBranches(t *testing.T) {
 			t.Fatalf("rpc error = %#v, want parse error", rpcResponse.Error)
 		}
 	})
+
+	t.Run("unauthorized rpc maps to http 401", func(t *testing.T) {
+		secureServer := newTestNetworkServer(t, NetworkServerOptions{
+			Authenticator: staticTokenAuthenticator{token: "gateway-token"},
+			ACL:           NewStrictControlPlaneACL(),
+		})
+		secureContext, secureCancel := context.WithCancel(context.Background())
+		defer secureCancel()
+
+		secureDone := make(chan error, 1)
+		go func() {
+			secureDone <- secureServer.Serve(secureContext, nil)
+		}()
+		t.Cleanup(func() {
+			_ = secureServer.Close(context.Background())
+			select {
+			case <-secureDone:
+			case <-time.After(2 * time.Second):
+				t.Fatal("secure network serve goroutine did not exit")
+			}
+		})
+
+		secureAddress := waitForNetworkAddress(t, secureServer)
+		request, err := http.NewRequest(
+			http.MethodPost,
+			"http://"+secureAddress+"/rpc",
+			strings.NewReader(`{"jsonrpc":"2.0","id":"unauth","method":"gateway.ping","params":{}}`),
+		)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		request.Header.Set("Content-Type", "application/json")
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatalf("post /rpc: %v", err)
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusUnauthorized)
+		}
+	})
+
+	t.Run("acl denied rpc maps to http 401", func(t *testing.T) {
+		deniedACL := &ControlPlaneACL{
+			mode:    ACLModeStrict,
+			allow:   map[RequestSource]map[string]struct{}{RequestSourceHTTP: {}},
+			enabled: true,
+		}
+		secureServer := newTestNetworkServer(t, NetworkServerOptions{
+			Authenticator: staticTokenAuthenticator{token: "gateway-token"},
+			ACL:           deniedACL,
+		})
+		secureContext, secureCancel := context.WithCancel(context.Background())
+		defer secureCancel()
+
+		secureDone := make(chan error, 1)
+		go func() {
+			secureDone <- secureServer.Serve(secureContext, nil)
+		}()
+		t.Cleanup(func() {
+			_ = secureServer.Close(context.Background())
+			select {
+			case <-secureDone:
+			case <-time.After(2 * time.Second):
+				t.Fatal("acl network serve goroutine did not exit")
+			}
+		})
+
+		secureAddress := waitForNetworkAddress(t, secureServer)
+		request, err := http.NewRequest(
+			http.MethodPost,
+			"http://"+secureAddress+"/rpc",
+			strings.NewReader(`{"jsonrpc":"2.0","id":"denied","method":"gateway.ping","params":{}}`),
+		)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		request.Header.Set("Authorization", "Bearer gateway-token")
+		request.Header.Set("Content-Type", "application/json")
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatalf("post /rpc: %v", err)
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusUnauthorized)
+		}
+	})
 }
 
 func TestNetworkServerWebSocketAndSSEPing(t *testing.T) {
@@ -536,6 +624,7 @@ func TestNetworkServerVersionAndObservabilityAuthHelpers(t *testing.T) {
 	t.Run("version get returns build info", func(t *testing.T) {
 		recorder := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodGet, "/version", nil)
+		request.Header.Set("Authorization", "Bearer token-1")
 		server.handleVersionRequest(recorder, request)
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
@@ -546,6 +635,15 @@ func TestNetworkServerVersionAndObservabilityAuthHelpers(t *testing.T) {
 		}
 		if payload["version"] == "" || payload["commit"] == "" {
 			t.Fatalf("unexpected version payload: %#v", payload)
+		}
+	})
+
+	t.Run("version requires bearer token when authenticator enabled", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "/version", nil)
+		server.handleVersionRequest(recorder, request)
+		if recorder.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want %d", recorder.Code, http.StatusUnauthorized)
 		}
 	})
 
@@ -728,8 +826,45 @@ func TestNetworkServerObservabilityEndpointsAuth(t *testing.T) {
 		t.Fatalf("get /healthz: %v", err)
 	}
 	defer healthResponse.Body.Close()
-	if healthResponse.StatusCode != http.StatusOK {
-		t.Fatalf("/healthz status = %d, want %d", healthResponse.StatusCode, http.StatusOK)
+	if healthResponse.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("/healthz status = %d, want %d", healthResponse.StatusCode, http.StatusUnauthorized)
+	}
+
+	authorizedHealthRequest, err := http.NewRequest(http.MethodGet, "http://"+listenAddress+"/healthz", nil)
+	if err != nil {
+		t.Fatalf("new /healthz request: %v", err)
+	}
+	authorizedHealthRequest.Header.Set("Authorization", "Bearer gateway-token")
+	authorizedHealthResponse, err := http.DefaultClient.Do(authorizedHealthRequest)
+	if err != nil {
+		t.Fatalf("authorized get /healthz: %v", err)
+	}
+	defer authorizedHealthResponse.Body.Close()
+	if authorizedHealthResponse.StatusCode != http.StatusOK {
+		t.Fatalf("authorized /healthz status = %d, want %d", authorizedHealthResponse.StatusCode, http.StatusOK)
+	}
+
+	versionResponse, err := http.Get("http://" + listenAddress + "/version")
+	if err != nil {
+		t.Fatalf("get /version: %v", err)
+	}
+	defer versionResponse.Body.Close()
+	if versionResponse.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("/version status = %d, want %d", versionResponse.StatusCode, http.StatusUnauthorized)
+	}
+
+	authorizedVersionRequest, err := http.NewRequest(http.MethodGet, "http://"+listenAddress+"/version", nil)
+	if err != nil {
+		t.Fatalf("new /version request: %v", err)
+	}
+	authorizedVersionRequest.Header.Set("Authorization", "Bearer gateway-token")
+	authorizedVersionResponse, err := http.DefaultClient.Do(authorizedVersionRequest)
+	if err != nil {
+		t.Fatalf("authorized get /version: %v", err)
+	}
+	defer authorizedVersionResponse.Body.Close()
+	if authorizedVersionResponse.StatusCode != http.StatusOK {
+		t.Fatalf("authorized /version status = %d, want %d", authorizedVersionResponse.StatusCode, http.StatusOK)
 	}
 
 	metricsResponse, err := http.Get("http://" + listenAddress + "/metrics")

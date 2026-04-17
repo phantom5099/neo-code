@@ -38,13 +38,13 @@ func LoadGatewayConfig(ctx context.Context, baseDir string) (GatewayConfig, erro
 	var file struct {
 		Gateway GatewayConfig `yaml:"gateway,omitempty"`
 	}
+	file.Gateway = defaults.Clone()
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	if err := decoder.Decode(&file); err != nil {
 		return GatewayConfig{}, fmt.Errorf("config: parse gateway config file: %w", err)
 	}
 
 	gatewayConfig := file.Gateway
-	gatewayConfig.ApplyDefaults(defaults)
 	if err := gatewayConfig.Validate(); err != nil {
 		return GatewayConfig{}, fmt.Errorf("config: gateway: %w", err)
 	}
