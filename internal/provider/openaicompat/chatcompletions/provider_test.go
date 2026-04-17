@@ -94,6 +94,28 @@ func TestNewAndBuildRequest(t *testing.T) {
 			t.Fatalf("unexpected session asset conversion: %+v", withSessionAsset.Messages[0].Content)
 		}
 
+		halfBudget := providertypes.MaxSessionAssetsTotalBytes / 2
+		overBudgetSize := int(halfBudget + 1)
+		if _, err := BuildRequest(context.Background(), testCfg("https://api.example.com/v1", "gpt-4.1", "test-key"), providertypes.GenerateRequest{
+			Messages: []providertypes.Message{
+				{
+					Role: providertypes.RoleUser,
+					Parts: []providertypes.ContentPart{
+						providertypes.NewSessionAssetImagePart("asset-1", "image/png"),
+						providertypes.NewSessionAssetImagePart("asset-2", "image/png"),
+					},
+				},
+			},
+			SessionAssetReader: stubSessionAssetReader{
+				assets: map[string]stubSessionAsset{
+					"asset-1": {data: make([]byte, overBudgetSize), mime: "image/png"},
+					"asset-2": {data: make([]byte, overBudgetSize), mime: "image/png"},
+				},
+			},
+		}); err == nil || !strings.Contains(err.Error(), "session_asset total exceeds") {
+			t.Fatalf("expected session_asset total budget error, got %v", err)
+		}
+
 		fallback, err := BuildRequest(context.Background(), testCfg("https://api.example.com/v1", "gpt-4.1", "test-key"), providertypes.GenerateRequest{
 			SystemPrompt: "   ",
 			Messages:     []providertypes.Message{{Role: providertypes.RoleUser, Parts: []providertypes.ContentPart{providertypes.NewTextPart("hello")}}},
@@ -312,51 +334,60 @@ func TestNewAndBuildRequest(t *testing.T) {
 func TestResolveSessionAssetDataURLVariants(t *testing.T) {
 	t.Parallel()
 
-	if _, err := resolveSessionAssetDataURL(nil, stubSessionAssetReader{
+	if _, _, err := resolveSessionAssetDataURL(nil, stubSessionAssetReader{
 		assets: map[string]stubSessionAsset{
 			"asset-nil-ctx": {data: []byte("x"), mime: "image/png"},
 		},
-	}, &providertypes.AssetRef{ID: "asset-nil-ctx", MimeType: "image/png"}); err != nil {
+	}, &providertypes.AssetRef{ID: "asset-nil-ctx", MimeType: "image/png"}, maxSessionAssetsTotalBytes); err != nil {
 		t.Fatalf("expected nil context to fallback to background, got %v", err)
 	}
 
-	if _, err := resolveSessionAssetDataURL(context.Background(), stubSessionAssetReader{
+	if _, _, err := resolveSessionAssetDataURL(context.Background(), stubSessionAssetReader{
 		openFunc: func(ctx context.Context, assetID string) (io.ReadCloser, string, error) {
 			_ = ctx
 			_ = assetID
 			return nil, "", errors.New("open failed")
 		},
-	}, &providertypes.AssetRef{ID: "asset-open-error", MimeType: "image/png"}); err == nil || !strings.Contains(err.Error(), "open session_asset") {
+	}, &providertypes.AssetRef{ID: "asset-open-error", MimeType: "image/png"}, maxSessionAssetsTotalBytes); err == nil || !strings.Contains(err.Error(), "open session_asset") {
 		t.Fatalf("expected wrapped open error, got %v", err)
 	}
 
-	if _, err := resolveSessionAssetDataURL(context.Background(), stubSessionAssetReader{
+	if _, _, err := resolveSessionAssetDataURL(context.Background(), stubSessionAssetReader{
 		openFunc: func(ctx context.Context, assetID string) (io.ReadCloser, string, error) {
 			_ = ctx
 			_ = assetID
 			return &failingReadCloser{err: errors.New("read failed")}, "image/png", nil
 		},
-	}, &providertypes.AssetRef{ID: "asset-read-error", MimeType: "image/png"}); err == nil || !strings.Contains(err.Error(), "read session_asset") {
+	}, &providertypes.AssetRef{ID: "asset-read-error", MimeType: "image/png"}, maxSessionAssetsTotalBytes); err == nil || !strings.Contains(err.Error(), "read session_asset") {
 		t.Fatalf("expected wrapped read error, got %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	if _, err := resolveSessionAssetDataURL(ctx, stubSessionAssetReader{
+	if _, _, err := resolveSessionAssetDataURL(ctx, stubSessionAssetReader{
 		openFunc: func(openCtx context.Context, assetID string) (io.ReadCloser, string, error) {
 			_ = openCtx
 			_ = assetID
 			return &cancelOnReadCloser{cancel: cancel}, "image/png", nil
 		},
-	}, &providertypes.AssetRef{ID: "asset-cancel-after-read", MimeType: "image/png"}); err == nil || !strings.Contains(err.Error(), "context canceled") {
+	}, &providertypes.AssetRef{ID: "asset-cancel-after-read", MimeType: "image/png"}, maxSessionAssetsTotalBytes); err == nil || !strings.Contains(err.Error(), "context canceled") {
 		t.Fatalf("expected canceled context after read, got %v", err)
 	}
 
-	if _, err := resolveSessionAssetDataURL(context.Background(), stubSessionAssetReader{
+	if _, _, err := resolveSessionAssetDataURL(context.Background(), stubSessionAssetReader{
 		assets: map[string]stubSessionAsset{
 			"asset-empty": {data: []byte{}, mime: "image/png"},
 		},
-	}, &providertypes.AssetRef{ID: "asset-empty", MimeType: "image/png"}); err == nil || !strings.Contains(err.Error(), "is empty") {
+	}, &providertypes.AssetRef{ID: "asset-empty", MimeType: "image/png"}, maxSessionAssetsTotalBytes); err == nil || !strings.Contains(err.Error(), "is empty") {
 		t.Fatalf("expected empty asset error, got %v", err)
+	}
+
+	if _, _, err := resolveSessionAssetDataURL(context.Background(), stubSessionAssetReader{
+		assets: map[string]stubSessionAsset{
+			"asset-over-total": {data: []byte("12345"), mime: "image/png"},
+		},
+	}, &providertypes.AssetRef{ID: "asset-over-total", MimeType: "image/png"}, 4); err == nil ||
+		!strings.Contains(err.Error(), "session_asset total exceeds") {
+		t.Fatalf("expected total budget error, got %v", err)
 	}
 }
 

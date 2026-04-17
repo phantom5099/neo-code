@@ -298,7 +298,7 @@ func TestJSONStoreSaveReplaceFailureWhenTargetIsNonEmptyDirectory(t *testing.T) 
 		CreatedAt:     time.Now(),
 		UpdatedAt:     time.Now(),
 	})
-	if err == nil || !strings.Contains(err.Error(), "replace session file") {
+	if err == nil || !strings.Contains(err.Error(), "replace file") {
 		t.Fatalf("expected replace failure, got %v", err)
 	}
 }
@@ -337,18 +337,23 @@ func TestJSONStoreSaveOverwritesExistingSessionFile(t *testing.T) {
 
 func TestJSONStoreSaveWriteTempFailure(t *testing.T) {
 	t.Parallel()
+	if goruntime.GOOS == "windows" {
+		t.Skip("chmod write permission behavior is platform-specific on windows")
+	}
 
 	baseDir := t.TempDir()
 	workspaceRoot := t.TempDir()
 	store := NewJSONStore(baseDir, workspaceRoot)
-	sessionsPath := sessionDirectory(baseDir, workspaceRoot)
-	if err := os.MkdirAll(sessionsPath, 0o755); err != nil {
-		t.Fatalf("mkdir sessions path: %v", err)
+	sessionDir := filepath.Join(sessionDirectory(baseDir, workspaceRoot), "temp-blocked")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
 	}
-	tempDir := sessionFilePathForTest(baseDir, workspaceRoot, "temp-blocked") + ".tmp"
-	if err := os.MkdirAll(tempDir, 0o755); err != nil {
-		t.Fatalf("mkdir temp dir: %v", err)
+	if err := os.Chmod(sessionDir, 0o555); err != nil {
+		t.Fatalf("chmod session dir readonly: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = os.Chmod(sessionDir, 0o755)
+	})
 
 	err := store.Save(context.Background(), &Session{
 		SchemaVersion: CurrentSchemaVersion,
@@ -357,8 +362,19 @@ func TestJSONStoreSaveWriteTempFailure(t *testing.T) {
 		CreatedAt:     time.Now(),
 		UpdatedAt:     time.Now(),
 	})
-	if err == nil || !strings.Contains(err.Error(), "write temp session") {
+	if err == nil || !strings.Contains(err.Error(), "create temp file") {
 		t.Fatalf("expected temp write failure, got %v", err)
+	}
+}
+
+func TestEnsurePathWithinBaseRejectsEscapedPath(t *testing.T) {
+	t.Parallel()
+
+	baseDir := t.TempDir()
+	escaped := filepath.Join(baseDir, "..", "escaped", "session.json")
+
+	if err := ensurePathWithinBase(baseDir, escaped); err == nil || !strings.Contains(err.Error(), "escapes base dir") {
+		t.Fatalf("expected escaped path rejection, got %v", err)
 	}
 }
 

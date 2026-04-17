@@ -121,18 +121,14 @@ func (s *JSONStore) Save(ctx context.Context, session *Session) error {
 	payload = append(payload, '\n')
 
 	target := s.filePath(session.ID)
+	if err := ensurePathWithinBase(s.baseDir, target); err != nil {
+		return fmt.Errorf("session: resolve session file path: %w", err)
+	}
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return fmt.Errorf("session: create session dir: %w", err)
 	}
-	temp := target + ".tmp"
-	if err := os.WriteFile(temp, payload, 0o644); err != nil {
-		return fmt.Errorf("session: write temp session: %w", err)
-	}
-	if err := os.Remove(target); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("session: replace session file: %w", err)
-	}
-	if err := os.Rename(temp, target); err != nil {
-		return fmt.Errorf("session: commit session file: %w", err)
+	if err := writeFileAtomically(target, "session-*.tmp", payload, 0o644); err != nil {
+		return err
 	}
 
 	return nil
@@ -151,7 +147,12 @@ func (s *JSONStore) Load(ctx context.Context, id string) (Session, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	data, err := os.ReadFile(s.filePath(id))
+	target := s.filePath(id)
+	if err := ensurePathWithinBase(s.baseDir, target); err != nil {
+		return Session{}, fmt.Errorf("session: resolve session file path: %w", err)
+	}
+
+	data, err := os.ReadFile(target)
 	if err != nil {
 		return Session{}, err
 	}
@@ -193,7 +194,12 @@ func (s *JSONStore) ListSummaries(ctx context.Context) ([]Summary, error) {
 		default:
 		}
 
-		data, readErr := os.ReadFile(filepath.Join(s.baseDir, entry.Name(), sessionFileName))
+		target := filepath.Join(s.baseDir, entry.Name(), sessionFileName)
+		if err := ensurePathWithinBase(s.baseDir, target); err != nil {
+			continue
+		}
+
+		data, readErr := os.ReadFile(target)
 		if readErr != nil {
 			continue
 		}
@@ -261,40 +267,46 @@ func (s *JSONStore) SaveAsset(ctx context.Context, sessionID string, r io.Reader
 	defer s.mu.Unlock()
 
 	assetDir := s.assetsDir(sessionID)
+	if err := ensurePathWithinBase(s.baseDir, assetDir); err != nil {
+		return AssetMeta{}, fmt.Errorf("session: resolve assets dir path: %w", err)
+	}
 	if err := os.MkdirAll(assetDir, 0o755); err != nil {
 		return AssetMeta{}, fmt.Errorf("session: create assets dir: %w", err)
 	}
 
 	target := s.assetPath(sessionID, meta.ID)
-	temp := target + ".tmp"
-	f, err := os.OpenFile(temp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err := ensurePathWithinBase(s.baseDir, target); err != nil {
+		return AssetMeta{}, fmt.Errorf("session: resolve asset file path: %w", err)
+	}
+	tempFile, tempPath, err := createTempFile(assetDir, "asset-*.tmp", "create temp asset")
 	if err != nil {
-		return AssetMeta{}, fmt.Errorf("session: create temp asset: %w", err)
+		return AssetMeta{}, err
 	}
 
-	written, copyErr := io.Copy(f, io.LimitReader(r, providertypes.MaxSessionAssetBytes+1))
-	closeErr := f.Close()
+	written, copyErr := io.Copy(tempFile, io.LimitReader(r, providertypes.MaxSessionAssetBytes+1))
+	syncErr := tempFile.Sync()
+	closeErr := tempFile.Close()
 	if copyErr != nil {
-		_ = os.Remove(temp)
+		_ = os.Remove(tempPath)
 		return AssetMeta{}, fmt.Errorf("session: write temp asset: %w", copyErr)
 	}
 	if written > providertypes.MaxSessionAssetBytes {
-		_ = os.Remove(temp)
+		_ = os.Remove(tempPath)
 		return AssetMeta{}, fmt.Errorf("session: asset size exceeds %d bytes", providertypes.MaxSessionAssetBytes)
 	}
+	if syncErr != nil {
+		_ = os.Remove(tempPath)
+		return AssetMeta{}, fmt.Errorf("session: sync temp asset: %w", syncErr)
+	}
 	if closeErr != nil {
-		_ = os.Remove(temp)
+		_ = os.Remove(tempPath)
 		return AssetMeta{}, fmt.Errorf("session: close temp asset: %w", closeErr)
 	}
 
 	meta.Size = written
-	if err := os.Remove(target); err != nil && !errors.Is(err, os.ErrNotExist) {
-		_ = os.Remove(temp)
-		return AssetMeta{}, fmt.Errorf("session: replace asset file: %w", err)
-	}
-	if err := os.Rename(temp, target); err != nil {
-		_ = os.Remove(temp)
-		return AssetMeta{}, fmt.Errorf("session: commit asset file: %w", err)
+	if err := replaceFileWithTemp(tempPath, target, "asset file"); err != nil {
+		_ = os.Remove(tempPath)
+		return AssetMeta{}, err
 	}
 
 	metaData, err := encodeStoredAssetMeta(meta)
@@ -303,21 +315,13 @@ func (s *JSONStore) SaveAsset(ctx context.Context, sessionID string, r io.Reader
 		return AssetMeta{}, err
 	}
 	metaTarget := s.assetMetaPath(sessionID, meta.ID)
-	metaTemp := metaTarget + ".tmp"
-	if err := os.WriteFile(metaTemp, metaData, 0o644); err != nil {
+	if err := ensurePathWithinBase(s.baseDir, metaTarget); err != nil {
 		_ = os.Remove(target)
-		_ = os.Remove(metaTemp)
-		return AssetMeta{}, fmt.Errorf("session: write temp asset meta: %w", err)
+		return AssetMeta{}, fmt.Errorf("session: resolve asset meta file path: %w", err)
 	}
-	if err := os.Remove(metaTarget); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := writeFileAtomically(metaTarget, "asset-meta-*.tmp", metaData, 0o644); err != nil {
 		_ = os.Remove(target)
-		_ = os.Remove(metaTemp)
-		return AssetMeta{}, fmt.Errorf("session: replace asset meta file: %w", err)
-	}
-	if err := os.Rename(metaTemp, metaTarget); err != nil {
-		_ = os.Remove(target)
-		_ = os.Remove(metaTemp)
-		return AssetMeta{}, fmt.Errorf("session: commit asset meta file: %w", err)
+		return AssetMeta{}, err
 	}
 
 	return meta, nil
@@ -343,7 +347,11 @@ func (s *JSONStore) Open(ctx context.Context, sessionID string, assetID string) 
 		return nil, AssetMeta{}, err
 	}
 
-	file, err := os.Open(s.assetPath(sessionID, assetID))
+	target := s.assetPath(sessionID, assetID)
+	if err := ensurePathWithinBase(s.baseDir, target); err != nil {
+		return nil, AssetMeta{}, fmt.Errorf("session: resolve asset file path: %w", err)
+	}
+	file, err := os.Open(target)
 	if err != nil {
 		return nil, AssetMeta{}, err
 	}
@@ -370,7 +378,11 @@ func (s *JSONStore) Stat(ctx context.Context, sessionID string, assetID string) 
 
 // statUnlocked 在调用方已持有读锁时读取附件元数据，避免重复加锁导致死锁风险。
 func (s *JSONStore) statUnlocked(sessionID string, assetID string) (AssetMeta, error) {
-	data, err := os.ReadFile(s.assetMetaPath(sessionID, assetID))
+	target := s.assetMetaPath(sessionID, assetID)
+	if err := ensurePathWithinBase(s.baseDir, target); err != nil {
+		return AssetMeta{}, fmt.Errorf("session: resolve asset meta file path: %w", err)
+	}
+	data, err := os.ReadFile(target)
 	if err != nil {
 		return AssetMeta{}, err
 	}
@@ -535,6 +547,88 @@ func validateStorageID(label string, id string) error {
 	}
 	if !storageIDPattern.MatchString(trimmed) {
 		return fmt.Errorf("%s %q contains unsupported characters", label, id)
+	}
+	return nil
+}
+
+// ensurePathWithinBase 校验目标路径在给定基目录内，作为 ID 白名单之外的二次路径约束。
+func ensurePathWithinBase(baseDir string, target string) error {
+	baseAbs, err := filepath.Abs(baseDir)
+	if err != nil {
+		return fmt.Errorf("resolve base dir %q: %w", baseDir, err)
+	}
+	targetAbs, err := filepath.Abs(target)
+	if err != nil {
+		return fmt.Errorf("resolve target path %q: %w", target, err)
+	}
+	rel, err := filepath.Rel(baseAbs, targetAbs)
+	if err != nil {
+		return fmt.Errorf("compute relative path %q -> %q: %w", baseAbs, targetAbs, err)
+	}
+	if rel == "." {
+		return nil
+	}
+	if !filepath.IsLocal(rel) {
+		return fmt.Errorf("target path %q escapes base dir %q", targetAbs, baseAbs)
+	}
+	return nil
+}
+
+// createTempFile 在目标目录创建唯一临时文件，避免固定 *.tmp 命名在并发场景下冲突。
+func createTempFile(dir string, pattern string, op string) (*os.File, string, error) {
+	file, err := os.CreateTemp(dir, pattern)
+	if err != nil {
+		return nil, "", fmt.Errorf("session: %s: %w", op, err)
+	}
+	if err := ensurePathWithinBase(dir, file.Name()); err != nil {
+		_ = file.Close()
+		_ = os.Remove(file.Name())
+		return nil, "", fmt.Errorf("session: %s: %w", op, err)
+	}
+	return file, file.Name(), nil
+}
+
+// replaceFileWithTemp 使用原子重命名替换目标文件，兼容 Windows 需要先删除旧文件的行为。
+func replaceFileWithTemp(tempPath string, target string, label string) error {
+	if err := os.Remove(target); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("session: replace %s: %w", label, err)
+	}
+	if err := os.Rename(tempPath, target); err != nil {
+		return fmt.Errorf("session: commit %s: %w", label, err)
+	}
+	return nil
+}
+
+// writeFileAtomically 将字节数据写入唯一临时文件并原子替换目标文件，避免中间态文件暴露。
+func writeFileAtomically(target string, tempPattern string, payload []byte, perm os.FileMode) error {
+	dir := filepath.Dir(target)
+	tempFile, tempPath, err := createTempFile(dir, tempPattern, "create temp file")
+	if err != nil {
+		return err
+	}
+
+	_, writeErr := tempFile.Write(payload)
+	syncErr := tempFile.Sync()
+	closeErr := tempFile.Close()
+	if writeErr != nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("session: write temp file: %w", writeErr)
+	}
+	if syncErr != nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("session: sync temp file: %w", syncErr)
+	}
+	if closeErr != nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("session: close temp file: %w", closeErr)
+	}
+	if err := os.Chmod(tempPath, perm); err != nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("session: chmod temp file: %w", err)
+	}
+	if err := replaceFileWithTemp(tempPath, target, "file"); err != nil {
+		_ = os.Remove(tempPath)
+		return err
 	}
 	return nil
 }
