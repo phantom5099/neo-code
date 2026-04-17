@@ -37,6 +37,8 @@ type schedulerState struct {
 	outcomes   chan taskOutcome
 }
 
+var errSchedulerFailFast = errors.New("subagent: scheduler fail-fast triggered")
+
 // NewScheduler 创建 Task DAG 调度器，并校验核心依赖是否可用。
 func NewScheduler(store TodoStore, factory Factory, cfg SchedulerConfig) (*Scheduler, error) {
 	if store == nil {
@@ -58,6 +60,11 @@ func (s *Scheduler) Run(ctx context.Context) (ScheduleResult, error) {
 		return ScheduleResult{}, err
 	}
 
+	recovered, err := s.recoverInterruptedTodos()
+	if err != nil {
+		return ScheduleResult{}, err
+	}
+
 	initial := s.store.ListTodos()
 	graph, err := buildTaskGraph(initial)
 	if err != nil {
@@ -69,6 +76,7 @@ func (s *Scheduler) Run(ctx context.Context) (ScheduleResult, error) {
 		StartedAt: now,
 		Total:     len(graph.order),
 		Retried:   make(map[string]int),
+		Recovered: append([]string(nil), recovered...),
 	}
 	state := newSchedulerState(s.cfg.MaxConcurrency)
 	finalize := func(current ScheduleResult) ScheduleResult {
@@ -124,6 +132,82 @@ func (s *Scheduler) Run(ctx context.Context) (ScheduleResult, error) {
 			return finalize(result), err
 		}
 	}
+}
+
+// recoverInterruptedTodos 在调度开始前恢复遗留 in_progress 任务，确保重启后可继续推进。
+func (s *Scheduler) recoverInterruptedTodos() ([]string, error) {
+	items := s.store.ListTodos()
+	if len(items) == 0 {
+		return nil, nil
+	}
+
+	now := s.cfg.Clock()
+	recovered := make([]string, 0, len(items))
+	for _, item := range items {
+		if item.Status != agentsession.TodoStatusInProgress {
+			continue
+		}
+
+		reason := strings.TrimSpace(s.cfg.RecoveryReason)
+		if reason == "" {
+			reason = "recovered interrupted subagent execution"
+		}
+		retryLimit := item.RetryLimit
+		if retryLimit <= 0 {
+			retryLimit = s.cfg.MaxRetries
+		}
+		nextRetry := item.RetryCount + 1
+		ownerType := ""
+		ownerID := ""
+
+		var (
+			status      agentsession.TodoStatus
+			nextRetryAt time.Time
+		)
+		if s.cfg.recoveryAsFailure() || (retryLimit > 0 && nextRetry > retryLimit) {
+			status = agentsession.TodoStatusFailed
+			nextRetryAt = time.Time{}
+		} else {
+			status = agentsession.TodoStatusBlocked
+			nextRetryAt = now
+		}
+
+		patch := agentsession.TodoPatch{
+			Status:        &status,
+			OwnerType:     &ownerType,
+			OwnerID:       &ownerID,
+			FailureReason: &reason,
+			RetryCount:    &nextRetry,
+			RetryLimit:    &retryLimit,
+			NextRetryAt:   &nextRetryAt,
+		}
+		if err := s.store.UpdateTodo(item.ID, patch, item.Revision); err != nil {
+			if isRevisionConflict(err) {
+				continue
+			}
+			return nil, fmt.Errorf("subagent: recover interrupted todo %q: %w", item.ID, err)
+		}
+		recovered = append(recovered, item.ID)
+
+		if status == agentsession.TodoStatusBlocked {
+			s.emit(SchedulerEvent{
+				Type:    SchedulerEventSubAgentRetried,
+				TaskID:  item.ID,
+				Attempt: nextRetry,
+				Reason:  "recovered",
+				At:      now,
+			})
+		} else {
+			s.emit(SchedulerEvent{
+				Type:    SchedulerEventSubAgentFailed,
+				TaskID:  item.ID,
+				Attempt: nextRetry,
+				Reason:  reason,
+				At:      now,
+			})
+		}
+	}
+	return recovered, nil
 }
 
 // newSchedulerState 初始化调度运行态，避免循环中重复分配映射与通道。
@@ -183,6 +267,15 @@ func (s *Scheduler) collectReadyTasks(
 				Running:   len(state.running),
 				At:        now,
 			})
+			s.emit(SchedulerEvent{
+				Type:      SchedulerEventSubAgentProgress,
+				TaskID:    item.ID,
+				Attempt:   item.RetryCount + 1,
+				QueueSize: len(ready),
+				Running:   len(state.running),
+				Reason:    "retry_backoff",
+				At:        now,
+			})
 			continue
 		}
 		ready = append(ready, item.Clone())
@@ -206,6 +299,14 @@ func (s *Scheduler) ensureBlocked(item agentsession.TodoItem, reason string) err
 	s.emit(SchedulerEvent{
 		Type:    SchedulerEventBlocked,
 		TaskID:  item.ID,
+		Reason:  reason,
+		Running: 0,
+		At:      s.cfg.Clock(),
+	})
+	s.emit(SchedulerEvent{
+		Type:    SchedulerEventSubAgentProgress,
+		TaskID:  item.ID,
+		Attempt: item.RetryCount + 1,
 		Reason:  reason,
 		Running: 0,
 		At:      s.cfg.Clock(),
@@ -318,6 +419,21 @@ func (s *Scheduler) startReadyTasks(
 			Running: len(state.running),
 			At:      s.cfg.Clock(),
 		})
+		s.emit(SchedulerEvent{
+			Type:    SchedulerEventSubAgentStarted,
+			TaskID:  item.ID,
+			Attempt: attempt,
+			Running: len(state.running),
+			At:      s.cfg.Clock(),
+		})
+		s.emit(SchedulerEvent{
+			Type:    SchedulerEventSubAgentProgress,
+			TaskID:  item.ID,
+			Attempt: attempt,
+			Running: len(state.running),
+			Reason:  "running",
+			At:      s.cfg.Clock(),
+		})
 
 		go s.executeTaskAsync(ctx, state.outcomes, taskOutcome{
 			id:      item.ID,
@@ -361,8 +477,17 @@ func (s *Scheduler) handleOneOutcome(ctx context.Context, state *schedulerState,
 	case <-ctx.Done():
 		return ctx.Err()
 	case outcome := <-state.outcomes:
-		delete(state.running, outcome.id)
+		running, ok := state.running[outcome.id]
+		if ok {
+			delete(state.running, outcome.id)
+		}
 		delete(state.readySince, outcome.id)
+		if !ok {
+			return nil
+		}
+		if outcome.attempt != running.attempt {
+			return nil
+		}
 		return s.applyOutcome(outcome, state, summary)
 	case <-time.After(s.cfg.PollInterval):
 		return nil
@@ -395,6 +520,13 @@ func (s *Scheduler) applyOutcome(outcome taskOutcome, state *schedulerState, sum
 			Running: len(state.running),
 			At:      s.cfg.Clock(),
 		})
+		s.emit(SchedulerEvent{
+			Type:    SchedulerEventSubAgentCompleted,
+			TaskID:  current.ID,
+			Attempt: outcome.attempt,
+			Running: len(state.running),
+			At:      s.cfg.Clock(),
+		})
 		return nil
 	}
 
@@ -419,8 +551,12 @@ func (s *Scheduler) handleTaskFailure(
 		backoff := s.cfg.Backoff(nextRetryCount)
 		nextRetryAt := s.cfg.Clock().Add(backoff)
 		status := agentsession.TodoStatusBlocked
+		ownerType := ""
+		ownerID := ""
 		patch := agentsession.TodoPatch{
 			Status:        &status,
+			OwnerType:     &ownerType,
+			OwnerID:       &ownerID,
 			FailureReason: &reason,
 			RetryCount:    &nextRetryCount,
 			RetryLimit:    &retryLimit,
@@ -442,13 +578,25 @@ func (s *Scheduler) handleTaskFailure(
 			Running: len(state.running),
 			At:      s.cfg.Clock(),
 		})
+		s.emit(SchedulerEvent{
+			Type:    SchedulerEventSubAgentRetried,
+			TaskID:  current.ID,
+			Attempt: nextRetryCount,
+			Reason:  reason,
+			Running: len(state.running),
+			At:      s.cfg.Clock(),
+		})
 		return nil
 	}
 
 	status := agentsession.TodoStatusFailed
 	zeroRetryAt := time.Time{}
+	ownerType := ""
+	ownerID := ""
 	patch := agentsession.TodoPatch{
 		Status:        &status,
+		OwnerType:     &ownerType,
+		OwnerID:       &ownerID,
 		FailureReason: &reason,
 		RetryCount:    &nextRetryCount,
 		RetryLimit:    &retryLimit,
@@ -470,6 +618,17 @@ func (s *Scheduler) handleTaskFailure(
 		Running: len(state.running),
 		At:      s.cfg.Clock(),
 	})
+	s.emit(SchedulerEvent{
+		Type:    SchedulerEventSubAgentFailed,
+		TaskID:  current.ID,
+		Attempt: nextRetryCount,
+		Reason:  reason,
+		Running: len(state.running),
+		At:      s.cfg.Clock(),
+	})
+	if s.cfg.failFastEnabled() {
+		return fmt.Errorf("%w: task=%s reason=%s", errSchedulerFailFast, current.ID, reason)
+	}
 	return nil
 }
 
@@ -488,8 +647,12 @@ func (s *Scheduler) cancelRunningTodos(state *schedulerState, cause error) {
 		if !ok || item.Status.IsTerminal() {
 			continue
 		}
+		ownerType := ""
+		ownerID := ""
 		patch := agentsession.TodoPatch{
 			Status:        &status,
+			OwnerType:     &ownerType,
+			OwnerID:       &ownerID,
 			FailureReason: &reason,
 		}
 		if err := s.store.UpdateTodo(item.ID, patch, item.Revision); err != nil && !isRevisionConflict(err) {
@@ -497,6 +660,13 @@ func (s *Scheduler) cancelRunningTodos(state *schedulerState, cause error) {
 		}
 		s.emit(SchedulerEvent{
 			Type:    SchedulerEventCanceled,
+			TaskID:  item.ID,
+			Reason:  reason,
+			Running: len(state.running),
+			At:      s.cfg.Clock(),
+		})
+		s.emit(SchedulerEvent{
+			Type:    SchedulerEventSubAgentCanceled,
 			TaskID:  item.ID,
 			Reason:  reason,
 			Running: len(state.running),
@@ -684,6 +854,12 @@ func appendUniqueString(dst *[]string, value string) {
 
 // resolveTaskFailureReason 统一提取失败原因，保证回写文本稳定可读。
 func resolveTaskFailureReason(outcome taskOutcome) string {
+	switch outcome.result.StopReason {
+	case StopReasonMaxSteps:
+		return "budget exhausted: max steps reached"
+	case StopReasonTimeout:
+		return "budget exhausted: timeout exceeded"
+	}
 	if outcome.err != nil {
 		if text := strings.TrimSpace(outcome.err.Error()); text != "" {
 			return text
