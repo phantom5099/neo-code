@@ -52,7 +52,14 @@ func TestGatewayConfigApplyDefaultsAndValidate(t *testing.T) {
 }
 
 func TestLoadGatewayConfig(t *testing.T) {
-	t.Parallel()
+	t.Run("cancelled context returns error", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := LoadGatewayConfig(ctx, t.TempDir()); err == nil {
+			t.Fatal("expected canceled context error")
+		}
+	})
 
 	t.Run("missing file uses defaults", func(t *testing.T) {
 		t.Parallel()
@@ -63,6 +70,14 @@ func TestLoadGatewayConfig(t *testing.T) {
 		if !cfg.Observability.Enabled() {
 			t.Fatal("metrics should default to enabled")
 		}
+	})
+
+	t.Run("empty basedir falls back to user home", func(t *testing.T) {
+		cfg, err := LoadGatewayConfig(context.Background(), "")
+		if err != nil {
+			t.Fatalf("load gateway config with empty base dir: %v", err)
+		}
+		_ = cfg
 	})
 
 	t.Run("reads gateway section", func(t *testing.T) {
@@ -137,6 +152,19 @@ gateway:
 		}
 		if !strings.Contains(err.Error(), "max_frame_bytes") {
 			t.Fatalf("error = %v, want max_frame_bytes validation", err)
+		}
+	})
+
+	t.Run("invalid yaml returns parse error", func(t *testing.T) {
+		t.Parallel()
+		baseDir := t.TempDir()
+		configPath := filepath.Join(baseDir, configName)
+		if err := os.WriteFile(configPath, []byte("gateway: ["), 0o644); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		_, err := LoadGatewayConfig(context.Background(), baseDir)
+		if err == nil || !strings.Contains(err.Error(), "parse gateway config file") {
+			t.Fatalf("expected parse gateway config error, got %v", err)
 		}
 	})
 }
@@ -371,4 +399,23 @@ func TestGatewayNormalizeAllowOrigins(t *testing.T) {
 	if normalized[0] != "http://localhost" || normalized[1] != "app://desktop" {
 		t.Fatalf("normalized = %#v, want trimmed values", normalized)
 	}
+}
+
+func TestGatewayApplyDefaultsNilReceivers(t *testing.T) {
+	t.Parallel()
+
+	var gatewayCfg *GatewayConfig
+	gatewayCfg.ApplyDefaults(defaultGatewayConfig())
+
+	var securityCfg *GatewaySecurityConfig
+	securityCfg.ApplyDefaults(GatewaySecurityConfig{ACLMode: DefaultGatewayACLMode})
+
+	var limitsCfg *GatewayLimitsConfig
+	limitsCfg.ApplyDefaults(GatewayLimitsConfig{MaxFrameBytes: 1})
+
+	var timeoutsCfg *GatewayTimeoutsConfig
+	timeoutsCfg.ApplyDefaults(GatewayTimeoutsConfig{IPCReadSec: 1})
+
+	var observabilityCfg *GatewayObservabilityConfig
+	observabilityCfg.ApplyDefaults(GatewayObservabilityConfig{MetricsEnabled: boolPtr(false)})
 }

@@ -147,3 +147,24 @@ func TestConnectionAuthStateNilReceiver(t *testing.T) {
 		t.Fatal("nil state should remain unauthenticated")
 	}
 }
+
+func TestRequestContextWithHelpersOnNilContextIndividually(t *testing.T) {
+	if token := RequestTokenFromContext(WithRequestToken(nil, " token-2 ")); token != "token-2" {
+		t.Fatalf("token = %q, want %q", token, "token-2")
+	}
+	if _, ok := ConnectionAuthStateFromContext(WithConnectionAuthState(nil, NewConnectionAuthState())); !ok {
+		t.Fatal("expected auth state to be attached on nil context")
+	}
+	if _, ok := TokenAuthenticatorFromContext(WithTokenAuthenticator(nil, stubTokenAuthenticator{token: "t"})); !ok {
+		t.Fatal("expected authenticator to be attached on nil context")
+	}
+	if _, ok := RequestACLFromContext(WithRequestACL(nil, NewStrictControlPlaneACL())); !ok {
+		t.Fatal("expected acl to be attached on nil context")
+	}
+	if _, ok := GatewayMetricsFromContext(WithGatewayMetrics(nil, NewGatewayMetrics())); !ok {
+		t.Fatal("expected metrics to be attached on nil context")
+	}
+	if _, ok := GatewayLoggerFromContext(WithGatewayLogger(nil, log.New(os.Stderr, "", 0))); !ok {
+		t.Fatal("expected logger to be attached on nil context")
+	}
+}

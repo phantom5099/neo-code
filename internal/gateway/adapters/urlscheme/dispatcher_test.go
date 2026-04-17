@@ -785,6 +785,47 @@ func TestDispatcherDispatchAdditionalErrorBranches(t *testing.T) {
 	})
 }
 
+func TestDispatcherAuthenticateBranches(t *testing.T) {
+	t.Run("rpc returns error", func(t *testing.T) {
+		dispatcher := &Dispatcher{
+			requestIDFn: func() string { return "wake-auth-1" },
+		}
+		conn := &stubDispatchConn{
+			readBuffer: bytes.NewBufferString(`{"jsonrpc":"2.0","id":"wake-auth-1-auth","error":{"code":-32600,"message":"unauthorized","data":{"gateway_code":"unauthorized"}}}` + "\n"),
+		}
+		err := dispatcher.authenticate(context.Background(), conn, "token-1")
+		if err == nil {
+			t.Fatal("expected authenticate rpc error")
+		}
+	})
+
+	t.Run("missing auth result payload", func(t *testing.T) {
+		dispatcher := &Dispatcher{
+			requestIDFn: func() string { return "wake-auth-2" },
+		}
+		conn := &stubDispatchConn{
+			readBuffer: bytes.NewBufferString(`{"jsonrpc":"2.0","id":"wake-auth-2-auth"}` + "\n"),
+		}
+		err := dispatcher.authenticate(context.Background(), conn, "token-1")
+		if err == nil || !strings.Contains(err.Error(), "missing result payload") {
+			t.Fatalf("expected missing result payload error, got %v", err)
+		}
+	})
+
+	t.Run("unexpected auth frame", func(t *testing.T) {
+		dispatcher := &Dispatcher{
+			requestIDFn: func() string { return "wake-auth-3" },
+		}
+		conn := &stubDispatchConn{
+			readBuffer: bytes.NewBufferString(`{"jsonrpc":"2.0","id":"wake-auth-3-auth","result":{"type":"ack","action":"gateway.ping","request_id":"wake-auth-3-auth"}}` + "\n"),
+		}
+		err := dispatcher.authenticate(context.Background(), conn, "token-1")
+		if err == nil || !strings.Contains(err.Error(), "unexpected auth response frame") {
+			t.Fatalf("expected unexpected auth frame error, got %v", err)
+		}
+	})
+}
+
 func TestDispatcherDispatchWithAuthHandshake(t *testing.T) {
 	serverConn, clientConn := net.Pipe()
 	t.Cleanup(func() {

@@ -51,3 +51,13 @@ func TestACLModeAndNilBehavior(t *testing.T) {
 		t.Fatal("disabled acl should allow all requests")
 	}
 }
+
+func TestACLModeAndMethodValidationBranches(t *testing.T) {
+	acl := NewStrictControlPlaneACL()
+	if acl.Mode() != ACLModeStrict {
+		t.Fatalf("mode = %q, want %q", acl.Mode(), ACLModeStrict)
+	}
+	if acl.IsAllowed(RequestSourceIPC, "   ") {
+		t.Fatal("empty normalized method should be denied")
+	}
+}
