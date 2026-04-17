@@ -63,13 +63,12 @@ func readFileSummarizer(content string, metadata map[string]string, isError bool
 		return ""
 	}
 
-	trimmed := strings.TrimRight(content, "\n")
-	lineCount := stableLineCount(trimmed)
+	lineCount := stableLineCount(content)
 
 	var parts []string
 	parts = append(parts, "[summary]", path, "lines="+strconv.Itoa(lineCount))
-	if trimmed != "" {
-		parts = append(parts, "chars="+strconv.Itoa(utf8.RuneCountInString(trimmed)))
+	if content != "" {
+		parts = append(parts, "chars="+strconv.Itoa(utf8.RuneCountInString(content)))
 	}
 
 	return truncateRunes(strings.Join(parts, " "), summaryMaxRunes)
@@ -118,23 +117,8 @@ func grepSummarizer(content string, metadata map[string]string, isError bool) st
 		parts = append(parts, "lines="+matchedLines)
 	}
 
-	// 从 content 中提取前几个不重复文件名
-	contentLines := strings.Split(strings.TrimSpace(content), "\n")
-	fileSet := make(map[string]struct{})
-	var fileNames []string
-	for _, line := range contentLines {
-		if len(fileSet) >= 3 {
-			break
-		}
-		idx := strings.Index(line, ":")
-		if idx > 0 {
-			f := line[:idx]
-			if _, ok := fileSet[f]; !ok {
-				fileSet[f] = struct{}{}
-				fileNames = append(fileNames, f)
-			}
-		}
-	}
+	// 从 content 中提取前几个不重复文件名，避免对整段输出做全量切分。
+	fileNames := extractUniqueMatchFiles(content, 3)
 	if len(fileNames) > 0 {
 		parts = append(parts, "matches="+strings.Join(fileNames, ", "))
 	}
@@ -149,18 +133,7 @@ func globSummarizer(content string, metadata map[string]string, isError bool) st
 		count = "?"
 	}
 
-	contentLines := strings.Split(strings.TrimSpace(content), "\n")
-	const previewLimit = 3
-	var preview []string
-	for i, line := range contentLines {
-		if i >= previewLimit {
-			break
-		}
-		trimmed := strings.TrimSpace(line)
-		if trimmed != "" {
-			preview = append(preview, trimmed)
-		}
-	}
+	preview := collectPreviewLines(content, 3)
 
 	var parts []string
 	parts = append(parts, "[summary] glob", count+" files")
@@ -200,7 +173,14 @@ func stableLineCount(text string) int {
 	if text == "" {
 		return 0
 	}
-	return strings.Count(text, "\n") + 1
+	count := strings.Count(text, "\n") + 1
+	if strings.HasSuffix(text, "\n") {
+		count--
+	}
+	if count < 0 {
+		return 0
+	}
+	return count
 }
 
 // appendTextStats 为摘要补充文本统计字段，保持统一的结构化输出格式。
@@ -209,4 +189,87 @@ func appendTextStats(parts []string, text string) []string {
 		"lines="+strconv.Itoa(stableLineCount(text)),
 		"chars="+strconv.Itoa(utf8.RuneCountInString(text)),
 	)
+}
+
+// extractUniqueMatchFiles 按行扫描 grep 输出，提取前若干个去重后的文件名摘要。
+func extractUniqueMatchFiles(content string, limit int) []string {
+	if limit <= 0 {
+		return nil
+	}
+
+	seen := make(map[string]struct{}, limit)
+	result := make([]string, 0, limit)
+	remaining := content
+	for len(remaining) > 0 && len(result) < limit {
+		line, rest := nextLine(remaining)
+		remaining = rest
+
+		colon := strings.Index(line, ":")
+		if colon <= 0 {
+			continue
+		}
+
+		file := sanitizeSummaryToken(line[:colon], 80)
+		if file == "" {
+			continue
+		}
+		if _, ok := seen[file]; ok {
+			continue
+		}
+		seen[file] = struct{}{}
+		result = append(result, file)
+	}
+	return result
+}
+
+// collectPreviewLines 按行扫描输出并提取前若干个非空预览，避免全量 Split 带来的额外分配。
+func collectPreviewLines(content string, limit int) []string {
+	if limit <= 0 {
+		return nil
+	}
+
+	result := make([]string, 0, limit)
+	remaining := content
+	for len(remaining) > 0 && len(result) < limit {
+		line, rest := nextLine(remaining)
+		remaining = rest
+
+		clean := sanitizeSummaryToken(line, 100)
+		if clean == "" {
+			continue
+		}
+		result = append(result, clean)
+	}
+	return result
+}
+
+// nextLine 返回 text 的首行及余下文本，兼容存在或不存在换行符的输入。
+func nextLine(text string) (line string, rest string) {
+	idx := strings.IndexByte(text, '\n')
+	if idx < 0 {
+		return text, ""
+	}
+	return text[:idx], text[idx+1:]
+}
+
+// sanitizeSummaryToken 清理不可见控制字符并裁剪长度，降低摘要注入风险。
+func sanitizeSummaryToken(text string, maxRunes int) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return ""
+	}
+
+	var b strings.Builder
+	b.Grow(len(trimmed))
+	for _, r := range trimmed {
+		if r < 32 || r == 127 {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	clean := strings.TrimSpace(b.String())
+	if clean == "" {
+		return ""
+	}
+	return truncateRunes(clean, maxRunes)
 }

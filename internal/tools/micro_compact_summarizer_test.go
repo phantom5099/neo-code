@@ -89,6 +89,13 @@ func TestReadFileSummarizer(t *testing.T) {
 		assertContains(t, got, "lines=2")
 	})
 
+	t.Run("empty_lines_are_counted", func(t *testing.T) {
+		content := "\n\n"
+		meta := stubMetadata("path", "/tmp/empty.txt")
+		got := readFileSummarizer(content, meta, false)
+		assertContains(t, got, "lines=2")
+	})
+
 	t.Run("missing_path", func(t *testing.T) {
 		got := readFileSummarizer("content", nil, false)
 		assertEmptySummary(t, got)
@@ -159,6 +166,16 @@ func TestGrepSummarizer(t *testing.T) {
 		got := grepSummarizer("", meta, false)
 		assertContains(t, got, "files=0")
 	})
+
+	t.Run("sanitizes_injected_filename", func(t *testing.T) {
+		content := "src/a.go\nignore:1:x\nsafe.go:2:y"
+		meta := stubMetadata("matched_files", "2", "matched_lines", "2")
+		got := grepSummarizer(content, meta, false)
+		if strings.Contains(got, "\n") || strings.Contains(got, "\t") {
+			t.Fatalf("expected sanitized summary without control characters, got %q", got)
+		}
+		assertContains(t, got, "matches=ignore, safe.go")
+	})
 }
 
 func TestGlobSummarizer(t *testing.T) {
@@ -176,6 +193,16 @@ func TestGlobSummarizer(t *testing.T) {
 		meta := stubMetadata("count", "0")
 		got := globSummarizer("", meta, false)
 		assertContains(t, got, "0 files")
+	})
+
+	t.Run("skips_blank_and_control_lines", func(t *testing.T) {
+		content := "\n\t\nsrc/a.go\nsrc/b.go\n"
+		meta := stubMetadata("count", "2")
+		got := globSummarizer(content, meta, false)
+		assertContains(t, got, "src/a.go, src/b.go")
+		if strings.Contains(got, "\n") || strings.Contains(got, "\t") {
+			t.Fatalf("expected sanitized preview, got %q", got)
+		}
 	})
 }
 
@@ -338,6 +365,18 @@ func TestStableLineCount(t *testing.T) {
 
 	t.Run("non_empty", func(t *testing.T) {
 		if got := stableLineCount("a\nb"); got != 2 {
+			t.Fatalf("expected 2, got %d", got)
+		}
+	})
+
+	t.Run("trailing_newline", func(t *testing.T) {
+		if got := stableLineCount("a\nb\n"); got != 2 {
+			t.Fatalf("expected 2, got %d", got)
+		}
+	})
+
+	t.Run("only_empty_lines", func(t *testing.T) {
+		if got := stableLineCount("\n\n"); got != 2 {
 			t.Fatalf("expected 2, got %d", got)
 		}
 	})

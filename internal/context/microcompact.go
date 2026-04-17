@@ -15,7 +15,7 @@ const (
 	defaultMicroCompactRetainedToolSpans = 2
 )
 
-// microCompactMessages 对裁剪后的消息做只读投影式微压缩，仅清理旧工具结果内容。
+// microCompactMessages 对裁剪后的消息做只读投影式微压缩，优先摘要旧工具结果，失败时回退清理占位。
 func microCompactMessages(messages []providertypes.Message) []providertypes.Message {
 	return microCompactMessagesWithPolicies(messages, nil, 0, nil)
 }
@@ -48,7 +48,8 @@ func microCompactMessagesWithPolicies(messages []providertypes.Message, policies
 		if len(compactableIDs) == 0 {
 			continue
 		}
-		if !hasCompactableToolContent(cloned, span, compactableIDs) {
+		compactableContents := compactableToolMessageContents(cloned, span, compactableIDs)
+		if len(compactableContents) == 0 {
 			continue
 		}
 		if retainedCompactableSpans < retainedToolSpans {
@@ -57,10 +58,12 @@ func microCompactMessagesWithPolicies(messages []providertypes.Message, policies
 		}
 
 		for messageIndex := span.Start + 1; messageIndex < span.End; messageIndex++ {
-			if content, ok := compactableToolMessageContent(cloned[messageIndex], compactableIDs); ok {
-				summary := summarizeOrClear(cloned[messageIndex], content, toolNames, summarizers)
-				cloned[messageIndex].Parts = []providertypes.ContentPart{providertypes.NewTextPart(summary)}
+			content, ok := compactableContents[messageIndex]
+			if !ok {
+				continue
 			}
+			summary := summarizeOrClear(cloned[messageIndex], content, toolNames, summarizers)
+			cloned[messageIndex].Parts = []providertypes.ContentPart{providertypes.NewTextPart(summary)}
 		}
 	}
 
@@ -131,14 +134,20 @@ func toolParticipatesInMicroCompact(toolName string, policies MicroCompactPolicy
 	return policies.MicroCompactPolicy(toolName) != tools.MicroCompactPolicyPreserveHistory
 }
 
-// hasCompactableToolContent 判断工具块中是否存在会影响保留预算的有效工具结果内容。
-func hasCompactableToolContent(messages []providertypes.Message, span internalcompact.MessageSpan, compactableIDs map[string]struct{}) bool {
+// compactableToolMessageContents 收集工具块中可压缩消息的渲染内容，避免重复渲染。
+func compactableToolMessageContents(messages []providertypes.Message, span internalcompact.MessageSpan, compactableIDs map[string]struct{}) map[int]string {
+	var contents map[int]string
 	for messageIndex := span.Start + 1; messageIndex < span.End; messageIndex++ {
-		if _, ok := compactableToolMessageContent(messages[messageIndex], compactableIDs); ok {
-			return true
+		content, ok := compactableToolMessageContent(messages[messageIndex], compactableIDs)
+		if !ok {
+			continue
 		}
+		if contents == nil {
+			contents = make(map[int]string)
+		}
+		contents[messageIndex] = content
 	}
-	return false
+	return contents
 }
 
 // compactableToolMessageContent 判断 tool 消息是否可压缩，并返回渲染后的内容文本。
