@@ -39,6 +39,7 @@ func TestSubAgentRuntimeToolExecutorListToolSpecs(t *testing.T) {
 		{name: "single allowlist", allow: []string{"bash"}, wantSize: 1},
 		{name: "case-insensitive allowlist", allow: []string{"FILESYSTEM_READ_FILE"}, wantSize: 1},
 		{name: "empty allowlist denies all", allow: []string{""}, wantSize: 0},
+		{name: "unknown tool allowlist", allow: []string{"webfetch"}, wantSize: 0},
 	}
 
 	for _, tt := range tests {
@@ -161,6 +162,54 @@ func TestSubAgentRuntimeToolExecutorExecuteToolEvents(t *testing.T) {
 		events := collectRuntimeEvents(service.Events())
 		assertEventSequence(t, events, []EventType{EventSubAgentToolCallStarted, EventSubAgentToolCallDenied})
 		assertSubAgentToolEventPayload(t, events, EventSubAgentToolCallDenied, "bash", string(security.DecisionDeny), false)
+	})
+
+	t.Run("permission reject message should emit denied", func(t *testing.T) {
+		t.Parallel()
+
+		service := NewWithFactory(
+			newRuntimeConfigManager(t),
+			&stubToolManager{
+				executeFn: func(ctx context.Context, input tools.ToolCallInput) (tools.ToolResult, error) {
+					_ = ctx
+					return tools.ToolResult{
+						ToolCallID: input.ID,
+						Name:       input.Name,
+						Content:    "permission rejected",
+						IsError:    true,
+					}, errors.New(permissionRejectedErrorMessage)
+				},
+			},
+			newMemoryStore(),
+			&scriptedProviderFactory{provider: &scriptedProvider{}},
+			nil,
+		)
+		executor := newSubAgentRuntimeToolExecutor(service)
+
+		result, execErr := executor.ExecuteTool(context.Background(), subagent.ToolExecutionInput{
+			RunID:     "run-subagent-tool-reject",
+			SessionID: "session-subagent-tool-reject",
+			TaskID:    "task-subagent-tool-reject",
+			Role:      subagent.RoleCoder,
+			AgentID:   "subagent:reject",
+			Workdir:   t.TempDir(),
+			Timeout:   2 * time.Second,
+			Call: providertypes.ToolCall{
+				ID:        "call-reject",
+				Name:      "filesystem_read_file",
+				Arguments: `{"path":"README.md"}`,
+			},
+		})
+		if execErr == nil || !strings.Contains(execErr.Error(), "permission rejected by user") {
+			t.Fatalf("expected permission rejected error, got %v", execErr)
+		}
+		if result.Decision != permissionDecisionDeny {
+			t.Fatalf("decision = %q, want %q", result.Decision, permissionDecisionDeny)
+		}
+
+		events := collectRuntimeEvents(service.Events())
+		assertEventSequence(t, events, []EventType{EventSubAgentToolCallStarted, EventSubAgentToolCallDenied})
+		assertSubAgentToolEventPayload(t, events, EventSubAgentToolCallDenied, "filesystem_read_file", permissionDecisionDeny, false)
 	})
 
 	t.Run("non-permission error should include elapsed and error payload", func(t *testing.T) {

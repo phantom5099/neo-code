@@ -64,8 +64,8 @@ func (p RolePolicy) Validate() error {
 	if !p.ToolUseMode.Valid() {
 		return errorsf("role policy tool use mode %q is invalid", p.ToolUseMode)
 	}
-	if p.MaxToolCallsPerStep < 0 {
-		return errorsf("role policy max tool calls per step must not be negative")
+	if p.MaxToolCallsPerStep <= 0 {
+		return errorsf("role policy max tool calls per step must be greater than zero")
 	}
 	if _, err := normalizeRequiredSections(p.RequiredSections); err != nil {
 		return err

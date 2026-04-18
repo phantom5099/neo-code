@@ -68,3 +68,51 @@ func TestNewWorkerFactoryNilBuilderUsesDefaultEngine(t *testing.T) {
 		t.Fatalf("default engine should finish in one step")
 	}
 }
+
+func TestWithToolExecutorOptionOverridesExecutionContext(t *testing.T) {
+	t.Parallel()
+
+	var captured ToolExecutor
+	factory := NewWorkerFactory(func(role Role, policy RolePolicy) Engine {
+		_ = role
+		_ = policy
+		return EngineFunc(func(ctx context.Context, input StepInput) (StepOutput, error) {
+			_ = ctx
+			captured = input.Executor
+			return StepOutput{
+				Done: true,
+				Output: Output{
+					Summary:     "ok",
+					Findings:    []string{"f"},
+					Patches:     []string{"p"},
+					Risks:       []string{"r"},
+					NextActions: []string{"n"},
+					Artifacts:   []string{"a"},
+				},
+			}, nil
+		})
+	}, WithExecutionContext(ExecutionContext{}), WithToolExecutor(noopToolExecutor{}))
+
+	worker, err := factory.Create(RoleCoder)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err := worker.Start(Task{ID: "task-tool-executor", Goal: "goal"}, Budget{MaxSteps: 1}, Capability{}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if _, err := worker.Step(context.Background()); err != nil {
+		t.Fatalf("Step() error = %v", err)
+	}
+	if captured == nil {
+		t.Fatalf("expected executor to be injected")
+	}
+}
+
+func TestFactoryOptionsIgnoreNilReceiver(t *testing.T) {
+	t.Parallel()
+
+	var nilFactory *WorkerFactory
+	WithExecutionContext(ExecutionContext{ToolExecutor: noopToolExecutor{}})(nilFactory)
+	WithToolExecutor(noopToolExecutor{})(nilFactory)
+	applyFactoryOptions(nilFactory, nil, WithToolExecutor(noopToolExecutor{}))
+}

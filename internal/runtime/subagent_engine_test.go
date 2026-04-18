@@ -433,6 +433,108 @@ func TestRuntimeSubAgentEngineAbortOnNonRecoverableToolError(t *testing.T) {
 	}
 }
 
+func TestRuntimeSubAgentEngineAskRejectIsRecoverable(t *testing.T) {
+	t.Parallel()
+
+	manager := newRuntimeConfigManager(t)
+	providerImpl := &scriptedProvider{
+		responses: []scriptedResponse{
+			{
+				Message: providertypes.Message{
+					Role: providertypes.RoleAssistant,
+					ToolCalls: []providertypes.ToolCall{
+						{ID: "call-1", Name: "filesystem_read_file", Arguments: `{"path":"README.md"}`},
+					},
+				},
+				FinishReason: "tool_calls",
+			},
+			{
+				Message: providertypes.Message{
+					Role:  providertypes.RoleAssistant,
+					Parts: []providertypes.ContentPart{providertypes.NewTextPart(subAgentDonePayload)},
+				},
+				FinishReason: "stop",
+			},
+		},
+	}
+	service := NewWithFactory(manager, &stubToolManager{}, newMemoryStore(), &scriptedProviderFactory{provider: providerImpl}, nil)
+	policy, err := subagent.DefaultRolePolicy(subagent.RoleCoder)
+	if err != nil {
+		t.Fatalf("DefaultRolePolicy() error = %v", err)
+	}
+	engine := runtimeSubAgentEngine{service: service, role: subagent.RoleCoder, policy: policy}
+	stepInput := newRuntimeSubAgentStepInput(t, service, policy, subagent.Task{ID: "task-ask-reject", Goal: "tool reject should continue"})
+	stepInput.Capability = subagent.Capability{AllowedTools: []string{"filesystem_read_file"}}
+	stepInput.Executor = failingToolExecutor{
+		err:      errors.New(permissionRejectedErrorMessage),
+		decision: permissionDecisionDeny,
+	}
+
+	output, err := engine.RunStep(context.Background(), stepInput)
+	if err != nil {
+		t.Fatalf("RunStep() error = %v", err)
+	}
+	if !output.Done {
+		t.Fatalf("expected step done")
+	}
+	if output.Output.Summary != "done" {
+		t.Fatalf("summary = %q, want done", output.Output.Summary)
+	}
+}
+
+func TestRuntimeSubAgentEngineLowWorkerBudgetStillAllowsToolClosure(t *testing.T) {
+	t.Parallel()
+
+	manager := newRuntimeConfigManager(t)
+	providerImpl := &scriptedProvider{
+		responses: []scriptedResponse{
+			{
+				Message: providertypes.Message{
+					Role: providertypes.RoleAssistant,
+					ToolCalls: []providertypes.ToolCall{
+						{ID: "call-1", Name: "filesystem_read_file", Arguments: `{"path":"README.md"}`},
+					},
+				},
+				FinishReason: "tool_calls",
+			},
+			{
+				Message: providertypes.Message{
+					Role:  providertypes.RoleAssistant,
+					Parts: []providertypes.ContentPart{providertypes.NewTextPart(subAgentDonePayload)},
+				},
+				FinishReason: "stop",
+			},
+		},
+	}
+	toolManager := &stubToolManager{
+		specs: []providertypes.ToolSpec{{Name: "filesystem_read_file", Schema: map[string]any{"type": "object"}}},
+		executeFn: func(ctx context.Context, input tools.ToolCallInput) (tools.ToolResult, error) {
+			_ = ctx
+			return tools.ToolResult{ToolCallID: input.ID, Name: input.Name, Content: "ok"}, nil
+		},
+	}
+	service := NewWithFactory(manager, toolManager, newMemoryStore(), &scriptedProviderFactory{provider: providerImpl}, nil)
+	policy, err := subagent.DefaultRolePolicy(subagent.RoleCoder)
+	if err != nil {
+		t.Fatalf("DefaultRolePolicy() error = %v", err)
+	}
+	engine := runtimeSubAgentEngine{service: service, role: subagent.RoleCoder, policy: policy}
+	stepInput := newRuntimeSubAgentStepInput(t, service, policy, subagent.Task{ID: "task-low-budget", Goal: "tool closure with low outer budget"})
+	stepInput.Budget = subagent.Budget{MaxSteps: 1}
+	stepInput.Capability = subagent.Capability{AllowedTools: []string{"filesystem_read_file"}}
+
+	output, err := engine.RunStep(context.Background(), stepInput)
+	if err != nil {
+		t.Fatalf("RunStep() error = %v", err)
+	}
+	if !output.Done {
+		t.Fatalf("expected step done")
+	}
+	if providerImpl.callCount != 2 {
+		t.Fatalf("provider calls = %d, want 2", providerImpl.callCount)
+	}
+}
+
 func TestParseSubAgentOutput(t *testing.T) {
 	t.Parallel()
 
@@ -558,7 +660,8 @@ func newRuntimeSubAgentStepInput(
 }
 
 type failingToolExecutor struct {
-	err error
+	err      error
+	decision string
 }
 
 func (f failingToolExecutor) ListToolSpecs(
@@ -576,10 +679,14 @@ func (f failingToolExecutor) ExecuteTool(
 ) (subagent.ToolExecutionResult, error) {
 	_ = ctx
 	_ = input
+	decision := strings.TrimSpace(f.decision)
+	if decision == "" {
+		decision = "error"
+	}
 	return subagent.ToolExecutionResult{
 		Name:     "filesystem_read_file",
 		Content:  "",
-		Decision: "error",
+		Decision: decision,
 		IsError:  true,
 	}, f.err
 }

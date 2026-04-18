@@ -97,7 +97,7 @@ func (e runtimeSubAgentEngine) RunStep(ctx context.Context, input subagent.StepI
 	systemPrompt := buildSubAgentSystemPrompt(input.Policy, allowedTools)
 	messages := buildSubAgentInitialMessages(input)
 	totalToolCalls := 0
-	maxTurns := resolveSubAgentMaxTurns(input.Budget.MaxSteps)
+	maxTurns := resolveSubAgentMaxTurns(input.Policy.DefaultBudget.MaxSteps)
 
 	for turn := 1; turn <= maxTurns; turn++ {
 		outcome, err := e.generateStepMessage(ctx, modelProvider, model, systemPrompt, messages, toolSpecs)
@@ -306,6 +306,7 @@ func buildSubAgentInitialMessages(input subagent.StepInput) []providertypes.Mess
 
 // buildSubAgentSystemPrompt 构建子代理策略提示词，约束工具决策和输出契约。
 func buildSubAgentSystemPrompt(policy subagent.RolePolicy, allowedTools []string) string {
+	maxToolCallsPerStep := effectiveMaxToolCallsPerStep(policy.MaxToolCallsPerStep)
 	lines := []string{strings.TrimSpace(policy.SystemPrompt)}
 	lines = append(lines,
 		"你是子代理执行引擎的一部分，必须根据任务目标自主决定是否调用工具。",
@@ -313,7 +314,7 @@ func buildSubAgentSystemPrompt(policy subagent.RolePolicy, allowedTools []string
 		"工具失败后优先换参数或换工具，若仍失败则在输出中明确风险与后续动作。",
 		"最终输出必须是 JSON 对象，且必须包含键：summary, findings, patches, risks, next_actions, artifacts。",
 		fmt.Sprintf("tool_use_mode: %s", policy.ToolUseMode),
-		fmt.Sprintf("max_tool_calls_per_step: %d", policy.MaxToolCallsPerStep),
+		fmt.Sprintf("max_tool_calls_per_step: %d", maxToolCallsPerStep),
 	)
 	if len(allowedTools) > 0 {
 		lines = append(lines, "allowed_tools: "+strings.Join(allowedTools, ", "))
@@ -340,10 +341,10 @@ func resolveSubAgentMaxTurns(maxSteps int) int {
 	return maxSteps
 }
 
-// effectiveMaxToolCallsPerStep 解析每步工具调用上限，并为零值回填默认值。
+// effectiveMaxToolCallsPerStep 解析每步工具调用上限，非法或未配置值按 0 处理（即不允许调用）。
 func effectiveMaxToolCallsPerStep(limit int) int {
 	if limit <= 0 {
-		return subAgentMaxStepTurnsDefault
+		return 0
 	}
 	return limit
 }
@@ -489,7 +490,21 @@ func isRecoverableSubAgentToolError(err error) bool {
 		return true
 	}
 	var permissionErr *tools.PermissionDecisionError
-	return errors.As(err, &permissionErr)
+	if errors.As(err, &permissionErr) {
+		return true
+	}
+	return isSubAgentPermissionDeniedError(err)
+}
+
+// isSubAgentPermissionDeniedError 判断错误是否属于权限拒绝语义（含 ask->reject 的文本错误）。
+func isSubAgentPermissionDeniedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, tools.ErrPermissionDenied) {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(err.Error()), permissionRejectedErrorMessage)
 }
 
 // subagentCapabilityDeniedResult 构造 capability 越权时回灌给模型的标准 tool 消息。

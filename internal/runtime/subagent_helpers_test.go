@@ -3,11 +3,13 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	providertypes "neo-code/internal/provider/types"
 	"neo-code/internal/subagent"
+	"neo-code/internal/tools"
 )
 
 func TestSubAgentEngineHelperFunctions(t *testing.T) {
@@ -32,8 +34,8 @@ func TestSubAgentEngineHelperFunctions(t *testing.T) {
 		t.Fatalf("resolveSubAgentMaxTurns(3) = %d", got)
 	}
 
-	if got := effectiveMaxToolCallsPerStep(0); got != subAgentMaxStepTurnsDefault {
-		t.Fatalf("effectiveMaxToolCallsPerStep(0) = %d", got)
+	if got := effectiveMaxToolCallsPerStep(0); got != 0 {
+		t.Fatalf("effectiveMaxToolCallsPerStep(0) = %d, want 0", got)
 	}
 	if got := effectiveMaxToolCallsPerStep(2); got != 2 {
 		t.Fatalf("effectiveMaxToolCallsPerStep(2) = %d", got)
@@ -63,6 +65,15 @@ func TestSubAgentEngineHelperFunctions(t *testing.T) {
 	}
 	if !isRecoverableSubAgentToolError(permissionDecisionDenyError(t)) {
 		t.Fatalf("permission decision error should be recoverable")
+	}
+	if !isRecoverableSubAgentToolError(fmt.Errorf("wrapped: %w", tools.ErrPermissionDenied)) {
+		t.Fatalf("wrapped permission denied should be recoverable")
+	}
+	if !isSubAgentPermissionDeniedError(errors.New(permissionRejectedErrorMessage)) {
+		t.Fatalf("permission rejected message should be recognized")
+	}
+	if isSubAgentPermissionDeniedError(errors.New("other error")) {
+		t.Fatalf("non-permission error should not be recognized as denied")
 	}
 }
 
@@ -143,6 +154,10 @@ func TestRuntimeSubAgentGenerateStepMessageError(t *testing.T) {
 
 func TestSubAgentToolExecutorUtilityFunctions(t *testing.T) {
 	t.Parallel()
+
+	if filtered := filterToolSpecsByAllowlist(nil, []string{"bash"}); len(filtered) != 0 {
+		t.Fatalf("expected empty specs when input is nil")
+	}
 
 	if !toolResultTruncated(map[string]any{"truncated": "TRUE"}) {
 		t.Fatalf("string truncated flag should be recognized")

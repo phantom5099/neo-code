@@ -105,6 +105,7 @@ func TestRolePolicyToolDefaultsAndValidation(t *testing.T) {
 		{name: "valid required", mode: ToolUseModeRequired, limit: 2, wantErr: false},
 		{name: "valid disabled", mode: ToolUseModeDisabled, limit: 3, wantErr: false},
 		{name: "invalid mode", mode: ToolUseMode("unknown"), limit: 1, wantErr: true},
+		{name: "invalid zero limit", mode: ToolUseModeAuto, limit: 0, wantErr: true},
 		{name: "invalid negative limit", mode: ToolUseModeAuto, limit: -1, wantErr: true},
 	}
 

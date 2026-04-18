@@ -137,6 +137,9 @@ func resolveToolExecutionDecision(execErr error) string {
 	if errors.As(execErr, &permissionErr) {
 		return permissionErr.Decision()
 	}
+	if isSubAgentPermissionDeniedError(execErr) {
+		return permissionDecisionDeny
+	}
 	return "error"
 }
 

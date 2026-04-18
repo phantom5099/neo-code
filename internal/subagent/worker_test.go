@@ -494,7 +494,13 @@ func TestWorkerNilAndValidationBranches(t *testing.T) {
 	if _, err := NewWorker(Role("bad"), RolePolicy{}, nil); err == nil {
 		t.Fatalf("expected invalid role error")
 	}
-	if _, err := NewWorker(RoleCoder, RolePolicy{Role: RoleReviewer, SystemPrompt: "p", AllowedTools: []string{"bash"}, RequiredSections: []string{"summary"}}, nil); err == nil {
+	if _, err := NewWorker(RoleCoder, RolePolicy{
+		Role:                RoleReviewer,
+		SystemPrompt:        "p",
+		AllowedTools:        []string{"bash"},
+		MaxToolCallsPerStep: 1,
+		RequiredSections:    []string{"summary"},
+	}, nil); err == nil {
 		t.Fatalf("expected role mismatch error")
 	}
 
@@ -667,9 +673,10 @@ func TestWorkerAdditionalUncoveredBranches(t *testing.T) {
 	t.Run("new worker fills empty policy role", func(t *testing.T) {
 		t.Parallel()
 		policy := RolePolicy{
-			SystemPrompt:     "review",
-			AllowedTools:     []string{"bash"},
-			RequiredSections: []string{"summary"},
+			SystemPrompt:        "review",
+			AllowedTools:        []string{"bash"},
+			MaxToolCallsPerStep: 1,
+			RequiredSections:    []string{"summary"},
 		}
 		wr, err := NewWorker(RoleReviewer, policy, nil)
 		if err != nil {
@@ -683,10 +690,11 @@ func TestWorkerAdditionalUncoveredBranches(t *testing.T) {
 	t.Run("new worker policy validate error", func(t *testing.T) {
 		t.Parallel()
 		_, err := NewWorker(RoleReviewer, RolePolicy{
-			Role:             RoleReviewer,
-			SystemPrompt:     "",
-			AllowedTools:     []string{"bash"},
-			RequiredSections: []string{"summary"},
+			Role:                RoleReviewer,
+			SystemPrompt:        "",
+			AllowedTools:        []string{"bash"},
+			MaxToolCallsPerStep: 1,
+			RequiredSections:    []string{"summary"},
 		}, nil)
 		if err == nil {
 			t.Fatalf("expected policy validate error")
