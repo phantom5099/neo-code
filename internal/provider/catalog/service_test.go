@@ -636,7 +636,9 @@ func newRegistry(t *testing.T, name string, discover provider.DiscoveryFunc) *pr
 }
 
 func openAIProviderSource() provider.CatalogInput {
-	return mustCatalogInput(nil, config.OpenAIProvider())
+	providerCfg := config.OpenAIProvider()
+	providerCfg.APIKeyEnv = testAPIKeyEnv
+	return mustCatalogInput(nil, providerCfg)
 }
 
 func customGatewayProviderSource() provider.CatalogInput {
