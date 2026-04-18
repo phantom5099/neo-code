@@ -13,7 +13,7 @@ import (
 func TestDispatchRPCRequestResultEncodeError(t *testing.T) {
 	originalHandlers := requestFrameHandlers
 	requestFrameHandlers = map[FrameAction]requestFrameHandler{
-		FrameActionPing: func(_ context.Context, frame MessageFrame) MessageFrame {
+		FrameActionPing: func(_ context.Context, frame MessageFrame, _ RuntimePort) MessageFrame {
 			return MessageFrame{
 				Type:      FrameTypeAck,
 				Action:    FrameActionPing,

@@ -10,24 +10,38 @@ import (
 	"neo-code/internal/gateway/protocol"
 )
 
-type requestFrameHandler func(ctx context.Context, frame MessageFrame) MessageFrame
+type requestFrameHandler func(ctx context.Context, frame MessageFrame, runtimePort RuntimePort) MessageFrame
 
 var wakeOpenURLHandler = handlers.NewWakeOpenURLHandler()
 
 var requestFrameHandlers = map[FrameAction]requestFrameHandler{
-	FrameActionAuthenticate: handleAuthenticateFrame,
-	FrameActionPing:         handlePingFrame,
-	FrameActionBindStream:   handleBindStreamFrame,
-	FrameActionWakeOpenURL:  handleWakeOpenURLFrame,
+	FrameActionAuthenticate: func(ctx context.Context, frame MessageFrame, _ RuntimePort) MessageFrame {
+		return handleAuthenticateFrame(ctx, frame)
+	},
+	FrameActionPing: func(ctx context.Context, frame MessageFrame, _ RuntimePort) MessageFrame {
+		return handlePingFrame(ctx, frame)
+	},
+	FrameActionBindStream: func(ctx context.Context, frame MessageFrame, _ RuntimePort) MessageFrame {
+		return handleBindStreamFrame(ctx, frame)
+	},
+	FrameActionWakeOpenURL: func(ctx context.Context, frame MessageFrame, _ RuntimePort) MessageFrame {
+		return handleWakeOpenURLFrame(ctx, frame)
+	},
+	FrameActionRun:               handleRunFrame,
+	FrameActionCompact:           handleCompactFrame,
+	FrameActionCancel:            handleCancelFrame,
+	FrameActionListSessions:      handleListSessionsFrame,
+	FrameActionLoadSession:       handleLoadSessionFrame,
+	FrameActionResolvePermission: handleResolvePermissionFrame,
 }
 
 // dispatchRequestFrame 统一分发 request 帧到对应动作处理器。
-func dispatchRequestFrame(ctx context.Context, frame MessageFrame, _ RuntimePort) MessageFrame {
+func dispatchRequestFrame(ctx context.Context, frame MessageFrame, runtimePort RuntimePort) MessageFrame {
 	handler, ok := requestFrameHandlers[frame.Action]
 	if !ok {
 		return errorFrame(frame, NewFrameError(ErrorCodeUnsupportedAction, "action is not implemented in gateway step 2"))
 	}
-	return handler(ctx, frame)
+	return handler(ctx, frame, runtimePort)
 }
 
 // handlePingFrame 处理 ping 探活请求并返回 pong 响应。
@@ -130,6 +144,172 @@ func handleWakeOpenURLFrame(_ context.Context, frame MessageFrame) MessageFrame 
 		SessionID: sessionID,
 		Payload:   result,
 	}
+}
+
+// handleRunFrame 执行 gateway.run 动作，将请求转发到 RuntimePort。
+func handleRunFrame(ctx context.Context, frame MessageFrame, runtimePort RuntimePort) MessageFrame {
+	if runtimePort == nil {
+		return runtimePortUnavailableFrame(frame)
+	}
+
+	input := RunInput{
+		RequestID:  frame.RequestID,
+		SessionID:  strings.TrimSpace(frame.SessionID),
+		RunID:      strings.TrimSpace(frame.RunID),
+		InputText:  strings.TrimSpace(frame.InputText),
+		InputParts: append([]InputPart(nil), frame.InputParts...),
+		Workdir:    strings.TrimSpace(frame.Workdir),
+	}
+	if err := runtimePort.Run(ctx, input); err != nil {
+		return runtimeCallFailedFrame(frame, err, "run")
+	}
+
+	return MessageFrame{
+		Type:      FrameTypeAck,
+		Action:    FrameActionRun,
+		RequestID: frame.RequestID,
+		SessionID: input.SessionID,
+		RunID:     input.RunID,
+		Payload: map[string]string{
+			"message": "run accepted",
+		},
+	}
+}
+
+// handleCompactFrame 执行 gateway.compact 动作，并返回 runtime 压缩结果。
+func handleCompactFrame(ctx context.Context, frame MessageFrame, runtimePort RuntimePort) MessageFrame {
+	if runtimePort == nil {
+		return runtimePortUnavailableFrame(frame)
+	}
+
+	result, err := runtimePort.Compact(ctx, CompactInput{
+		RequestID: frame.RequestID,
+		SessionID: strings.TrimSpace(frame.SessionID),
+		RunID:     strings.TrimSpace(frame.RunID),
+	})
+	if err != nil {
+		return runtimeCallFailedFrame(frame, err, "compact")
+	}
+
+	return MessageFrame{
+		Type:      FrameTypeAck,
+		Action:    FrameActionCompact,
+		RequestID: frame.RequestID,
+		SessionID: strings.TrimSpace(frame.SessionID),
+		RunID:     strings.TrimSpace(frame.RunID),
+		Payload:   result,
+	}
+}
+
+// handleCancelFrame 执行 gateway.cancel 动作，返回当前运行取消状态。
+func handleCancelFrame(_ context.Context, frame MessageFrame, runtimePort RuntimePort) MessageFrame {
+	if runtimePort == nil {
+		return runtimePortUnavailableFrame(frame)
+	}
+
+	canceled := runtimePort.CancelActiveRun()
+	return MessageFrame{
+		Type:      FrameTypeAck,
+		Action:    FrameActionCancel,
+		RequestID: frame.RequestID,
+		Payload: map[string]any{
+			"canceled": canceled,
+		},
+	}
+}
+
+// handleListSessionsFrame 执行 gateway.listSessions 动作，返回会话摘要列表。
+func handleListSessionsFrame(ctx context.Context, frame MessageFrame, runtimePort RuntimePort) MessageFrame {
+	if runtimePort == nil {
+		return runtimePortUnavailableFrame(frame)
+	}
+
+	summaries, err := runtimePort.ListSessions(ctx)
+	if err != nil {
+		return runtimeCallFailedFrame(frame, err, "list_sessions")
+	}
+
+	return MessageFrame{
+		Type:      FrameTypeAck,
+		Action:    FrameActionListSessions,
+		RequestID: frame.RequestID,
+		Payload: map[string]any{
+			"sessions": summaries,
+		},
+	}
+}
+
+// handleLoadSessionFrame 执行 gateway.loadSession 动作，返回单个会话详情。
+func handleLoadSessionFrame(ctx context.Context, frame MessageFrame, runtimePort RuntimePort) MessageFrame {
+	if runtimePort == nil {
+		return runtimePortUnavailableFrame(frame)
+	}
+
+	session, err := runtimePort.LoadSession(ctx, strings.TrimSpace(frame.SessionID))
+	if err != nil {
+		return runtimeCallFailedFrame(frame, err, "load_session")
+	}
+
+	return MessageFrame{
+		Type:      FrameTypeAck,
+		Action:    FrameActionLoadSession,
+		RequestID: frame.RequestID,
+		SessionID: strings.TrimSpace(frame.SessionID),
+		Payload:   session,
+	}
+}
+
+// handleResolvePermissionFrame 执行 gateway.resolvePermission 动作，将审批决策写入 runtime。
+func handleResolvePermissionFrame(ctx context.Context, frame MessageFrame, runtimePort RuntimePort) MessageFrame {
+	if runtimePort == nil {
+		return runtimePortUnavailableFrame(frame)
+	}
+
+	input, err := decodePermissionResolutionInput(frame.Payload)
+	if err != nil {
+		return errorFrame(frame, NewFrameError(ErrorCodeInvalidAction, "invalid resolve_permission payload"))
+	}
+	input.RequestID = strings.TrimSpace(input.RequestID)
+	if input.RequestID == "" {
+		return errorFrame(frame, NewMissingRequiredFieldError("payload.request_id"))
+	}
+	if !isValidPermissionResolutionDecision(input.Decision) {
+		return errorFrame(frame, NewFrameError(ErrorCodeInvalidAction, "invalid resolve_permission decision"))
+	}
+
+	if err := runtimePort.ResolvePermission(ctx, input); err != nil {
+		return runtimeCallFailedFrame(frame, err, "resolve_permission")
+	}
+
+	return MessageFrame{
+		Type:      FrameTypeAck,
+		Action:    FrameActionResolvePermission,
+		RequestID: frame.RequestID,
+		Payload: map[string]any{
+			"request_id": input.RequestID,
+			"decision":   input.Decision,
+			"message":    "permission resolved",
+		},
+	}
+}
+
+// runtimePortUnavailableFrame 构造一个 runtime 未注入时的统一错误响应。
+func runtimePortUnavailableFrame(frame MessageFrame) MessageFrame {
+	return errorFrame(frame, NewFrameError(ErrorCodeInternalError, "runtime port is unavailable"))
+}
+
+// runtimeCallFailedFrame 构造 runtime 调用失败时的统一错误响应。
+func runtimeCallFailedFrame(frame MessageFrame, err error, operation string) MessageFrame {
+	message := strings.TrimSpace(operation)
+	if message == "" {
+		message = "runtime operation"
+	}
+	if err != nil {
+		message = fmt.Sprintf("%s failed: %s", message, strings.TrimSpace(err.Error()))
+	} else {
+		message = fmt.Sprintf("%s failed", message)
+	}
+	return errorFrame(frame, NewFrameError(ErrorCodeInternalError, message))
 }
 
 type bindStreamParams struct {

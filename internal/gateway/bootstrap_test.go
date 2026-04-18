@@ -84,7 +84,7 @@ func TestDispatchRequestFrameWakeOpenURLMissingPath(t *testing.T) {
 func TestDispatchRequestFrameUnsupportedAction(t *testing.T) {
 	response := dispatchRequestFrame(context.Background(), MessageFrame{
 		Type:   FrameTypeRequest,
-		Action: FrameActionRun,
+		Action: FrameAction("unknown_action"),
 	}, nil)
 
 	if response.Type != FrameTypeError {
