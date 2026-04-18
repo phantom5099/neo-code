@@ -19,14 +19,20 @@ func TestBuiltinSlashCommands(t *testing.T) {
 	}
 
 	found := false
+	foundTodo := false
 	for _, cmd := range builtinSlashCommands {
 		if cmd.Usage == slashUsageHelp {
 			found = true
-			break
+		}
+		if strings.HasPrefix(cmd.Usage, "/todo") {
+			foundTodo = true
 		}
 	}
 	if !found {
 		t.Error("expected to find /help command")
+	}
+	if foundTodo {
+		t.Error("did not expect /todo command in builtin slash commands")
 	}
 }
 
@@ -75,6 +81,8 @@ func TestStatusConstants(t *testing.T) {
 		{"statusCompacting", statusCompacting},
 		{"statusChooseProvider", statusChooseProvider},
 		{"statusChooseModel", statusChooseModel},
+		{"statusTodoCollapsed", statusTodoCollapsed},
+		{"statusTodoExpanded", statusTodoExpanded},
 		{"statusChooseHelp", statusChooseHelp},
 		{"statusBrowseFile", statusBrowseFile},
 	}
@@ -97,6 +105,9 @@ func TestFocusLabels(t *testing.T) {
 	}
 	if focusLabelActivity == "" {
 		t.Error("focusLabelActivity should not be empty")
+	}
+	if focusLabelTodo == "" {
+		t.Error("focusLabelTodo should not be empty")
 	}
 	if focusLabelComposer == "" {
 		t.Error("focusLabelComposer should not be empty")

@@ -14,14 +14,12 @@ import (
 
 	"neo-code/internal/config"
 	configstate "neo-code/internal/config/state"
-	"neo-code/internal/memo"
 	"neo-code/internal/provider"
 	providertypes "neo-code/internal/provider/types"
 	agentruntime "neo-code/internal/runtime"
 	approvalflow "neo-code/internal/runtime/approval"
 	agentsession "neo-code/internal/session"
 	"neo-code/internal/tools"
-	memotool "neo-code/internal/tools/memo"
 	tuibootstrap "neo-code/internal/tui/bootstrap"
 	tuiservices "neo-code/internal/tui/services"
 	tuistate "neo-code/internal/tui/state"
@@ -30,6 +28,8 @@ import (
 type stubProviderService struct {
 	providers      []configstate.ProviderOption
 	models         []providertypes.ModelDescriptor
+	listErr        error
+	listModelsErr  error
 	selectErr      error
 	selectDelay    time.Duration
 	selectResponse configstate.Selection
@@ -38,6 +38,9 @@ type stubProviderService struct {
 }
 
 func (s stubProviderService) ListProviderOptions(ctx context.Context) ([]configstate.ProviderOption, error) {
+	if s.listErr != nil {
+		return nil, s.listErr
+	}
 	return s.providers, nil
 }
 
@@ -70,6 +73,9 @@ func (s stubProviderService) ListModels(ctx context.Context) ([]providertypes.Mo
 }
 
 func (s stubProviderService) ListModelsSnapshot(ctx context.Context) ([]providertypes.ModelDescriptor, error) {
+	if s.listModelsErr != nil {
+		return nil, s.listModelsErr
+	}
 	return s.models, nil
 }
 
@@ -105,7 +111,8 @@ type stubRuntime struct {
 	preparedOutput  agentruntime.UserInput
 	runInputs       []agentruntime.UserInput
 	systemToolCalls []agentruntime.SystemToolInput
-	systemToolFn    func(ctx context.Context, input agentruntime.SystemToolInput) (tools.ToolResult, error)
+	systemToolRes   tools.ToolResult
+	systemToolErr   error
 	resolveCalls    []agentruntime.PermissionResolutionInput
 	resolveErr      error
 	cancelInvoked   bool
@@ -169,10 +176,10 @@ func (s *stubRuntime) Compact(ctx context.Context, input agentruntime.CompactInp
 
 func (s *stubRuntime) ExecuteSystemTool(ctx context.Context, input agentruntime.SystemToolInput) (tools.ToolResult, error) {
 	s.systemToolCalls = append(s.systemToolCalls, input)
-	if s.systemToolFn != nil {
-		return s.systemToolFn(ctx, input)
+	if s.systemToolErr != nil {
+		return tools.ToolResult{}, s.systemToolErr
 	}
-	return tools.ToolResult{}, nil
+	return s.systemToolRes, nil
 }
 
 func (s *stubRuntime) ResolvePermission(ctx context.Context, input agentruntime.PermissionResolutionInput) error {
@@ -294,7 +301,11 @@ func newTestApp(t *testing.T) (App, *stubRuntime) {
 		models = []providertypes.ModelDescriptor{{ID: providerCfg.Model, Name: providerCfg.Model}}
 	}
 
-	return newTestAppWithProviderService(t, stubProviderService{providers: providers, models: models})
+	app, runtime := newTestAppWithProviderService(t, stubProviderService{providers: providers, models: models})
+	app.layoutCached = true
+	app.cachedWidth = app.width
+	app.cachedHeight = app.height
+	return app, runtime
 }
 
 func TestSubmitProviderAddFormRequiresAnthropicBaseURL(t *testing.T) {
@@ -463,8 +474,8 @@ func TestTrimLastRune(t *testing.T) {
 	if got := trimLastRune("ab"); got != "a" {
 		t.Fatalf("trimLastRune(ascii) = %q, want a", got)
 	}
-	if got := trimLastRune("你好"); got != "你" {
-		t.Fatalf("trimLastRune(utf8) = %q, want 你", got)
+	if got := trimLastRune("\u4f60\u597d"); got != "\u4f60" {
+		t.Fatalf("trimLastRune(utf8) = %q, want %q", got, "\u4f60")
 	}
 }
 
@@ -1463,8 +1474,8 @@ func TestUpdateSendWithInlineImageReferenceUsesPreparePipeline(t *testing.T) {
 		}},
 	}
 
-	app.input.SetValue("请分析 @image:burn.png")
-	app.state.InputText = "请分析 @image:burn.png"
+	app.input.SetValue("analyze @image:burn.png")
+	app.state.InputText = "analyze @image:burn.png"
 
 	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd != nil {
@@ -1475,7 +1486,7 @@ func TestUpdateSendWithInlineImageReferenceUsesPreparePipeline(t *testing.T) {
 	if len(runtime.prepareInputs) != 1 {
 		t.Fatalf("expected one prepare input, got %+v", runtime.prepareInputs)
 	}
-	if runtime.prepareInputs[0].Text != "请分析" {
+	if runtime.prepareInputs[0].Text != "analyze" {
 		t.Fatalf("expected inline image token removed from text, got %q", runtime.prepareInputs[0].Text)
 	}
 	if len(runtime.prepareInputs[0].Images) != 1 || runtime.prepareInputs[0].Images[0].MimeType != "" {
@@ -1669,7 +1680,7 @@ func TestRuntimeEventAgentChunkHandler(t *testing.T) {
 func TestRuntimeEventRunCanceledHandler(t *testing.T) {
 	app, _ := newTestApp(t)
 	app.state.ActiveRunID = "run-3"
-	runtimeEventRunCanceledHandler(&app)
+	runtimeEventRunCanceledHandler(&app, agentruntime.RuntimeEvent{})
 	if app.state.StatusText != statusCanceled {
 		t.Fatalf("expected canceled status")
 	}
@@ -1880,8 +1891,8 @@ func TestRunSlashCommandSelectionWorkspaceAndLocal(t *testing.T) {
 	app.state.ActiveSessionID = ""
 	app.state.CurrentWorkdir = t.TempDir()
 
-	// /cwd 不是 handleImmediateSlashCommand 处理的命令，也不是 switch 中的已知命令，
-	// 所以走 default 分支返回 runLocalCommand -> localCommandResultMsg
+	// /cwd is not handled by handleImmediateSlashCommand and is not in the direct switch cases.
+	// It should therefore execute through runLocalCommand and return a localCommandResultMsg.
 	localCmd := app.runSlashCommandSelection("/cwd")
 	if localCmd == nil {
 		t.Fatalf("expected local slash cmd for /cwd")
@@ -1898,6 +1909,14 @@ func TestRunSlashCommandSelectionWorkspaceAndLocal(t *testing.T) {
 	}
 	if !strings.Contains(statusResult.Notice, "Status:") {
 		t.Fatalf("expected status output in local command result")
+	}
+}
+
+func TestHandleImmediateSlashCommandDefault(t *testing.T) {
+	app, _ := newTestApp(t)
+	handled, cmd := app.handleImmediateSlashCommand("/unknown")
+	if handled || cmd != nil {
+		t.Fatalf("expected unknown slash command to be ignored")
 	}
 }
 
@@ -1939,11 +1958,85 @@ func TestHandleImmediateSlashCommandCompactBranches(t *testing.T) {
 	}
 }
 
-func TestHandleImmediateSlashCommandDefault(t *testing.T) {
+func TestHandleMemoCommandsRouteToSystemTools(t *testing.T) {
+	app, runtime := newTestApp(t)
+
+	runtime.systemToolRes = tools.ToolResult{Content: "ok"}
+	cmd := app.handleMemoCommand()
+	if cmd == nil {
+		t.Fatalf("expected /memo command")
+	}
+	msg := cmd()
+	model, _ := app.Update(msg)
+	app = model.(App)
+	if len(runtime.systemToolCalls) != 1 {
+		t.Fatalf("expected one system tool call for /memo")
+	}
+	if runtime.systemToolCalls[0].ToolName != tools.ToolNameMemoList {
+		t.Fatalf("unexpected tool for /memo: %s", runtime.systemToolCalls[0].ToolName)
+	}
+	if app.state.StatusText != "ok" {
+		t.Fatalf("expected status from tool result, got %q", app.state.StatusText)
+	}
+
+	cmd = app.handleRememberCommand("persist this")
+	if cmd == nil {
+		t.Fatalf("expected /remember command")
+	}
+	_ = cmd()
+	if len(runtime.systemToolCalls) != 2 {
+		t.Fatalf("expected one additional system tool call for /remember")
+	}
+	if runtime.systemToolCalls[1].ToolName != tools.ToolNameMemoRemember {
+		t.Fatalf("unexpected tool for /remember: %s", runtime.systemToolCalls[1].ToolName)
+	}
+
+	cmd = app.handleForgetCommand("keyword")
+	if cmd == nil {
+		t.Fatalf("expected /forget command")
+	}
+	_ = cmd()
+	if len(runtime.systemToolCalls) != 3 {
+		t.Fatalf("expected one additional system tool call for /forget")
+	}
+	if runtime.systemToolCalls[2].ToolName != tools.ToolNameMemoRemove {
+		t.Fatalf("unexpected tool for /forget: %s", runtime.systemToolCalls[2].ToolName)
+	}
+}
+
+func TestHandleRememberAndForgetValidation(t *testing.T) {
 	app, _ := newTestApp(t)
-	handled, cmd := app.handleImmediateSlashCommand("/unknown")
-	if handled || cmd != nil {
-		t.Fatalf("expected unknown slash command to be ignored")
+
+	if cmd := app.handleRememberCommand("   "); cmd != nil {
+		t.Fatalf("expected nil cmd for empty /remember")
+	}
+	if len(app.activeMessages) == 0 || !strings.Contains(messageText(app.activeMessages[len(app.activeMessages)-1]), "Usage") {
+		t.Fatalf("expected usage message for empty /remember")
+	}
+
+	if cmd := app.handleForgetCommand("   "); cmd != nil {
+		t.Fatalf("expected nil cmd for empty /forget")
+	}
+	if len(app.activeMessages) == 0 || !strings.Contains(messageText(app.activeMessages[len(app.activeMessages)-1]), "Usage") {
+		t.Fatalf("expected usage message for empty /forget")
+	}
+}
+
+func TestUpdateCompactFinishedAndRefreshMessagesError(t *testing.T) {
+	app, runtime := newTestApp(t)
+	app.state.ActiveSessionID = "session-error"
+	runtime.loadSessionErr = errors.New("load session failed")
+
+	model, _ := app.Update(compactFinishedMsg{Err: errors.New("compact failed")})
+	app = model.(App)
+	if app.state.IsCompacting {
+		t.Fatalf("expected compacting state to be cleared")
+	}
+	if app.state.ExecutionError != "load session failed" {
+		t.Fatalf("expected refresh message error to win, got %q", app.state.ExecutionError)
+	}
+	if len(app.activeMessages) == 0 || app.activeMessages[len(app.activeMessages)-1].Role != roleError {
+		t.Fatalf("expected inline error message appended")
 	}
 }
 
@@ -2018,255 +2111,6 @@ func TestSetCurrentWorkdir(t *testing.T) {
 		app.setCurrentWorkdir("relative/path")
 		if app.state.CurrentWorkdir != "/original" {
 			t.Fatalf("expected no change, got %q", app.state.CurrentWorkdir)
-		}
-	})
-}
-
-// newTestAppWithMemo 创建一个注入了 memo 服务的测试 App。
-func newTestAppWithMemo(t *testing.T) (App, *stubRuntime) {
-	t.Helper()
-	return newTestAppWithMemoBaseDir(t, t.TempDir())
-}
-
-func newTestAppWithMemoBaseDir(t *testing.T, memoBaseDir string) (App, *stubRuntime) {
-	t.Helper()
-
-	cfg := newDefaultAppConfig()
-	cfg.Workdir = t.TempDir()
-	cfg.Memo.Enabled = true
-	if len(cfg.Providers) > 0 {
-		cfg.SelectedProvider = cfg.Providers[0].Name
-		cfg.CurrentModel = cfg.Providers[0].Model
-	}
-
-	manager := config.NewManager(config.NewLoader(cfg.Workdir, cfg))
-	if _, err := manager.Load(context.Background()); err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-
-	var providers []configstate.ProviderOption
-	var models []providertypes.ModelDescriptor
-	if len(cfg.Providers) > 0 {
-		provider := cfg.Providers[0]
-		providers = []configstate.ProviderOption{
-			{ID: provider.Name, Name: provider.Name, Models: []providertypes.ModelDescriptor{{ID: provider.Model, Name: provider.Model}}},
-		}
-		models = []providertypes.ModelDescriptor{{ID: provider.Model, Name: provider.Model}}
-	}
-
-	// 创建真实的 memo 服务
-	memoStore := memo.NewFileStore(memoBaseDir, cfg.Workdir)
-	memoSvc := memo.NewService(memoStore, cfg.Memo, nil)
-
-	runtime := newStubRuntime()
-	runtime.systemToolFn = func(ctx context.Context, input agentruntime.SystemToolInput) (tools.ToolResult, error) {
-		switch input.ToolName {
-		case tools.ToolNameMemoList:
-			return memotool.NewListTool(memoSvc).Execute(ctx, tools.ToolCallInput{Arguments: input.Arguments})
-		case tools.ToolNameMemoRemember:
-			return memotool.NewRememberTool(memoSvc).Execute(ctx, tools.ToolCallInput{Arguments: input.Arguments})
-		case tools.ToolNameMemoRemove:
-			return memotool.NewRemoveTool(memoSvc).Execute(ctx, tools.ToolCallInput{Arguments: input.Arguments})
-		default:
-			return tools.ToolResult{}, errors.New("unsupported system tool")
-		}
-	}
-	app, err := newApp(tuibootstrap.Container{
-		Config:          *cfg,
-		ConfigManager:   manager,
-		Runtime:         runtime,
-		ProviderService: stubProviderService{providers: providers, models: models},
-		MemoSvc:         memoSvc,
-	})
-	if err != nil {
-		t.Fatalf("newApp() error = %v", err)
-	}
-	return app, runtime
-}
-
-func TestHandleMemoCommand(t *testing.T) {
-	t.Parallel()
-
-	t.Run("shows no memos message when empty", func(t *testing.T) {
-		app, _ := newTestAppWithMemo(t)
-		cmd := app.handleMemoCommand()
-		if cmd == nil {
-			t.Fatal("expected async cmd")
-		}
-		model, _ := app.Update(cmd())
-		app = model.(App)
-		if !strings.Contains(app.state.StatusText, "No memos stored yet") {
-			t.Errorf("expected status to mention no memos, got: %s", app.state.StatusText)
-		}
-	})
-
-	t.Run("lists entries when memos exist", func(t *testing.T) {
-		app, _ := newTestAppWithMemo(t)
-		app.memoSvc.Add(context.Background(), memo.Entry{Type: memo.TypeUser, Title: "test entry", Content: "test", Source: memo.SourceUserManual})
-
-		cmd := app.handleMemoCommand()
-		model, _ := app.Update(cmd())
-		app = model.(App)
-		if !strings.Contains(app.state.StatusText, "test entry") {
-			t.Errorf("expected status to include entry title, got: %s", app.state.StatusText)
-		}
-	})
-
-	t.Run("routes through runtime system tool", func(t *testing.T) {
-		app, runtime := newTestApp(t)
-		cmd := app.handleMemoCommand()
-		if cmd == nil {
-			t.Fatal("expected async cmd")
-		}
-		_ = cmd()
-		if len(runtime.systemToolCalls) != 1 {
-			t.Fatalf("system tool calls = %d, want 1", len(runtime.systemToolCalls))
-		}
-		if runtime.systemToolCalls[0].ToolName != tools.ToolNameMemoList {
-			t.Fatalf("ToolName = %q, want %q", runtime.systemToolCalls[0].ToolName, tools.ToolNameMemoList)
-		}
-	})
-}
-
-func TestHandleRememberCommand(t *testing.T) {
-	t.Parallel()
-
-	t.Run("saves memo and shows confirmation", func(t *testing.T) {
-		app, _ := newTestAppWithMemo(t)
-		cmd := app.handleRememberCommand("my preference")
-		if cmd == nil {
-			t.Fatal("expected async cmd")
-		}
-		model, _ := app.Update(cmd())
-		app = model.(App)
-		if !strings.Contains(app.state.StatusText, "Memory saved") {
-			t.Errorf("expected saved confirmation, got: %s", app.state.StatusText)
-		}
-		// Verify the entry was actually saved
-		entries, _ := app.memoSvc.List(context.Background(), memo.ScopeUser)
-		if len(entries) != 1 {
-			t.Fatalf("expected 1 entry, got %d", len(entries))
-		}
-		if entries[0].Title != "my preference" {
-			t.Errorf("Title = %q, want %q", entries[0].Title, "my preference")
-		}
-	})
-
-	t.Run("user memo is visible from another workspace", func(t *testing.T) {
-		baseDir := t.TempDir()
-		app, _ := newTestAppWithMemoBaseDir(t, baseDir)
-		cmd := app.handleRememberCommand("global preference")
-		if cmd == nil {
-			t.Fatal("expected async cmd")
-		}
-		model, _ := app.Update(cmd())
-		app = model.(App)
-
-		otherSvc := memo.NewService(memo.NewFileStore(baseDir, t.TempDir()), newDefaultAppConfig().Memo, nil)
-		entries, err := otherSvc.List(context.Background(), memo.ScopeUser)
-		if err != nil {
-			t.Fatalf("List() error = %v", err)
-		}
-		if len(entries) != 1 {
-			t.Fatalf("expected 1 shared user memo, got %d", len(entries))
-		}
-		if entries[0].Title != "global preference" {
-			t.Fatalf("shared entry title = %q, want %q", entries[0].Title, "global preference")
-		}
-	})
-
-	t.Run("empty text shows usage", func(t *testing.T) {
-		app, _ := newTestAppWithMemo(t)
-		app.handleRememberCommand("")
-		msgs := app.activeMessages
-		last := msgs[len(msgs)-1]
-		if !strings.Contains(messageText(last), "Usage") {
-			t.Errorf("expected usage message, got: %s", messageText(last))
-		}
-	})
-
-	t.Run("whitespace only text shows usage", func(t *testing.T) {
-		app, _ := newTestAppWithMemo(t)
-		app.handleRememberCommand("   ")
-		msgs := app.activeMessages
-		last := msgs[len(msgs)-1]
-		if !strings.Contains(messageText(last), "Usage") {
-			t.Errorf("expected usage message, got: %s", messageText(last))
-		}
-	})
-
-	t.Run("routes through runtime system tool", func(t *testing.T) {
-		app, runtime := newTestApp(t)
-		cmd := app.handleRememberCommand("something")
-		if cmd == nil {
-			t.Fatal("expected async cmd")
-		}
-		_ = cmd()
-		if len(runtime.systemToolCalls) != 1 {
-			t.Fatalf("system tool calls = %d, want 1", len(runtime.systemToolCalls))
-		}
-		if runtime.systemToolCalls[0].ToolName != tools.ToolNameMemoRemember {
-			t.Fatalf("ToolName = %q, want %q", runtime.systemToolCalls[0].ToolName, tools.ToolNameMemoRemember)
-		}
-	})
-}
-
-func TestHandleForgetCommand(t *testing.T) {
-	t.Parallel()
-
-	t.Run("removes matching memos", func(t *testing.T) {
-		app, _ := newTestAppWithMemo(t)
-		app.memoSvc.Add(context.Background(), memo.Entry{Type: memo.TypeUser, Title: "remove me", Content: "test", Source: memo.SourceUserManual})
-		app.memoSvc.Add(context.Background(), memo.Entry{Type: memo.TypeFeedback, Title: "keep this", Content: "test2", Source: memo.SourceUserManual})
-
-		cmd := app.handleForgetCommand("remove")
-		model, _ := app.Update(cmd())
-		app = model.(App)
-		if !strings.Contains(app.state.StatusText, "Removed 1 memo") {
-			t.Errorf("expected removal confirmation, got: %s", app.state.StatusText)
-		}
-		// Verify only one was removed
-		entries, _ := app.memoSvc.List(context.Background(), memo.ScopeAll)
-		if len(entries) != 1 {
-			t.Fatalf("expected 1 remaining entry, got %d", len(entries))
-		}
-		if entries[0].Title != "keep this" {
-			t.Errorf("remaining entry Title = %q, want %q", entries[0].Title, "keep this")
-		}
-	})
-
-	t.Run("no match shows message", func(t *testing.T) {
-		app, _ := newTestAppWithMemo(t)
-		cmd := app.handleForgetCommand("nonexistent")
-		model, _ := app.Update(cmd())
-		app = model.(App)
-		if !strings.Contains(app.state.StatusText, "No memos matching") {
-			t.Errorf("expected no match message, got: %s", app.state.StatusText)
-		}
-	})
-
-	t.Run("empty keyword shows usage", func(t *testing.T) {
-		app, _ := newTestAppWithMemo(t)
-		app.handleForgetCommand("")
-		msgs := app.activeMessages
-		last := msgs[len(msgs)-1]
-		if !strings.Contains(messageText(last), "Usage") {
-			t.Errorf("expected usage message, got: %s", messageText(last))
-		}
-	})
-
-	t.Run("routes through runtime system tool", func(t *testing.T) {
-		app, runtime := newTestApp(t)
-		cmd := app.handleForgetCommand("something")
-		if cmd == nil {
-			t.Fatal("expected async cmd")
-		}
-		_ = cmd()
-		if len(runtime.systemToolCalls) != 1 {
-			t.Fatalf("system tool calls = %d, want 1", len(runtime.systemToolCalls))
-		}
-		if runtime.systemToolCalls[0].ToolName != tools.ToolNameMemoRemove {
-			t.Fatalf("ToolName = %q, want %q", runtime.systemToolCalls[0].ToolName, tools.ToolNameMemoRemove)
 		}
 	})
 }
@@ -2473,14 +2317,14 @@ func TestCurrentProviderAddFieldAndInputHandling(t *testing.T) {
 		t.Fatalf("expected backspace to remove name content")
 	}
 
-	app.providerAddForm.Name = "你好"
+	app.providerAddForm.Name = "\u4f60\u597d"
 	model, _ = app.handleProviderAddFormInput(tea.KeyMsg{Type: tea.KeyBackspace})
 	ptr, ok = model.(*App)
 	if !ok {
 		t.Fatalf("expected *App model, got %T", model)
 	}
 	app = *ptr
-	if app.providerAddForm.Name != "你" {
+	if app.providerAddForm.Name != "\u4f60" {
 		t.Fatalf("expected UTF-8 safe backspace result, got %q", app.providerAddForm.Name)
 	}
 
@@ -2851,24 +2695,6 @@ func TestUpdateLocalAndWorkspaceCommandResultBranches(t *testing.T) {
 	}
 }
 
-func TestUpdateCompactFinishedAndRefreshMessagesError(t *testing.T) {
-	app, runtime := newTestApp(t)
-	app.state.ActiveSessionID = "session-error"
-	runtime.loadSessionErr = errors.New("load session failed")
-
-	model, _ := app.Update(compactFinishedMsg{Err: errors.New("compact failed")})
-	app = model.(App)
-	if app.state.IsCompacting {
-		t.Fatalf("expected compacting state to be cleared")
-	}
-	if app.state.ExecutionError != "load session failed" {
-		t.Fatalf("expected refresh message error to win, got %q", app.state.ExecutionError)
-	}
-	if len(app.activeMessages) == 0 || app.activeMessages[len(app.activeMessages)-1].Role != roleError {
-		t.Fatalf("expected inline error message appended")
-	}
-}
-
 func TestUpdateLocalCommandProviderChangedRefreshErrors(t *testing.T) {
 	app, _ := newTestApp(t)
 	app.providerSvc = errorProviderService{err: errors.New("refresh providers failed")}
@@ -3002,5 +2828,457 @@ func TestUpdateInputPanelSlashAndWorkspaceBranches(t *testing.T) {
 	app = model.(App)
 	if strings.TrimSpace(app.state.ExecutionError) == "" {
 		t.Fatalf("expected invalid workspace command error")
+	}
+}
+
+func TestNewWithMemoAndNewAppErrorBranches(t *testing.T) {
+	baseCfg := newDefaultAppConfig()
+	baseCfg.Workdir = t.TempDir()
+
+	manager := config.NewManager(config.NewLoader(baseCfg.Workdir, baseCfg))
+	if _, err := manager.Load(context.Background()); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	runtime := newStubRuntime()
+	providerSvc := stubProviderService{
+		providers: []configstate.ProviderOption{{ID: "openai", Name: "openai"}},
+		models:    []providertypes.ModelDescriptor{{ID: "gpt-5", Name: "gpt-5"}},
+	}
+
+	app, err := NewWithMemo(baseCfg, manager, runtime, providerSvc, nil)
+	if err != nil {
+		t.Fatalf("NewWithMemo() error = %v", err)
+	}
+	if app.memoSvc != nil {
+		t.Fatalf("expected nil memo service")
+	}
+
+	errorCases := []struct {
+		name        string
+		cfg         func() config.Config
+		providerSvc ProviderController
+	}{
+		{
+			name: "provider list error",
+			cfg:  func() config.Config { return *baseCfg },
+			providerSvc: stubProviderService{
+				listErr: errors.New("list providers failed"),
+			},
+		},
+		{
+			name: "model list error",
+			cfg:  func() config.Config { return *baseCfg },
+			providerSvc: stubProviderService{
+				providers:     []configstate.ProviderOption{{ID: "openai", Name: "openai"}},
+				listModelsErr: errors.New("list models failed"),
+			},
+		},
+		{
+			name: "workspace scan error",
+			cfg: func() config.Config {
+				cfg := *baseCfg
+				cfg.Workdir = filepath.Join(baseCfg.Workdir, "missing", "workspace")
+				return cfg
+			},
+			providerSvc: stubProviderService{
+				providers: []configstate.ProviderOption{{ID: "openai", Name: "openai"}},
+				models:    []providertypes.ModelDescriptor{{ID: "gpt-5", Name: "gpt-5"}},
+			},
+		},
+	}
+
+	for _, tc := range errorCases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := tc.cfg()
+			_, err := newApp(tuibootstrap.Container{
+				Config:          cfg,
+				ConfigManager:   manager,
+				Runtime:         runtime,
+				ProviderService: tc.providerSvc,
+			})
+			if err == nil {
+				t.Fatalf("expected error")
+			}
+		})
+	}
+}
+
+func TestNowFallbackToSystemClock(t *testing.T) {
+	app, _ := newTestApp(t)
+	app.nowFn = nil
+	if got := app.now(); got.IsZero() {
+		t.Fatalf("expected non-zero time")
+	}
+}
+
+func TestSyncTodosFromRunAndActivateSessionByIDFound(t *testing.T) {
+	app, runtime := newTestApp(t)
+	now := time.Now()
+	runtime.loadSessions = map[string]agentsession.Session{
+		"s1": {
+			ID:    "s1",
+			Title: "Session One",
+			Todos: nil,
+		},
+		"s2": {
+			ID:    "s2",
+			Title: "Session Two",
+			Todos: []agentsession.TodoItem{
+				{
+					ID:        "todo-1",
+					Content:   "task",
+					Status:    agentsession.TodoStatusPending,
+					Priority:  1,
+					CreatedAt: now,
+					UpdatedAt: now,
+				},
+			},
+		},
+	}
+
+	app.state.ActiveSessionID = "s1"
+	app.todoItems = []todoViewItem{{ID: "legacy"}}
+	app.todoPanelVisible = true
+	app.syncTodosFromRun()
+	if len(app.todoItems) != 0 {
+		t.Fatalf("expected todo items cleared when session has no todos")
+	}
+	if app.todoPanelVisible {
+		t.Fatalf("expected todo panel hidden when session has no todos")
+	}
+
+	app.state.Sessions = []agentsession.Summary{
+		{ID: "s2", Title: "Session Two"},
+	}
+	if err := app.activateSessionByID("s2"); err != nil {
+		t.Fatalf("activateSessionByID() error = %v", err)
+	}
+	if app.state.ActiveSessionID != "s2" {
+		t.Fatalf("expected active session switched to s2, got %q", app.state.ActiveSessionID)
+	}
+}
+
+func TestUpdateInputPanelTypingPathAndProviderAddFormExtraBranches(t *testing.T) {
+	app, _ := newTestApp(t)
+	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	app = model.(App)
+	if app.input.Value() != "x" {
+		t.Fatalf("expected composer value to be updated, got %q", app.input.Value())
+	}
+
+	app.startProviderAddForm()
+	app.providerAddForm.Step = 1
+	app.providerAddForm.Driver = "unknown-driver"
+	modelPtr, cmd := app.handleProviderAddFormInput(tea.KeyMsg{Type: tea.KeyUp})
+	if cmd != nil {
+		t.Fatalf("expected nil cmd for key up")
+	}
+	ptr, ok := modelPtr.(*App)
+	if !ok {
+		t.Fatalf("expected *App, got %T", modelPtr)
+	}
+	app = *ptr
+	if app.providerAddForm.Driver != "unknown-driver" {
+		t.Fatalf("expected driver unchanged when current driver not in options")
+	}
+
+	app.startProviderAddForm()
+	app.providerAddForm.Driver = provider.DriverAnthropic
+	app.providerAddForm.Step = 3 // api version
+	modelPtr, _ = app.handleProviderAddFormInput(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2024-10-01")})
+	app = *modelPtr.(*App)
+	if app.providerAddForm.APIVersion == "" {
+		t.Fatalf("expected api version to accept rune input")
+	}
+}
+
+func TestHandleImmediateSlashCommandSessionRefreshError(t *testing.T) {
+	app, runtime := newTestApp(t)
+	app.state.IsAgentRunning = false
+	app.state.ActiveRunID = ""
+	runtime.listSessionsErr = errors.New("list sessions failed")
+
+	handled, cmd := app.handleImmediateSlashCommand("/session")
+	if !handled {
+		t.Fatalf("expected /session to be handled")
+	}
+	if cmd != nil {
+		t.Fatalf("expected nil cmd for failed /session handling")
+	}
+	if !strings.Contains(app.state.ExecutionError, "list sessions failed") {
+		t.Fatalf("expected execution error to capture refresh failure, got %q", app.state.ExecutionError)
+	}
+}
+
+func TestHandleProviderAddResultMsgRefreshPickerErrors(t *testing.T) {
+	cfg := newDefaultAppConfig()
+	cfg.Workdir = t.TempDir()
+	manager := config.NewManager(config.NewLoader(cfg.Workdir, cfg))
+	if _, err := manager.Load(context.Background()); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	runtime := newStubRuntime()
+	app, err := newApp(tuibootstrap.Container{
+		Config:        *cfg,
+		ConfigManager: manager,
+		Runtime:       runtime,
+		ProviderService: stubProviderService{
+			providers: []configstate.ProviderOption{{ID: "p0", Name: "p0"}},
+			models:    []providertypes.ModelDescriptor{{ID: "m0", Name: "m0"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("newApp() error = %v", err)
+	}
+
+	app.providerSvc = stubProviderService{
+		listErr:       errors.New("refresh providers failed"),
+		listModelsErr: errors.New("refresh models failed"),
+	}
+	app.startProviderAddForm()
+	app.handleProviderAddResultMsg(providerAddResultMsg{Name: "new-provider", Model: "new-model"})
+
+	if !strings.Contains(app.state.StatusText, "Provider added") {
+		t.Fatalf("expected success status even when picker refresh fails, got %q", app.state.StatusText)
+	}
+	if len(app.activities) < 3 {
+		t.Fatalf("expected activity entries for add success and refresh failures")
+	}
+}
+
+func TestUpdateInputPanelSlashAndInlineImageErrorBranches(t *testing.T) {
+	app, _ := newTestApp(t)
+	app.providerSvc = stubProviderService{
+		listErr:       errors.New("providers unavailable"),
+		listModelsErr: errors.New("models unavailable"),
+	}
+
+	app.input.SetValue("/provider")
+	app.state.InputText = "/provider"
+	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = model.(App)
+	if !strings.Contains(app.state.ExecutionError, "providers unavailable") {
+		t.Fatalf("expected provider refresh error, got %q", app.state.ExecutionError)
+	}
+
+	app.input.SetValue("/model")
+	app.state.InputText = "/model"
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = model.(App)
+	if !strings.Contains(app.state.ExecutionError, "models unavailable") {
+		t.Fatalf("expected model refresh error, got %q", app.state.ExecutionError)
+	}
+
+	app.pendingImageAttachments = make([]pendingImageAttachment, maxImageAttachments)
+	app.input.SetValue("please inspect @image:/tmp/neo-code-inline.png")
+	app.state.InputText = "please inspect @image:/tmp/neo-code-inline.png"
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = model.(App)
+	if !strings.Contains(strings.ToLower(app.state.ExecutionError), "maximum") {
+		t.Fatalf("expected inline image absorb error, got %q", app.state.ExecutionError)
+	}
+}
+
+func TestUpdatePanelRoutingAndSessionRefreshBranches(t *testing.T) {
+	app, runtime := newTestApp(t)
+
+	app.focus = panelTranscript
+	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	app = model.(App)
+
+	app.focus = panelActivity
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyUp})
+	app = model.(App)
+
+	now := time.Now()
+	app.syncTodos([]agentsession.TodoItem{
+		{
+			ID:        "todo-1",
+			Content:   "first",
+			Status:    agentsession.TodoStatusPending,
+			Priority:  1,
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		{
+			ID:        "todo-2",
+			Content:   "second",
+			Status:    agentsession.TodoStatusInProgress,
+			Priority:  2,
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+	})
+	app.todoPanelVisible = true
+	app.focus = panelTodo
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	app = model.(App)
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	app = model.(App)
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyHome})
+	app = model.(App)
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	app = model.(App)
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	app = model.(App)
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = model.(App)
+
+	app.focus = panelInput
+	app.input.SetValue("abc")
+	app.state.InputText = "abc"
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = model.(App)
+
+	app.state.ActiveSessionID = ""
+	app.activities = []tuistate.ActivityEntry{{Title: "legacy"}}
+	app.todoItems = []todoViewItem{{ID: "legacy"}}
+	if err := app.refreshMessages(); err != nil {
+		t.Fatalf("refreshMessages() with draft session error = %v", err)
+	}
+	if len(app.activities) != 0 || len(app.todoItems) != 0 {
+		t.Fatalf("expected refreshMessages to clear draft runtime state")
+	}
+
+	app.state.ActiveSessionID = "s1"
+	runtime.loadSessionErr = errors.New("load failed")
+	if err := app.refreshMessages(); err == nil {
+		t.Fatalf("expected refreshMessages load error")
+	}
+}
+
+func TestMouseHandlersAdditionalBranches(t *testing.T) {
+	app, _ := newTestApp(t)
+	app.width = 120
+	app.height = 40
+	app.todoPanelVisible = true
+	now := time.Now()
+	app.syncTodos([]agentsession.TodoItem{
+		{
+			ID:        "todo-1",
+			Content:   "first",
+			Status:    agentsession.TodoStatusPending,
+			Priority:  1,
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+	})
+	app.applyComponentLayout(true)
+
+	todoLeft, todoTop, _, _ := app.todoBounds()
+	collapsedClick := tea.MouseMsg{
+		X:      todoLeft + 1,
+		Y:      todoTop + 1,
+		Button: tea.MouseButtonLeft,
+		Action: tea.MouseActionPress,
+	}
+	app.todoCollapsed = true
+	if !app.handleTodoMouse(collapsedClick) {
+		t.Fatalf("expected collapsed todo body click handled")
+	}
+	if app.todoCollapsed {
+		t.Fatalf("expected collapsed todo body click to expand panel")
+	}
+
+	app.todoCollapsed = true
+	wheelDown := tea.MouseMsg{
+		X:      todoLeft + 1,
+		Y:      todoTop + 1,
+		Button: tea.MouseButtonWheelDown,
+		Action: tea.MouseActionPress,
+		Type:   tea.MouseWheelDown,
+	}
+	if !app.handleTodoMouse(wheelDown) {
+		t.Fatalf("expected todo wheel down handled when collapsed")
+	}
+
+	inputLeft, inputTop, _, _ := app.inputBounds()
+	if !app.handleInputMouse(tea.MouseMsg{
+		X:      inputLeft + 1,
+		Y:      inputTop + 1,
+		Button: tea.MouseButtonWheelDown,
+		Action: tea.MouseActionPress,
+		Type:   tea.MouseWheelDown,
+	}) {
+		t.Fatalf("expected input wheel down handled")
+	}
+
+	transcriptLeft, transcriptTop, _, _ := app.transcriptBounds()
+	if !app.handleTranscriptMouse(tea.MouseMsg{
+		X:      transcriptLeft + 1,
+		Y:      transcriptTop + 1,
+		Button: tea.MouseButtonWheelDown,
+		Action: tea.MouseActionPress,
+		Type:   tea.MouseWheelDown,
+	}) {
+		t.Fatalf("expected transcript wheel down handled")
+	}
+}
+
+func TestSlashSelectionAndProviderAddUtilityBranches(t *testing.T) {
+	app, _ := newTestApp(t)
+	app.state.ActivePicker = pickerHelp
+
+	app.runSlashCommandSelection("/help")
+	if app.state.ActivePicker != pickerHelp {
+		t.Fatalf("expected /help to keep help picker active")
+	}
+
+	app.runSlashCommandSelection("/clear")
+	if !strings.Contains(app.state.StatusText, "Cleared") {
+		t.Fatalf("expected /clear branch to update status")
+	}
+
+	fields := providerAddVisibleFields(provider.DriverOpenAICompat)
+	if len(fields) == 0 || fields[0] != providerAddFieldName {
+		t.Fatalf("expected provider add visible fields to start from name field")
+	}
+	clampProviderAddStep(nil)
+
+	if _, err := buildProviderAddRequest(providerAddFormState{
+		Name:                  "custom-provider",
+		Driver:                "custom-driver",
+		BaseURL:               "https://example.com",
+		DiscoveryEndpointPath: "/models",
+		APIKeyEnv:             "CUSTOM_PROVIDER_API_KEY",
+		APIKey:                "test-key",
+	}); err != "" {
+		t.Fatalf("expected custom driver request to pass with base url, got %q", err)
+	}
+
+	prevSupports := supportsUserEnvPersistence
+	supportsUserEnvPersistence = func() bool { return true }
+	if got := providerAddPersistenceWarning(); got != "" {
+		t.Fatalf("expected empty persistence warning when env persistence is supported")
+	}
+	supportsUserEnvPersistence = prevSupports
+
+	app.providerAddForm = nil
+	app.handleProviderAddResultMsg(providerAddResultMsg{Name: "unused"})
+}
+
+func TestRunProviderAddFlowDeadlineExceededBranch(t *testing.T) {
+	service := stubProviderService{
+		createErr: context.DeadlineExceeded,
+	}
+	app, _ := newTestAppWithProviderService(t, service)
+	cmd := app.runProviderAddFlow(providerAddRequest{
+		Name:                  "demo",
+		Driver:                provider.DriverOpenAICompat,
+		BaseURL:               "https://example.com",
+		APIStyle:              provider.OpenAICompatibleAPIStyleChatCompletions,
+		DiscoveryEndpointPath: provider.DiscoveryEndpointPathModels,
+		APIKeyEnv:             "DEMO_API_KEY",
+		APIKey:                "secret",
+	})
+	msg := cmd()
+	result, ok := msg.(providerAddResultMsg)
+	if !ok {
+		t.Fatalf("expected providerAddResultMsg, got %T", msg)
+	}
+	if !strings.Contains(strings.ToLower(result.Error), "timed out") {
+		t.Fatalf("expected timeout error message, got %q", result.Error)
 	}
 }

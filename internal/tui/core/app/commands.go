@@ -62,6 +62,7 @@ const (
 
 	activityTitle    = "Activity"
 	activitySubtitle = "Latest execution events"
+	todoTitle        = "Todos"
 
 	draftSessionTitle     = "Draft"
 	emptyConversationText = "No conversation yet.\nAsk NeoCode to inspect or change code, or type /help to browse local commands."
@@ -85,6 +86,9 @@ const (
 	statusChooseProvider       = "Choose a provider"
 	statusChooseModel          = "Choose a model"
 	statusChooseSession        = "Choose a session"
+	statusTodoFilterChanged    = "Todo filter updated"
+	statusTodoCollapsed        = "Todo list collapsed"
+	statusTodoExpanded         = "Todo list expanded"
 	statusChooseHelp           = "Choose a slash command"
 	statusBrowseFile           = "Browse workspace files"
 	statusPermissionRequired   = "Permission required: choose a decision and press Enter"
@@ -94,6 +98,7 @@ const (
 	focusLabelSessions   = "Sessions"
 	focusLabelTranscript = "Transcript"
 	focusLabelActivity   = "Activity"
+	focusLabelTodo       = "Todo"
 	focusLabelComposer   = "Composer"
 
 	maxActivityEntries = 64
