@@ -28,6 +28,8 @@ import (
 type stubProviderService struct {
 	providers      []configstate.ProviderOption
 	models         []providertypes.ModelDescriptor
+	listErr        error
+	listModelsErr  error
 	selectErr      error
 	selectDelay    time.Duration
 	selectResponse configstate.Selection
@@ -36,6 +38,9 @@ type stubProviderService struct {
 }
 
 func (s stubProviderService) ListProviderOptions(ctx context.Context) ([]configstate.ProviderOption, error) {
+	if s.listErr != nil {
+		return nil, s.listErr
+	}
 	return s.providers, nil
 }
 
@@ -68,6 +73,9 @@ func (s stubProviderService) ListModels(ctx context.Context) ([]providertypes.Mo
 }
 
 func (s stubProviderService) ListModelsSnapshot(ctx context.Context) ([]providertypes.ModelDescriptor, error) {
+	if s.listModelsErr != nil {
+		return nil, s.listModelsErr
+	}
 	return s.models, nil
 }
 
@@ -2700,5 +2708,457 @@ func TestUpdateInputPanelSlashAndWorkspaceBranches(t *testing.T) {
 	app = model.(App)
 	if strings.TrimSpace(app.state.ExecutionError) == "" {
 		t.Fatalf("expected invalid workspace command error")
+	}
+}
+
+func TestNewWithMemoAndNewAppErrorBranches(t *testing.T) {
+	baseCfg := newDefaultAppConfig()
+	baseCfg.Workdir = t.TempDir()
+
+	manager := config.NewManager(config.NewLoader(baseCfg.Workdir, baseCfg))
+	if _, err := manager.Load(context.Background()); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	runtime := newStubRuntime()
+	providerSvc := stubProviderService{
+		providers: []configstate.ProviderOption{{ID: "openai", Name: "openai"}},
+		models:    []providertypes.ModelDescriptor{{ID: "gpt-5", Name: "gpt-5"}},
+	}
+
+	app, err := NewWithMemo(baseCfg, manager, runtime, providerSvc, nil)
+	if err != nil {
+		t.Fatalf("NewWithMemo() error = %v", err)
+	}
+	if app.memoSvc != nil {
+		t.Fatalf("expected nil memo service")
+	}
+
+	errorCases := []struct {
+		name        string
+		cfg         func() config.Config
+		providerSvc ProviderController
+	}{
+		{
+			name: "provider list error",
+			cfg:  func() config.Config { return *baseCfg },
+			providerSvc: stubProviderService{
+				listErr: errors.New("list providers failed"),
+			},
+		},
+		{
+			name: "model list error",
+			cfg:  func() config.Config { return *baseCfg },
+			providerSvc: stubProviderService{
+				providers:     []configstate.ProviderOption{{ID: "openai", Name: "openai"}},
+				listModelsErr: errors.New("list models failed"),
+			},
+		},
+		{
+			name: "workspace scan error",
+			cfg: func() config.Config {
+				cfg := *baseCfg
+				cfg.Workdir = filepath.Join(baseCfg.Workdir, "missing", "workspace")
+				return cfg
+			},
+			providerSvc: stubProviderService{
+				providers: []configstate.ProviderOption{{ID: "openai", Name: "openai"}},
+				models:    []providertypes.ModelDescriptor{{ID: "gpt-5", Name: "gpt-5"}},
+			},
+		},
+	}
+
+	for _, tc := range errorCases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := tc.cfg()
+			_, err := newApp(tuibootstrap.Container{
+				Config:          cfg,
+				ConfigManager:   manager,
+				Runtime:         runtime,
+				ProviderService: tc.providerSvc,
+			})
+			if err == nil {
+				t.Fatalf("expected error")
+			}
+		})
+	}
+}
+
+func TestNowFallbackToSystemClock(t *testing.T) {
+	app, _ := newTestApp(t)
+	app.nowFn = nil
+	if got := app.now(); got.IsZero() {
+		t.Fatalf("expected non-zero time")
+	}
+}
+
+func TestSyncTodosFromRunAndActivateSessionByIDFound(t *testing.T) {
+	app, runtime := newTestApp(t)
+	now := time.Now()
+	runtime.loadSessions = map[string]agentsession.Session{
+		"s1": {
+			ID:    "s1",
+			Title: "Session One",
+			Todos: nil,
+		},
+		"s2": {
+			ID:    "s2",
+			Title: "Session Two",
+			Todos: []agentsession.TodoItem{
+				{
+					ID:        "todo-1",
+					Content:   "task",
+					Status:    agentsession.TodoStatusPending,
+					Priority:  1,
+					CreatedAt: now,
+					UpdatedAt: now,
+				},
+			},
+		},
+	}
+
+	app.state.ActiveSessionID = "s1"
+	app.todoItems = []todoViewItem{{ID: "legacy"}}
+	app.todoPanelVisible = true
+	app.syncTodosFromRun()
+	if len(app.todoItems) != 0 {
+		t.Fatalf("expected todo items cleared when session has no todos")
+	}
+	if app.todoPanelVisible {
+		t.Fatalf("expected todo panel hidden when session has no todos")
+	}
+
+	app.state.Sessions = []agentsession.Summary{
+		{ID: "s2", Title: "Session Two"},
+	}
+	if err := app.activateSessionByID("s2"); err != nil {
+		t.Fatalf("activateSessionByID() error = %v", err)
+	}
+	if app.state.ActiveSessionID != "s2" {
+		t.Fatalf("expected active session switched to s2, got %q", app.state.ActiveSessionID)
+	}
+}
+
+func TestUpdateInputPanelTypingPathAndProviderAddFormExtraBranches(t *testing.T) {
+	app, _ := newTestApp(t)
+	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	app = model.(App)
+	if app.input.Value() != "x" {
+		t.Fatalf("expected composer value to be updated, got %q", app.input.Value())
+	}
+
+	app.startProviderAddForm()
+	app.providerAddForm.Step = 1
+	app.providerAddForm.Driver = "unknown-driver"
+	modelPtr, cmd := app.handleProviderAddFormInput(tea.KeyMsg{Type: tea.KeyUp})
+	if cmd != nil {
+		t.Fatalf("expected nil cmd for key up")
+	}
+	ptr, ok := modelPtr.(*App)
+	if !ok {
+		t.Fatalf("expected *App, got %T", modelPtr)
+	}
+	app = *ptr
+	if app.providerAddForm.Driver != "unknown-driver" {
+		t.Fatalf("expected driver unchanged when current driver not in options")
+	}
+
+	app.startProviderAddForm()
+	app.providerAddForm.Driver = provider.DriverAnthropic
+	app.providerAddForm.Step = 3 // api version
+	modelPtr, _ = app.handleProviderAddFormInput(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2024-10-01")})
+	app = *modelPtr.(*App)
+	if app.providerAddForm.APIVersion == "" {
+		t.Fatalf("expected api version to accept rune input")
+	}
+}
+
+func TestHandleImmediateSlashCommandSessionRefreshError(t *testing.T) {
+	app, runtime := newTestApp(t)
+	app.state.IsAgentRunning = false
+	app.state.ActiveRunID = ""
+	runtime.listSessionsErr = errors.New("list sessions failed")
+
+	handled, cmd := app.handleImmediateSlashCommand("/session")
+	if !handled {
+		t.Fatalf("expected /session to be handled")
+	}
+	if cmd != nil {
+		t.Fatalf("expected nil cmd for failed /session handling")
+	}
+	if !strings.Contains(app.state.ExecutionError, "list sessions failed") {
+		t.Fatalf("expected execution error to capture refresh failure, got %q", app.state.ExecutionError)
+	}
+}
+
+func TestHandleProviderAddResultMsgRefreshPickerErrors(t *testing.T) {
+	cfg := newDefaultAppConfig()
+	cfg.Workdir = t.TempDir()
+	manager := config.NewManager(config.NewLoader(cfg.Workdir, cfg))
+	if _, err := manager.Load(context.Background()); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	runtime := newStubRuntime()
+	app, err := newApp(tuibootstrap.Container{
+		Config:        *cfg,
+		ConfigManager: manager,
+		Runtime:       runtime,
+		ProviderService: stubProviderService{
+			providers: []configstate.ProviderOption{{ID: "p0", Name: "p0"}},
+			models:    []providertypes.ModelDescriptor{{ID: "m0", Name: "m0"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("newApp() error = %v", err)
+	}
+
+	app.providerSvc = stubProviderService{
+		listErr:       errors.New("refresh providers failed"),
+		listModelsErr: errors.New("refresh models failed"),
+	}
+	app.startProviderAddForm()
+	app.handleProviderAddResultMsg(providerAddResultMsg{Name: "new-provider", Model: "new-model"})
+
+	if !strings.Contains(app.state.StatusText, "Provider added") {
+		t.Fatalf("expected success status even when picker refresh fails, got %q", app.state.StatusText)
+	}
+	if len(app.activities) < 3 {
+		t.Fatalf("expected activity entries for add success and refresh failures")
+	}
+}
+
+func TestUpdateInputPanelSlashAndInlineImageErrorBranches(t *testing.T) {
+	app, _ := newTestApp(t)
+	app.providerSvc = stubProviderService{
+		listErr:       errors.New("providers unavailable"),
+		listModelsErr: errors.New("models unavailable"),
+	}
+
+	app.input.SetValue("/provider")
+	app.state.InputText = "/provider"
+	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = model.(App)
+	if !strings.Contains(app.state.ExecutionError, "providers unavailable") {
+		t.Fatalf("expected provider refresh error, got %q", app.state.ExecutionError)
+	}
+
+	app.input.SetValue("/model")
+	app.state.InputText = "/model"
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = model.(App)
+	if !strings.Contains(app.state.ExecutionError, "models unavailable") {
+		t.Fatalf("expected model refresh error, got %q", app.state.ExecutionError)
+	}
+
+	app.pendingImageAttachments = make([]pendingImageAttachment, maxImageAttachments)
+	app.input.SetValue("please inspect @image:/tmp/neo-code-inline.png")
+	app.state.InputText = "please inspect @image:/tmp/neo-code-inline.png"
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = model.(App)
+	if !strings.Contains(strings.ToLower(app.state.ExecutionError), "maximum") {
+		t.Fatalf("expected inline image absorb error, got %q", app.state.ExecutionError)
+	}
+}
+
+func TestUpdatePanelRoutingAndSessionRefreshBranches(t *testing.T) {
+	app, runtime := newTestApp(t)
+
+	app.focus = panelTranscript
+	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	app = model.(App)
+
+	app.focus = panelActivity
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyUp})
+	app = model.(App)
+
+	now := time.Now()
+	app.syncTodos([]agentsession.TodoItem{
+		{
+			ID:        "todo-1",
+			Content:   "first",
+			Status:    agentsession.TodoStatusPending,
+			Priority:  1,
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		{
+			ID:        "todo-2",
+			Content:   "second",
+			Status:    agentsession.TodoStatusInProgress,
+			Priority:  2,
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+	})
+	app.todoPanelVisible = true
+	app.focus = panelTodo
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	app = model.(App)
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	app = model.(App)
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyHome})
+	app = model.(App)
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	app = model.(App)
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	app = model.(App)
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = model.(App)
+
+	app.focus = panelInput
+	app.input.SetValue("abc")
+	app.state.InputText = "abc"
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	app = model.(App)
+
+	app.state.ActiveSessionID = ""
+	app.activities = []tuistate.ActivityEntry{{Title: "legacy"}}
+	app.todoItems = []todoViewItem{{ID: "legacy"}}
+	if err := app.refreshMessages(); err != nil {
+		t.Fatalf("refreshMessages() with draft session error = %v", err)
+	}
+	if len(app.activities) != 0 || len(app.todoItems) != 0 {
+		t.Fatalf("expected refreshMessages to clear draft runtime state")
+	}
+
+	app.state.ActiveSessionID = "s1"
+	runtime.loadSessionErr = errors.New("load failed")
+	if err := app.refreshMessages(); err == nil {
+		t.Fatalf("expected refreshMessages load error")
+	}
+}
+
+func TestMouseHandlersAdditionalBranches(t *testing.T) {
+	app, _ := newTestApp(t)
+	app.width = 120
+	app.height = 40
+	app.todoPanelVisible = true
+	now := time.Now()
+	app.syncTodos([]agentsession.TodoItem{
+		{
+			ID:        "todo-1",
+			Content:   "first",
+			Status:    agentsession.TodoStatusPending,
+			Priority:  1,
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+	})
+	app.applyComponentLayout(true)
+
+	todoLeft, todoTop, _, _ := app.todoBounds()
+	collapsedClick := tea.MouseMsg{
+		X:      todoLeft + 1,
+		Y:      todoTop + 1,
+		Button: tea.MouseButtonLeft,
+		Action: tea.MouseActionPress,
+	}
+	app.todoCollapsed = true
+	if !app.handleTodoMouse(collapsedClick) {
+		t.Fatalf("expected collapsed todo body click handled")
+	}
+	if app.todoCollapsed {
+		t.Fatalf("expected collapsed todo body click to expand panel")
+	}
+
+	app.todoCollapsed = true
+	wheelDown := tea.MouseMsg{
+		X:      todoLeft + 1,
+		Y:      todoTop + 1,
+		Button: tea.MouseButtonWheelDown,
+		Action: tea.MouseActionPress,
+		Type:   tea.MouseWheelDown,
+	}
+	if !app.handleTodoMouse(wheelDown) {
+		t.Fatalf("expected todo wheel down handled when collapsed")
+	}
+
+	inputLeft, inputTop, _, _ := app.inputBounds()
+	if !app.handleInputMouse(tea.MouseMsg{
+		X:      inputLeft + 1,
+		Y:      inputTop + 1,
+		Button: tea.MouseButtonWheelDown,
+		Action: tea.MouseActionPress,
+		Type:   tea.MouseWheelDown,
+	}) {
+		t.Fatalf("expected input wheel down handled")
+	}
+
+	transcriptLeft, transcriptTop, _, _ := app.transcriptBounds()
+	if !app.handleTranscriptMouse(tea.MouseMsg{
+		X:      transcriptLeft + 1,
+		Y:      transcriptTop + 1,
+		Button: tea.MouseButtonWheelDown,
+		Action: tea.MouseActionPress,
+		Type:   tea.MouseWheelDown,
+	}) {
+		t.Fatalf("expected transcript wheel down handled")
+	}
+}
+
+func TestSlashSelectionAndProviderAddUtilityBranches(t *testing.T) {
+	app, _ := newTestApp(t)
+	app.state.ActivePicker = pickerHelp
+
+	app.runSlashCommandSelection("/help")
+	if app.state.ActivePicker != pickerHelp {
+		t.Fatalf("expected /help to keep help picker active")
+	}
+
+	app.runSlashCommandSelection("/clear")
+	if !strings.Contains(app.state.StatusText, "Cleared") {
+		t.Fatalf("expected /clear branch to update status")
+	}
+
+	fields := providerAddVisibleFields(provider.DriverOpenAICompat)
+	if len(fields) == 0 || fields[0] != providerAddFieldName {
+		t.Fatalf("expected provider add visible fields to start from name field")
+	}
+	clampProviderAddStep(nil)
+
+	if _, err := buildProviderAddRequest(providerAddFormState{
+		Name:                  "custom-provider",
+		Driver:                "custom-driver",
+		BaseURL:               "https://example.com",
+		DiscoveryEndpointPath: "/models",
+		APIKeyEnv:             "CUSTOM_PROVIDER_API_KEY",
+		APIKey:                "test-key",
+	}); err != "" {
+		t.Fatalf("expected custom driver request to pass with base url, got %q", err)
+	}
+
+	prevSupports := supportsUserEnvPersistence
+	supportsUserEnvPersistence = func() bool { return true }
+	if got := providerAddPersistenceWarning(); got != "" {
+		t.Fatalf("expected empty persistence warning when env persistence is supported")
+	}
+	supportsUserEnvPersistence = prevSupports
+
+	app.providerAddForm = nil
+	app.handleProviderAddResultMsg(providerAddResultMsg{Name: "unused"})
+}
+
+func TestRunProviderAddFlowDeadlineExceededBranch(t *testing.T) {
+	service := stubProviderService{
+		createErr: context.DeadlineExceeded,
+	}
+	app, _ := newTestAppWithProviderService(t, service)
+	cmd := app.runProviderAddFlow(providerAddRequest{
+		Name:                  "demo",
+		Driver:                provider.DriverOpenAICompat,
+		BaseURL:               "https://example.com",
+		APIStyle:              provider.OpenAICompatibleAPIStyleChatCompletions,
+		DiscoveryEndpointPath: provider.DiscoveryEndpointPathModels,
+		APIKeyEnv:             "DEMO_API_KEY",
+		APIKey:                "secret",
+	})
+	msg := cmd()
+	result, ok := msg.(providerAddResultMsg)
+	if !ok {
+		t.Fatalf("expected providerAddResultMsg, got %T", msg)
+	}
+	if !strings.Contains(strings.ToLower(result.Error), "timed out") {
+		t.Fatalf("expected timeout error message, got %q", result.Error)
 	}
 }
