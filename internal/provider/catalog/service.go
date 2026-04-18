@@ -3,6 +3,7 @@ package catalog
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +16,8 @@ const (
 	defaultTTL               = 24 * time.Hour
 	defaultBackgroundTimeout = 30 * time.Second
 )
+
+var errCatalogPersist = errors.New("provider catalog: persist discovered models")
 
 type Service struct {
 	registry          *provider.Registry
@@ -106,11 +109,15 @@ func (s *Service) modelsForProvider(ctx context.Context, input provider.CatalogI
 
 	models := snapshot.models
 	catalogOK := snapshot.ok
+	if catalogOK && len(models) == 0 {
+		// 空 catalog 等价于未命中，避免历史空缓存长期阻断后续 discovery。
+		catalogOK = false
+	}
 	performedSyncRefresh := false
 	if !catalogOK && options.allowSyncRefresh {
 		discovered, err := s.discoverAndPersist(ctx, input)
 		if err != nil {
-			if len(defaultModels) == 0 || provider.IsDiscoveryConfigError(err) {
+			if len(defaultModels) == 0 || provider.IsDiscoveryConfigError(err) || errors.Is(err, errCatalogPersist) {
 				return nil, err
 			}
 		} else {
@@ -166,18 +173,23 @@ func (s *Service) discoverAndPersist(ctx context.Context, input provider.Catalog
 	}
 
 	discovered = providertypes.MergeModelDescriptors(discovered)
+	if len(discovered) == 0 {
+		return discovered, nil
+	}
 	if s.store == nil {
 		return discovered, nil
 	}
 
 	now := s.now()
-	_ = s.store.Save(ctx, ModelCatalog{
+	if err := s.store.Save(ctx, ModelCatalog{
 		SchemaVersion: schemaVersion,
 		Identity:      input.Identity,
 		FetchedAt:     now,
 		ExpiresAt:     now.Add(s.catalogTTL),
 		Models:        discovered,
-	})
+	}); err != nil {
+		return nil, fmt.Errorf("%w: %v", errCatalogPersist, err)
+	}
 	return discovered, nil
 }
 
