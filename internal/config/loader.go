@@ -58,10 +58,11 @@ type persistedAutoCompactConfig struct {
 type persistedMemoConfig struct {
 	Enabled               *bool `yaml:"enabled,omitempty"`
 	AutoExtract           *bool `yaml:"auto_extract,omitempty"`
-	MaxEntries            int   `yaml:"max_entries,omitempty"`
-	MaxIndexBytes         int   `yaml:"max_index_bytes,omitempty"`
-	ExtractTimeoutSec     int   `yaml:"extract_timeout_sec,omitempty"`
-	ExtractRecentMessages int   `yaml:"extract_recent_messages,omitempty"`
+	MaxEntries            *int  `yaml:"max_entries,omitempty"`
+	MaxIndexBytes         *int  `yaml:"max_index_bytes,omitempty"`
+	ExtractTimeoutSec     *int  `yaml:"extract_timeout_sec,omitempty"`
+	ExtractRecentMessages *int  `yaml:"extract_recent_messages,omitempty"`
+	MaxIndexLines         *int  `yaml:"max_index_lines,omitempty"`
 }
 
 func NewLoader(baseDir string, defaults *Config) *Loader {
@@ -336,13 +337,17 @@ func assembleProviders(builtin []ProviderConfig, custom []ProviderConfig) ([]Pro
 func newPersistedMemoConfig(cfg MemoConfig) persistedMemoConfig {
 	enabled := cfg.Enabled
 	autoExtract := cfg.AutoExtract
+	maxEntries := cfg.MaxEntries
+	maxIndexBytes := cfg.MaxIndexBytes
+	extractTimeoutSec := cfg.ExtractTimeoutSec
+	extractRecentMessages := cfg.ExtractRecentMessages
 	return persistedMemoConfig{
 		Enabled:               &enabled,
 		AutoExtract:           &autoExtract,
-		MaxEntries:            cfg.MaxEntries,
-		MaxIndexBytes:         cfg.MaxIndexBytes,
-		ExtractTimeoutSec:     cfg.ExtractTimeoutSec,
-		ExtractRecentMessages: cfg.ExtractRecentMessages,
+		MaxEntries:            &maxEntries,
+		MaxIndexBytes:         &maxIndexBytes,
+		ExtractTimeoutSec:     &extractTimeoutSec,
+		ExtractRecentMessages: &extractRecentMessages,
 	}
 }
 
@@ -355,17 +360,19 @@ func fromPersistedMemoConfig(file persistedMemoConfig, defaults MemoConfig) Memo
 	if file.AutoExtract != nil {
 		out.AutoExtract = *file.AutoExtract
 	}
-	if file.MaxEntries > 0 {
-		out.MaxEntries = file.MaxEntries
+	if file.MaxEntries != nil {
+		out.MaxEntries = *file.MaxEntries
+	} else if file.MaxIndexLines != nil {
+		out.MaxEntries = *file.MaxIndexLines
 	}
-	if file.MaxIndexBytes > 0 {
-		out.MaxIndexBytes = file.MaxIndexBytes
+	if file.MaxIndexBytes != nil {
+		out.MaxIndexBytes = *file.MaxIndexBytes
 	}
-	if file.ExtractTimeoutSec > 0 {
-		out.ExtractTimeoutSec = file.ExtractTimeoutSec
+	if file.ExtractTimeoutSec != nil {
+		out.ExtractTimeoutSec = *file.ExtractTimeoutSec
 	}
-	if file.ExtractRecentMessages > 0 {
-		out.ExtractRecentMessages = file.ExtractRecentMessages
+	if file.ExtractRecentMessages != nil {
+		out.ExtractRecentMessages = *file.ExtractRecentMessages
 	}
 	return out
 }

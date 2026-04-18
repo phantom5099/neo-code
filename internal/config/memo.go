@@ -41,16 +41,16 @@ func (c *MemoConfig) ApplyDefaults(defaults MemoConfig) {
 	if c == nil {
 		return
 	}
-	if c.MaxEntries <= 0 {
+	if c.MaxEntries == 0 {
 		c.MaxEntries = defaults.MaxEntries
 	}
-	if c.MaxIndexBytes <= 0 {
+	if c.MaxIndexBytes == 0 {
 		c.MaxIndexBytes = defaults.MaxIndexBytes
 	}
-	if c.ExtractTimeoutSec <= 0 {
+	if c.ExtractTimeoutSec == 0 {
 		c.ExtractTimeoutSec = defaults.ExtractTimeoutSec
 	}
-	if c.ExtractRecentMessages <= 0 {
+	if c.ExtractRecentMessages == 0 {
 		c.ExtractRecentMessages = defaults.ExtractRecentMessages
 	}
 }

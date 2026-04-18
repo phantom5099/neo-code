@@ -1547,6 +1547,19 @@ func TestMemoConfigApplyDefaults(t *testing.T) {
 		}
 	})
 
+	t.Run("preserves negative fields for validation", func(t *testing.T) {
+		cfg := MemoConfig{
+			MaxEntries:            -1,
+			MaxIndexBytes:         -2,
+			ExtractTimeoutSec:     -3,
+			ExtractRecentMessages: -4,
+		}
+		cfg.ApplyDefaults(defaultMemoConfig())
+		if cfg.MaxEntries != -1 || cfg.MaxIndexBytes != -2 || cfg.ExtractTimeoutSec != -3 || cfg.ExtractRecentMessages != -4 {
+			t.Fatalf("ApplyDefaults() unexpectedly rewrote invalid values: %+v", cfg)
+		}
+	})
+
 	t.Run("nil receiver is no-op", func(t *testing.T) {
 		var cfg *MemoConfig
 		cfg.ApplyDefaults(defaultMemoConfig())

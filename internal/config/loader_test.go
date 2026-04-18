@@ -1338,7 +1338,7 @@ shell: powershell
 	}
 }
 
-func TestLoaderRejectsLegacyMemoField(t *testing.T) {
+func TestLoaderSupportsLegacyMemoMaxIndexLinesField(t *testing.T) {
 	t.Parallel()
 
 	loader := NewLoader(t.TempDir(), testDefaultConfig())
@@ -1351,9 +1351,65 @@ memo:
 `
 	writeLoaderConfig(t, loader, raw)
 
-	_, err := loader.Load(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "field max_index_lines not found") {
-		t.Fatalf("expected unknown legacy field error, got %v", err)
+	cfg, err := loader.Load(context.Background())
+	if err != nil {
+		t.Fatalf("expected legacy memo field to be accepted, got %v", err)
+	}
+	if cfg.Memo.MaxEntries != 123 {
+		t.Fatalf("expected legacy max_index_lines mapped to memo.max_entries=123, got %d", cfg.Memo.MaxEntries)
+	}
+}
+
+func TestLoaderRejectsExplicitInvalidMemoNumbers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		fieldYAML  string
+		errContain string
+	}{
+		{
+			name:       "negative max_entries",
+			fieldYAML:  "max_entries: -1",
+			errContain: "config: memo: max_entries must be greater than 0",
+		},
+		{
+			name:       "negative max_index_bytes",
+			fieldYAML:  "max_index_bytes: -1",
+			errContain: "config: memo: max_index_bytes must be greater than 0",
+		},
+		{
+			name:       "negative extract_timeout_sec",
+			fieldYAML:  "extract_timeout_sec: -1",
+			errContain: "config: memo: extract_timeout_sec must be greater than 0",
+		},
+		{
+			name:       "negative extract_recent_messages",
+			fieldYAML:  "extract_recent_messages: -1",
+			errContain: "config: memo: extract_recent_messages must be greater than 0",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			loader := NewLoader(t.TempDir(), testDefaultConfig())
+			raw := `
+selected_provider: openai
+current_model: gpt-4.1
+shell: powershell
+memo:
+  ` + tt.fieldYAML + `
+`
+			writeLoaderConfig(t, loader, raw)
+
+			_, err := loader.Load(context.Background())
+			if err == nil || !strings.Contains(err.Error(), tt.errContain) {
+				t.Fatalf("expected %q, got %v", tt.errContain, err)
+			}
+		})
 	}
 }
 
