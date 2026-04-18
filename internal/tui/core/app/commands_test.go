@@ -78,6 +78,7 @@ func TestStatusConstants(t *testing.T) {
 		{"statusApplyingCommand", statusApplyingCommand},
 		{"statusRunningCommand", statusRunningCommand},
 		{"statusCommandDone", statusCommandDone},
+		{"statusCompacting", statusCompacting},
 		{"statusChooseProvider", statusChooseProvider},
 		{"statusChooseModel", statusChooseModel},
 		{"statusTodoCollapsed", statusTodoCollapsed},

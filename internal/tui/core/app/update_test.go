@@ -1912,6 +1912,126 @@ func TestHandleImmediateSlashCommandDefault(t *testing.T) {
 	}
 }
 
+func TestHandleImmediateSlashCommandCompactBranches(t *testing.T) {
+	app, runtime := newTestApp(t)
+	app.state.ActiveSessionID = "session-1"
+
+	handled, cmd := app.handleImmediateSlashCommand(slashCommandCompact + " now")
+	if !handled || cmd != nil {
+		t.Fatalf("expected compact with args to be handled without cmd")
+	}
+	if !strings.Contains(app.state.StatusText, "usage:") {
+		t.Fatalf("expected usage error for compact with args")
+	}
+
+	app.state.ExecutionError = ""
+	app.state.IsCompacting = true
+	handled, cmd = app.handleImmediateSlashCommand(slashCommandCompact)
+	if !handled || cmd != nil {
+		t.Fatalf("expected compact busy branch to return handled with nil cmd")
+	}
+	if !strings.Contains(app.state.StatusText, "already running") {
+		t.Fatalf("expected busy message")
+	}
+
+	app.state.IsCompacting = false
+	app.state.IsAgentRunning = false
+	app.state.StatusText = ""
+	handled, cmd = app.handleImmediateSlashCommand(slashCommandCompact)
+	if !handled || cmd == nil {
+		t.Fatalf("expected compact success branch to return cmd")
+	}
+	msg := cmd()
+	if _, ok := msg.(compactFinishedMsg); !ok {
+		t.Fatalf("expected compactFinishedMsg, got %T", msg)
+	}
+	if len(runtime.resolveCalls) != 0 {
+		t.Fatalf("compact should not resolve permissions")
+	}
+}
+
+func TestHandleMemoCommandsRouteToSystemTools(t *testing.T) {
+	app, runtime := newTestApp(t)
+
+	runtime.systemToolRes = tools.ToolResult{Content: "ok"}
+	cmd := app.handleMemoCommand()
+	if cmd == nil {
+		t.Fatalf("expected /memo command")
+	}
+	msg := cmd()
+	model, _ := app.Update(msg)
+	app = model.(App)
+	if len(runtime.systemToolCalls) != 1 {
+		t.Fatalf("expected one system tool call for /memo")
+	}
+	if runtime.systemToolCalls[0].ToolName != tools.ToolNameMemoList {
+		t.Fatalf("unexpected tool for /memo: %s", runtime.systemToolCalls[0].ToolName)
+	}
+	if app.state.StatusText != "ok" {
+		t.Fatalf("expected status from tool result, got %q", app.state.StatusText)
+	}
+
+	cmd = app.handleRememberCommand("persist this")
+	if cmd == nil {
+		t.Fatalf("expected /remember command")
+	}
+	_ = cmd()
+	if len(runtime.systemToolCalls) != 2 {
+		t.Fatalf("expected one additional system tool call for /remember")
+	}
+	if runtime.systemToolCalls[1].ToolName != tools.ToolNameMemoRemember {
+		t.Fatalf("unexpected tool for /remember: %s", runtime.systemToolCalls[1].ToolName)
+	}
+
+	cmd = app.handleForgetCommand("keyword")
+	if cmd == nil {
+		t.Fatalf("expected /forget command")
+	}
+	_ = cmd()
+	if len(runtime.systemToolCalls) != 3 {
+		t.Fatalf("expected one additional system tool call for /forget")
+	}
+	if runtime.systemToolCalls[2].ToolName != tools.ToolNameMemoRemove {
+		t.Fatalf("unexpected tool for /forget: %s", runtime.systemToolCalls[2].ToolName)
+	}
+}
+
+func TestHandleRememberAndForgetValidation(t *testing.T) {
+	app, _ := newTestApp(t)
+
+	if cmd := app.handleRememberCommand("   "); cmd != nil {
+		t.Fatalf("expected nil cmd for empty /remember")
+	}
+	if len(app.activeMessages) == 0 || !strings.Contains(messageText(app.activeMessages[len(app.activeMessages)-1]), "Usage") {
+		t.Fatalf("expected usage message for empty /remember")
+	}
+
+	if cmd := app.handleForgetCommand("   "); cmd != nil {
+		t.Fatalf("expected nil cmd for empty /forget")
+	}
+	if len(app.activeMessages) == 0 || !strings.Contains(messageText(app.activeMessages[len(app.activeMessages)-1]), "Usage") {
+		t.Fatalf("expected usage message for empty /forget")
+	}
+}
+
+func TestUpdateCompactFinishedAndRefreshMessagesError(t *testing.T) {
+	app, runtime := newTestApp(t)
+	app.state.ActiveSessionID = "session-error"
+	runtime.loadSessionErr = errors.New("load session failed")
+
+	model, _ := app.Update(compactFinishedMsg{Err: errors.New("compact failed")})
+	app = model.(App)
+	if app.state.IsCompacting {
+		t.Fatalf("expected compacting state to be cleared")
+	}
+	if app.state.ExecutionError != "load session failed" {
+		t.Fatalf("expected refresh message error to win, got %q", app.state.ExecutionError)
+	}
+	if len(app.activeMessages) == 0 || app.activeMessages[len(app.activeMessages)-1].Role != roleError {
+		t.Fatalf("expected inline error message appended")
+	}
+}
+
 func TestFormatPermissionPromptToolOnly(t *testing.T) {
 	lines := formatPermissionPromptLines(permissionPromptState{
 		Request: agentruntime.PermissionRequestPayload{ToolName: "bash"},

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -146,6 +147,21 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cfg := a.configManager.Get()
 		a.syncConfigState(cfg)
 		selectPickerItemByID(&a.modelPicker, cfg.CurrentModel)
+		return a, tea.Batch(cmds...)
+	case compactFinishedMsg:
+		a.state.IsCompacting = false
+		if typed.Err != nil && strings.TrimSpace(a.state.ExecutionError) == "" {
+			a.state.ExecutionError = typed.Err.Error()
+			a.state.StatusText = typed.Err.Error()
+		}
+		if err := a.refreshMessages(); err != nil && strings.TrimSpace(a.state.ActiveSessionID) != "" {
+			a.state.ExecutionError = err.Error()
+			a.state.StatusText = err.Error()
+			a.appendInlineMessage(roleError, err.Error())
+		}
+		a.syncActiveSessionTitle()
+		a.rebuildTranscript()
+		a.transcript.GotoBottom()
 		return a, tea.Batch(cmds...)
 	case localCommandResultMsg:
 		if typed.Err != nil {
@@ -2138,7 +2154,7 @@ func (a *App) clearRunProgress() {
 }
 
 func (a *App) handleImmediateSlashCommand(input string) (bool, tea.Cmd) {
-	command, _ := splitFirstWord(strings.ToLower(strings.TrimSpace(input)))
+	command, rest := splitFirstWord(strings.ToLower(strings.TrimSpace(input)))
 	switch command {
 	case slashCommandExit:
 		return true, tea.Quit
@@ -2146,6 +2162,43 @@ func (a *App) handleImmediateSlashCommand(input string) (bool, tea.Cmd) {
 		a.startDraftSession()
 		a.state.StatusText = "[System] Cleared current draft/history."
 		return true, nil
+	case slashCommandCompact:
+		if strings.TrimSpace(rest) != "" {
+			errText := fmt.Sprintf("usage: %s", slashUsageCompact)
+			a.state.ExecutionError = errText
+			a.state.StatusText = errText
+			a.appendInlineMessage(roleError, errText)
+			a.rebuildTranscript()
+			return true, nil
+		}
+		if strings.TrimSpace(a.state.ActiveSessionID) == "" {
+			errText := "compact requires an existing session"
+			a.state.ExecutionError = errText
+			a.state.StatusText = errText
+			a.appendInlineMessage(roleError, errText)
+			a.rebuildTranscript()
+			return true, nil
+		}
+		if a.isBusy() {
+			errText := "compact is already running, please wait"
+			a.state.ExecutionError = errText
+			a.state.StatusText = errText
+			a.appendInlineMessage(roleError, errText)
+			a.rebuildTranscript()
+			return true, nil
+		}
+		a.state.IsCompacting = true
+		a.state.StreamingReply = false
+		a.state.CurrentTool = ""
+		a.state.StatusText = statusCompacting
+		a.state.ExecutionError = ""
+		return true, runCompact(a.runtime, a.state.ActiveSessionID)
+	case slashCommandMemo:
+		return true, a.handleMemoCommand()
+	case slashCommandRemember:
+		return true, a.handleRememberCommand(rest)
+	case slashCommandForget:
+		return true, a.handleForgetCommand(rest)
 	case slashCommandSession:
 		if err := a.ensureSessionSwitchAllowed(""); err != nil {
 			a.state.ExecutionError = err.Error()
@@ -2295,9 +2348,81 @@ func runResolvePermission(
 	)
 }
 
+func runCompact(runtime agentruntime.Runtime, sessionID string) tea.Cmd {
+	return tuiservices.RunCompactCmd(
+		runtime,
+		agentruntime.CompactInput{SessionID: sessionID},
+		func(err error) tea.Msg { return compactFinishedMsg{Err: err} },
+	)
+}
+
 // isBusy reports whether an agent run or compact operation is in progress.
 func (a App) isBusy() bool {
 	return tuiutils.IsBusy(a.state.IsAgentRunning, a.state.IsCompacting)
+}
+
+func (a *App) handleMemoCommand() tea.Cmd {
+	return a.runMemoSystemTool(tools.ToolNameMemoList, map[string]any{})
+}
+
+func (a *App) handleRememberCommand(text string) tea.Cmd {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		a.appendInlineMessage(roleError, fmt.Sprintf("[System] Usage: %s", slashUsageRemember))
+		a.rebuildTranscript()
+		return nil
+	}
+	return a.runMemoSystemTool(tools.ToolNameMemoRemember, map[string]any{
+		"type":    "user",
+		"title":   text,
+		"content": text,
+	})
+}
+
+func (a *App) handleForgetCommand(keyword string) tea.Cmd {
+	keyword = strings.TrimSpace(keyword)
+	if keyword == "" {
+		a.appendInlineMessage(roleError, fmt.Sprintf("[System] Usage: %s", slashUsageForget))
+		a.rebuildTranscript()
+		return nil
+	}
+	return a.runMemoSystemTool(tools.ToolNameMemoRemove, map[string]any{
+		"keyword": keyword,
+		"scope":   "all",
+	})
+}
+
+func (a *App) runMemoSystemTool(toolName string, arguments map[string]any) tea.Cmd {
+	payload, err := json.Marshal(arguments)
+	if err != nil {
+		a.appendInlineMessage(roleError, fmt.Sprintf("[System] Failed to encode memo command: %s", err))
+		a.rebuildTranscript()
+		return nil
+	}
+
+	return tuiservices.RunSystemToolCmd(
+		a.runtime,
+		agentruntime.SystemToolInput{
+			SessionID: a.state.ActiveSessionID,
+			Workdir:   a.state.CurrentWorkdir,
+			ToolName:  toolName,
+			Arguments: payload,
+		},
+		func(result tools.ToolResult, err error) tea.Msg {
+			if err != nil {
+				message := strings.TrimSpace(result.Content)
+				if message == "" {
+					message = err.Error()
+				}
+				return localCommandResultMsg{Err: errors.New(message)}
+			}
+			notice := strings.TrimSpace(result.Content)
+			if notice == "" {
+				notice = "Memo command completed."
+			}
+			return localCommandResultMsg{Notice: notice}
+		},
+	)
 }
 
 // setCurrentWorkdir updates the current workdir only when the value is non-empty and absolute.
