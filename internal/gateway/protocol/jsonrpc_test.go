@@ -188,6 +188,7 @@ func TestNormalizeJSONRPCRequestRuntimeMethods(t *testing.T) {
 		JSONRPC: JSONRPCVersion,
 		ID:      json.RawMessage(`"cancel-1"`),
 		Method:  MethodGatewayCancel,
+		Params:  json.RawMessage(`{"run_id":" r-0 "}`),
 	})
 	if rpcErr != nil {
 		t.Fatalf("normalize cancel request: %v", rpcErr)
@@ -199,8 +200,8 @@ func TestNormalizeJSONRPCRequestRuntimeMethods(t *testing.T) {
 	if !ok {
 		t.Fatalf("cancel payload type = %T, want CancelParams", cancelNormalized.Payload)
 	}
-	if cancelParams.SessionID != "" || cancelParams.RunID != "" {
-		t.Fatalf("cancel payload = %#v, want empty params", cancelParams)
+	if cancelParams.SessionID != "" || cancelParams.RunID != "r-0" {
+		t.Fatalf("cancel payload = %#v, want trimmed run_id", cancelParams)
 	}
 
 	cancelWithParams, rpcErr := NormalizeJSONRPCRequest(JSONRPCRequest{

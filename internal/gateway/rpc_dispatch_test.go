@@ -310,6 +310,26 @@ func TestDispatchRPCRequestMissingSessionAndAuthHelpers(t *testing.T) {
 	}
 }
 
+func TestDispatchRPCRequestRunMissingSessionAtDispatchLayer(t *testing.T) {
+	metrics := NewGatewayMetrics()
+	ctx := WithRequestSource(context.Background(), RequestSourceHTTP)
+	ctx = WithGatewayMetrics(ctx, metrics)
+	ctx = WithRequestACL(ctx, NewStrictControlPlaneACL())
+
+	response := dispatchRPCRequest(ctx, protocol.JSONRPCRequest{
+		JSONRPC: protocol.JSONRPCVersion,
+		ID:      json.RawMessage(`"req-run-missing-session"`),
+		Method:  protocol.MethodGatewayRun,
+		Params:  json.RawMessage(`{"input_text":"hello"}`),
+	}, &runtimePortCompileStub{})
+	if response.Error == nil {
+		t.Fatal("expected missing session error at dispatch layer")
+	}
+	if gatewayCode := protocol.GatewayCodeFromJSONRPCError(response.Error); gatewayCode != protocol.GatewayCodeMissingRequiredField {
+		t.Fatalf("gateway_code = %q, want %q", gatewayCode, protocol.GatewayCodeMissingRequiredField)
+	}
+}
+
 func TestDispatchRPCRequestResolvePermissionDoesNotRequireSession(t *testing.T) {
 	ctx := WithRequestSource(context.Background(), RequestSourceIPC)
 	ctx = WithRequestACL(ctx, NewStrictControlPlaneACL())
@@ -517,5 +537,65 @@ func TestDispatchRPCRequestMetricsUnknownMethodCollapsed(t *testing.T) {
 	snapshot := metrics.Snapshot()
 	if snapshot["gateway_requests_total"]["ipc|unknown_method|error"] == 0 {
 		t.Fatalf("expected unknown_method metric label, snapshot=%#v", snapshot["gateway_requests_total"])
+	}
+}
+
+func TestDispatchRPCRequestMetricsACLDeniedAndFrameErrorLabels(t *testing.T) {
+	metrics := NewGatewayMetrics()
+	denyACL := &ControlPlaneACL{
+		mode:    ACLModeStrict,
+		allow:   map[RequestSource]map[string]struct{}{},
+		enabled: true,
+	}
+	deniedCtx := WithRequestSource(context.Background(), RequestSourceHTTP)
+	deniedCtx = WithGatewayMetrics(deniedCtx, metrics)
+	deniedCtx = WithRequestACL(deniedCtx, denyACL)
+	deniedCtx = WithConnectionAuthState(deniedCtx, NewConnectionAuthState())
+	deniedCtx = WithRequestToken(deniedCtx, "token-a")
+	deniedCtx = WithTokenAuthenticator(deniedCtx, staticTokenAuthenticator{token: "token-a"})
+
+	denied := dispatchRPCRequest(deniedCtx, protocol.JSONRPCRequest{
+		JSONRPC: protocol.JSONRPCVersion,
+		ID:      json.RawMessage(`"req-denied-metric"`),
+		Method:  protocol.MethodGatewayPing,
+		Params:  json.RawMessage(`{}`),
+	}, nil)
+	if denied.Error == nil {
+		t.Fatal("expected acl denied response")
+	}
+
+	originalHandlers := requestFrameHandlers
+	requestFrameHandlers = map[FrameAction]requestFrameHandler{
+		FrameActionPing: func(_ context.Context, frame MessageFrame, _ RuntimePort) MessageFrame {
+			return MessageFrame{
+				Type:      FrameTypeError,
+				Action:    frame.Action,
+				RequestID: frame.RequestID,
+				Error:     NewFrameError(ErrorCodeAccessDenied, "denied by handler"),
+			}
+		},
+	}
+	t.Cleanup(func() { requestFrameHandlers = originalHandlers })
+
+	frameErrCtx := WithRequestSource(context.Background(), RequestSourceHTTP)
+	frameErrCtx = WithGatewayMetrics(frameErrCtx, metrics)
+	frameErrCtx = WithRequestACL(frameErrCtx, NewStrictControlPlaneACL())
+	frameErrCtx = WithConnectionAuthState(frameErrCtx, NewConnectionAuthState())
+	frameErrCtx = WithRequestToken(frameErrCtx, "token-b")
+	frameErrCtx = WithTokenAuthenticator(frameErrCtx, staticTokenAuthenticator{token: "token-b"})
+
+	frameErrResponse := dispatchRPCRequest(frameErrCtx, protocol.JSONRPCRequest{
+		JSONRPC: protocol.JSONRPCVersion,
+		ID:      json.RawMessage(`"req-frame-err"`),
+		Method:  protocol.MethodGatewayPing,
+		Params:  json.RawMessage(`{}`),
+	}, nil)
+	if frameErrResponse.Error == nil {
+		t.Fatal("expected frame error response")
+	}
+
+	snapshot := metrics.Snapshot()
+	if snapshot["gateway_acl_denied_total"]["http|gateway.ping"] < 2 {
+		t.Fatalf("expected acl denied metric >= 2, snapshot=%#v", snapshot["gateway_acl_denied_total"])
 	}
 }
