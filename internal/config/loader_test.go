@@ -1050,8 +1050,8 @@ func TestSaveCustomProviderRejectsModelWithoutName(t *testing.T) {
 			{ID: "manual-model-1"},
 		},
 	})
-	if err != nil {
-		t.Fatalf("expected model name optional in SaveCustomProviderWithModels, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "models[0].name is empty") {
+		t.Fatalf("expected model name required error in SaveCustomProviderWithModels, got %v", err)
 	}
 }
 

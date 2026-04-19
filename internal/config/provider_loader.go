@@ -224,6 +224,7 @@ func SaveCustomProviderWithModels(baseDir string, input SaveCustomProviderInput)
 	chatEndpointPath := strings.TrimSpace(input.ChatEndpointPath)
 	apiKeyEnv := input.APIKeyEnv
 	discoveryEndpointPath := strings.TrimSpace(input.DiscoveryEndpointPath)
+	manualModels := input.Models
 	rawModelSource := strings.TrimSpace(input.ModelSource)
 	modelSource := provider.NormalizeModelSource(rawModelSource)
 	if rawModelSource != "" && modelSource == "" {
@@ -234,7 +235,12 @@ func SaveCustomProviderWithModels(baseDir string, input SaveCustomProviderInput)
 	}
 	if modelSource == provider.ModelSourceManual {
 		discoveryEndpointPath = ""
-		if len(providertypes.MergeModelDescriptors(input.Models)) == 0 {
+		normalizedManualModels, err := validateModelDescriptorsRequireName(input.Models)
+		if err != nil {
+			return err
+		}
+		manualModels = normalizedManualModels
+		if len(providertypes.MergeModelDescriptors(manualModels)) == 0 {
 			return fmt.Errorf("config: provider %q manual model source requires non-empty models", strings.TrimSpace(name))
 		}
 	}
@@ -279,7 +285,7 @@ func SaveCustomProviderWithModels(baseDir string, input SaveCustomProviderInput)
 	cfg.ChatEndpointPath = chatEndpointPath
 	cfg.DiscoveryEndpointPath = discoveryEndpointPath
 	if modelSource == provider.ModelSourceManual {
-		cfg.Models = toCustomProviderModelFiles(input.Models)
+		cfg.Models = toCustomProviderModelFiles(manualModels)
 	}
 
 	data, err := yaml.Marshal(cfg)
