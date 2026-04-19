@@ -104,7 +104,7 @@ func catalogInputFromProvider(cfg config.ProviderConfig) (provider.CatalogInput,
 			if err != nil {
 				return provider.RuntimeConfig{}, err
 			}
-			return resolved.ToRuntimeConfig(), nil
+			return resolved.ToRuntimeConfig()
 		},
 	}
 	if cloned.Source != config.ProviderSourceCustom {

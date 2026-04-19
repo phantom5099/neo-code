@@ -19,6 +19,17 @@ func validCompactSummaryJSON() string {
 	return `{"task_state":{"goal":"Finish task state refactor","progress":["Persisted task_state in session"],"open_items":["Update runtime tests"],"next_step":"Continue from retained context","blockers":[],"key_artifacts":["internal/runtime/compact_generator.go"],"decisions":["Do not keep old summary-only protocol"],"user_constraints":["No backward compatibility"]},"display_summary":"[compact_summary]\ndone:\n- Persisted durable task state.\n\nin_progress:\n- Continue from the retained recent window.\n\ndecisions:\n- Do not keep the old summary-only protocol.\n\ncode_changes:\n- Updated compact summary generation behavior.\n\nconstraints:\n- Preserve only the minimum information needed to continue the work."}`
 }
 
+// mustRuntimeConfigForCompactTests 将解析后的 provider 配置转换为 runtime 配置，失败时直接终止测试。
+func mustRuntimeConfigForCompactTests(t *testing.T, resolved config.ResolvedProviderConfig) provider.RuntimeConfig {
+	t.Helper()
+
+	runtimeCfg, err := resolved.ToRuntimeConfig()
+	if err != nil {
+		t.Fatalf("ToRuntimeConfig() error = %v", err)
+	}
+	return runtimeCfg
+}
+
 func TestCompactSummaryGeneratorBuildsProviderRequestWithoutTools(t *testing.T) {
 	t.Parallel()
 
@@ -34,7 +45,7 @@ func TestCompactSummaryGeneratorBuildsProviderRequestWithoutTools(t *testing.T) 
 		},
 	}
 	factory := &scriptedProviderFactory{provider: scripted}
-	generator := newCompactSummaryGenerator(factory, resolvedProvider.ToRuntimeConfig(), "session-model")
+	generator := newCompactSummaryGenerator(factory, mustRuntimeConfigForCompactTests(t, resolvedProvider), "session-model")
 
 	summary, err := generator.Generate(context.Background(), contextcompact.SummaryInput{
 		Mode: contextcompact.ModeManual,
@@ -130,7 +141,11 @@ func TestCompactSummaryGeneratorRejectsToolCalls(t *testing.T) {
 			},
 		},
 	}
-	generator := newCompactSummaryGenerator(&scriptedProviderFactory{provider: scripted}, resolvedProvider.ToRuntimeConfig(), "session-model")
+	generator := newCompactSummaryGenerator(
+		&scriptedProviderFactory{provider: scripted},
+		mustRuntimeConfigForCompactTests(t, resolvedProvider),
+		"session-model",
+	)
 
 	_, err = generator.Generate(context.Background(), contextcompact.SummaryInput{
 		Mode: contextcompact.ModeManual,
@@ -160,7 +175,11 @@ func TestCompactSummaryGeneratorRejectsMalformedStreamEvent(t *testing.T) {
 			},
 		},
 	}
-	generator := newCompactSummaryGenerator(&scriptedProviderFactory{provider: scripted}, resolvedProvider.ToRuntimeConfig(), "session-model")
+	generator := newCompactSummaryGenerator(
+		&scriptedProviderFactory{provider: scripted},
+		mustRuntimeConfigForCompactTests(t, resolvedProvider),
+		"session-model",
+	)
 
 	_, err = generator.Generate(context.Background(), contextcompact.SummaryInput{
 		Mode:   contextcompact.ModeManual,
@@ -190,7 +209,11 @@ func TestCompactSummaryGeneratorRejectsCompletionWithoutMessageDone(t *testing.T
 			return nil
 		},
 	}
-	generator := newCompactSummaryGenerator(&scriptedProviderFactory{provider: scripted}, resolvedProvider.ToRuntimeConfig(), "session-model")
+	generator := newCompactSummaryGenerator(
+		&scriptedProviderFactory{provider: scripted},
+		mustRuntimeConfigForCompactTests(t, resolvedProvider),
+		"session-model",
+	)
 
 	_, err = generator.Generate(context.Background(), contextcompact.SummaryInput{
 		Mode:   contextcompact.ModeManual,
@@ -220,7 +243,11 @@ func TestCompactSummaryGeneratorMalformedStreamEventDoesNotDeadlock(t *testing.T
 	scripted := &scriptedProvider{
 		streams: [][]providertypes.StreamEvent{stream},
 	}
-	generator := newCompactSummaryGenerator(&scriptedProviderFactory{provider: scripted}, resolvedProvider.ToRuntimeConfig(), "session-model")
+	generator := newCompactSummaryGenerator(
+		&scriptedProviderFactory{provider: scripted},
+		mustRuntimeConfigForCompactTests(t, resolvedProvider),
+		"session-model",
+	)
 
 	errCh := make(chan error, 1)
 	go func() {

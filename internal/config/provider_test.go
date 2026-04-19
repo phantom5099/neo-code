@@ -564,7 +564,10 @@ func TestResolvedProviderConfigToRuntimeConfig(t *testing.T) {
 		},
 	}
 
-	got := resolved.ToRuntimeConfig()
+	got, err := resolved.ToRuntimeConfig()
+	if err != nil {
+		t.Fatalf("ToRuntimeConfig() error = %v", err)
+	}
 	want := providerpkg.RuntimeConfig{
 		Name:         "company-gateway",
 		Driver:       "openaicompat",
@@ -597,11 +600,37 @@ func TestResolvedProviderConfigToRuntimeConfigStripsBaseURLUserinfo(t *testing.T
 		APIKey: "secret-key",
 	}
 
-	got := resolved.ToRuntimeConfig()
+	got, err := resolved.ToRuntimeConfig()
+	if err != nil {
+		t.Fatalf("ToRuntimeConfig() error = %v", err)
+	}
 	if strings.Contains(got.BaseURL, "token@") {
 		t.Fatalf("expected runtime base URL to strip userinfo, got %q", got.BaseURL)
 	}
 	if got.BaseURL != "https://llm.example.com/v1" {
 		t.Fatalf("expected sanitized runtime base URL, got %q", got.BaseURL)
+	}
+}
+
+func TestResolvedProviderConfigToRuntimeConfigReturnsProtocolNormalizationError(t *testing.T) {
+	t.Parallel()
+
+	resolved := ResolvedProviderConfig{
+		ProviderConfig: ProviderConfig{
+			Name:             "company-gateway",
+			Driver:           "openaicompat",
+			BaseURL:          "https://llm.example.com/v1",
+			APIKeyEnv:        "TEST_KEY",
+			ChatEndpointPath: "https://llm.example.com/chat/completions",
+		},
+		APIKey: "secret-key",
+	}
+
+	_, err := resolved.ToRuntimeConfig()
+	if err == nil {
+		t.Fatal("expected ToRuntimeConfig() to return normalization error for invalid chat endpoint path")
+	}
+	if !strings.Contains(err.Error(), "must be a relative path") {
+		t.Fatalf("expected relative path error, got %v", err)
 	}
 }

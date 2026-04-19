@@ -121,3 +121,28 @@ func TestRuntimeConfigValidate(t *testing.T) {
 		t.Fatal("expected validation error for assets.max_session_assets_total_bytes=-1")
 	}
 }
+
+func TestRuntimeAssetsConfigZeroValuesResolveToDefaults(t *testing.T) {
+	t.Parallel()
+
+	cfg := RuntimeAssetsConfig{
+		MaxSessionAssetBytes:       0,
+		MaxSessionAssetsTotalBytes: 0,
+	}
+	resolved := cfg.ResolveSessionAssetLimits()
+	defaults := defaultRuntimeAssetsConfig()
+	if resolved.MaxSessionAssetBytes != defaults.MaxSessionAssetBytes {
+		t.Fatalf(
+			"expected MaxSessionAssetBytes to fallback to default=%d, got %d",
+			defaults.MaxSessionAssetBytes,
+			resolved.MaxSessionAssetBytes,
+		)
+	}
+	if resolved.MaxSessionAssetsTotalBytes != defaults.MaxSessionAssetsTotalBytes {
+		t.Fatalf(
+			"expected MaxSessionAssetsTotalBytes to fallback to default=%d, got %d",
+			defaults.MaxSessionAssetsTotalBytes,
+			resolved.MaxSessionAssetsTotalBytes,
+		)
+	}
+}

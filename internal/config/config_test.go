@@ -1919,7 +1919,10 @@ func TestToRuntimeConfigMapsAllFields(t *testing.T) {
 		APIKey: "resolved-secret-key",
 	}
 
-	got := resolved.ToRuntimeConfig()
+	got, err := resolved.ToRuntimeConfig()
+	if err != nil {
+		t.Fatalf("ToRuntimeConfig() error = %v", err)
+	}
 	if got.Name != "test-provider" {
 		t.Fatalf("expected Name=test-provider, got %q", got.Name)
 	}

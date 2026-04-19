@@ -262,7 +262,10 @@ func (s *Service) prepareTurnSnapshot(ctx context.Context, state *runState) (tur
 	if err != nil {
 		return turnSnapshot{}, false, err
 	}
-	providerRuntimeCfg := resolvedProvider.ToRuntimeConfig()
+	providerRuntimeCfg, err := resolvedProvider.ToRuntimeConfig()
+	if err != nil {
+		return turnSnapshot{}, false, err
+	}
 
 	state.mu.Lock()
 	streak := state.progress.LastScore.NoProgressStreak

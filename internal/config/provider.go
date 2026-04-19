@@ -206,8 +206,11 @@ func providerIdentityFromConfig(cfg ProviderConfig) (provider.ProviderIdentity, 
 }
 
 // ToRuntimeConfig 将解析后的 provider 配置收敛为 provider 层使用的最小运行时输入。
-func (p ResolvedProviderConfig) ToRuntimeConfig() provider.RuntimeConfig {
-	normalizedProtocols, _ := normalizeProviderProtocolSettingsFromConfig(p.ProviderConfig)
+func (p ResolvedProviderConfig) ToRuntimeConfig() (provider.RuntimeConfig, error) {
+	normalizedProtocols, err := normalizeProviderProtocolSettingsFromConfig(p.ProviderConfig)
+	if err != nil {
+		return provider.RuntimeConfig{}, err
+	}
 	baseURL := sanitizeRuntimeBaseURL(p.BaseURL)
 
 	return provider.RuntimeConfig{
@@ -220,7 +223,7 @@ func (p ResolvedProviderConfig) ToRuntimeConfig() provider.RuntimeConfig {
 		ChatEndpointPath:      normalizedProtocols.ChatEndpointPath,
 		DiscoveryEndpointPath: normalizedProtocols.DiscoveryEndpointPath,
 		ModelFieldAliases:     p.ModelFieldAliases,
-	}
+	}, nil
 }
 
 // normalizeProviderProtocolSettingsFromConfig 根据最小外部字段推导 provider 内部协议配置。

@@ -21,6 +21,25 @@ func TestNormalizeSessionAssetLimits(t *testing.T) {
 		}
 	})
 
+	t.Run("defaults when explicit zero values are provided", func(t *testing.T) {
+		t.Parallel()
+
+		got := NormalizeSessionAssetLimits(SessionAssetLimits{
+			MaxSessionAssetBytes:       0,
+			MaxSessionAssetsTotalBytes: 0,
+		})
+		if got.MaxSessionAssetBytes != MaxSessionAssetBytes {
+			t.Fatalf("expected default MaxSessionAssetBytes=%d, got %d", MaxSessionAssetBytes, got.MaxSessionAssetBytes)
+		}
+		if got.MaxSessionAssetsTotalBytes != MaxSessionAssetsTotalBytes {
+			t.Fatalf(
+				"expected default MaxSessionAssetsTotalBytes=%d, got %d",
+				MaxSessionAssetsTotalBytes,
+				got.MaxSessionAssetsTotalBytes,
+			)
+		}
+	})
+
 	t.Run("clamps to hard max", func(t *testing.T) {
 		t.Parallel()
 

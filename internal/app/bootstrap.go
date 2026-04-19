@@ -67,7 +67,11 @@ func newMemoExtractorAdapter(
 		}
 
 		generator := textGenAdapter(func(ctx context.Context, prompt string, msgs []providertypes.Message) (string, error) {
-			p, err := factory.Build(ctx, resolved.ToRuntimeConfig())
+			runtimeConfig, err := resolved.ToRuntimeConfig()
+			if err != nil {
+				return "", err
+			}
+			p, err := factory.Build(ctx, runtimeConfig)
 			if err != nil {
 				return "", err
 			}

@@ -50,7 +50,7 @@ func (c RuntimeConfig) Clone() RuntimeConfig {
 	}
 }
 
-// ApplyDefaults 在配置缺失或非法时回填默认阈值。
+// ApplyDefaults 在配置缺失、为零或非法时回填默认阈值。
 func (c *RuntimeConfig) ApplyDefaults(defaults RuntimeConfig) {
 	if c == nil {
 		return
@@ -88,7 +88,7 @@ func (c RuntimeAssetsConfig) Clone() RuntimeAssetsConfig {
 	return c
 }
 
-// ApplyDefaults 在配置缺失或非法时回填附件限制默认值。
+// ApplyDefaults 在配置缺失、为零或非法时回填附件限制默认值。
 func (c *RuntimeAssetsConfig) ApplyDefaults(defaults RuntimeAssetsConfig) {
 	if c == nil {
 		return
@@ -101,7 +101,7 @@ func (c *RuntimeAssetsConfig) ApplyDefaults(defaults RuntimeAssetsConfig) {
 	}
 }
 
-// Validate 校验附件限制配置是否满足最小约束。
+// Validate 校验附件限制配置是否满足最小约束；0 表示使用默认值，仅禁止负数。
 func (c RuntimeAssetsConfig) Validate() error {
 	if c.MaxSessionAssetBytes < 0 {
 		return errors.New("runtime.assets.max_session_asset_bytes must be greater than or equal to 0")

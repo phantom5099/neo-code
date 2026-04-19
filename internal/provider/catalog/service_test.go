@@ -666,7 +666,7 @@ func mustCatalogInput(t *testing.T, cfg config.ProviderConfig) provider.CatalogI
 			if err != nil {
 				return provider.RuntimeConfig{}, err
 			}
-			return resolved.ToRuntimeConfig(), nil
+			return resolved.ToRuntimeConfig()
 		},
 	}
 	if cloned.Source != config.ProviderSourceCustom {

@@ -192,7 +192,11 @@ func (e runtimeSubAgentEngine) buildProvider(
 	ctx context.Context,
 	resolvedProvider config.ResolvedProviderConfig,
 ) (provider.Provider, error) {
-	modelProvider, err := e.service.providerFactory.Build(ctx, resolvedProvider.ToRuntimeConfig())
+	runtimeConfig, err := resolvedProvider.ToRuntimeConfig()
+	if err != nil {
+		return nil, fmt.Errorf("runtime: normalize subagent provider config: %w", err)
+	}
+	modelProvider, err := e.service.providerFactory.Build(ctx, runtimeConfig)
 	if err != nil {
 		return nil, fmt.Errorf("runtime: build subagent provider: %w", err)
 	}
