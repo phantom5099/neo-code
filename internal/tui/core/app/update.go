@@ -45,6 +45,7 @@ const (
 
 const providerAddSelectTimeout = 10 * time.Second
 const providerAddNonPersistentEnvWarning = "API key is applied to the current process only on this platform; persist it in your shell profile for future sessions."
+const providerAddManualModelsJSONTemplate = "[\n  {\n    \"id\": \"model-id\",\n    \"name\": \"Model Name\"\n  }\n]"
 
 const sessionSwitchBusyMessage = "cannot switch sessions while run or compact is active"
 
@@ -2439,6 +2440,7 @@ type providerAddFieldID int
 const (
 	providerAddFieldName providerAddFieldID = iota
 	providerAddFieldDriver
+	providerAddFieldModelSource
 	providerAddFieldBaseURL
 	providerAddFieldAPIStyle
 	providerAddFieldDeploymentMode
@@ -2449,10 +2451,11 @@ const (
 	providerAddFieldAPIKey
 )
 
-func providerAddVisibleFields(driver string) []providerAddFieldID {
+func providerAddVisibleFields(driver string, modelSource string) []providerAddFieldID {
 	fields := []providerAddFieldID{
 		providerAddFieldName,
 		providerAddFieldDriver,
+		providerAddFieldModelSource,
 		providerAddFieldBaseURL,
 	}
 
@@ -2465,7 +2468,9 @@ func providerAddVisibleFields(driver string) []providerAddFieldID {
 		fields = append(fields, providerAddFieldAPIVersion)
 	}
 
-	fields = append(fields, providerAddFieldDiscoveryEndpointPath, providerAddFieldDiscoveryResponseProfile)
+	if provider.NormalizeModelSource(strings.TrimSpace(modelSource)) == provider.ModelSourceDiscover {
+		fields = append(fields, providerAddFieldDiscoveryEndpointPath, providerAddFieldDiscoveryResponseProfile)
+	}
 	fields = append(fields, providerAddFieldAPIKeyEnv, providerAddFieldAPIKey)
 	return fields
 }
@@ -2474,7 +2479,7 @@ func clampProviderAddStep(form *providerAddFormState) {
 	if form == nil {
 		return
 	}
-	fields := providerAddVisibleFields(form.Driver)
+	fields := providerAddVisibleFields(form.Driver, form.ModelSource)
 	if len(fields) == 0 {
 		form.Step = 0
 		return
@@ -2492,7 +2497,7 @@ func currentProviderAddField(form *providerAddFormState) providerAddFieldID {
 		return providerAddFieldName
 	}
 	clampProviderAddStep(form)
-	fields := providerAddVisibleFields(form.Driver)
+	fields := providerAddVisibleFields(form.Driver, form.ModelSource)
 	if len(fields) == 0 {
 		return providerAddFieldName
 	}
@@ -2501,20 +2506,24 @@ func currentProviderAddField(form *providerAddFormState) providerAddFieldID {
 
 func (a *App) startProviderAddForm() {
 	a.providerAddForm = &providerAddFormState{
+		Stage:                    providerAddFormStageFields,
 		Step:                     0,
 		Name:                     "",
 		Driver:                   provider.DriverOpenAICompat,
+		ModelSource:              provider.ModelSourceDiscover,
 		BaseURL:                  "",
 		APIStyle:                 provider.OpenAICompatibleAPIStyleChatCompletions,
 		DeploymentMode:           "",
 		APIVersion:               "",
 		DiscoveryEndpointPath:    provider.DiscoveryEndpointPathModels,
 		DiscoveryResponseProfile: provider.DiscoveryResponseProfileOpenAI,
+		ManualModelsJSON:         "",
 		APIKeyEnv:                "",
 		APIKey:                   "",
 		Error:                    "",
 		ErrorIsHard:              false,
 		Drivers:                  []string{provider.DriverOpenAICompat, provider.DriverGemini, provider.DriverAnthropic},
+		ModelSources:             []string{provider.ModelSourceDiscover, provider.ModelSourceManual},
 	}
 	a.state.ActivePicker = pickerProviderAdd
 	a.state.StatusText = "Add new provider"
@@ -2527,8 +2536,36 @@ func (a *App) handleProviderAddFormInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	typed := msg
+	if a.providerAddForm.Stage == providerAddFormStageManualModels {
+		switch {
+		case key.Matches(typed, a.keys.Send):
+			return a, a.submitProviderAddForm()
+		case key.Matches(typed, a.keys.FocusInput):
+			a.providerAddForm = nil
+			a.state.ActivePicker = pickerNone
+			a.state.StatusText = statusReady
+			return a, nil
+		case key.Matches(typed, a.keys.PrevPanel):
+			a.providerAddForm.Stage = providerAddFormStageFields
+			a.providerAddForm.Error = ""
+			a.providerAddForm.ErrorIsHard = false
+			return a, nil
+		case typed.Type == tea.KeyBackspace:
+			a.providerAddForm.ManualModelsJSON = trimLastRune(a.providerAddForm.ManualModelsJSON)
+			return a, nil
+		case key.Matches(typed, a.keys.Newline):
+			a.providerAddForm.ManualModelsJSON += "\n"
+			return a, nil
+		default:
+			if len(typed.Runes) > 0 {
+				a.providerAddForm.ManualModelsJSON += sanitizeProviderAddJSONInputRunes(typed.Runes)
+			}
+			return a, nil
+		}
+	}
+
 	prevStep := a.providerAddForm.Step
-	fields := providerAddVisibleFields(a.providerAddForm.Driver)
+	fields := providerAddVisibleFields(a.providerAddForm.Driver, a.providerAddForm.ModelSource)
 	fieldCount := len(fields)
 	if fieldCount == 0 {
 		fieldCount = 1
@@ -2583,6 +2620,17 @@ func (a *App) handleProviderAddFormInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				a.providerAddForm.Driver = a.providerAddForm.Drivers[currentIdx]
 				clampProviderAddStep(a.providerAddForm)
 			}
+		} else if currentProviderAddField(a.providerAddForm) == providerAddFieldModelSource {
+			currentIdx := 0
+			for i, source := range a.providerAddForm.ModelSources {
+				if source == a.providerAddForm.ModelSource {
+					currentIdx = i
+					break
+				}
+			}
+			currentIdx = (currentIdx - 1 + len(a.providerAddForm.ModelSources)) % len(a.providerAddForm.ModelSources)
+			a.providerAddForm.ModelSource = a.providerAddForm.ModelSources[currentIdx]
+			clampProviderAddStep(a.providerAddForm)
 		}
 		return a, nil
 	case typed.Type == tea.KeyDown:
@@ -2599,6 +2647,17 @@ func (a *App) handleProviderAddFormInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				a.providerAddForm.Driver = a.providerAddForm.Drivers[currentIdx]
 				clampProviderAddStep(a.providerAddForm)
 			}
+		} else if currentProviderAddField(a.providerAddForm) == providerAddFieldModelSource {
+			currentIdx := 0
+			for i, source := range a.providerAddForm.ModelSources {
+				if source == a.providerAddForm.ModelSource {
+					currentIdx = i
+					break
+				}
+			}
+			currentIdx = (currentIdx + 1) % len(a.providerAddForm.ModelSources)
+			a.providerAddForm.ModelSource = a.providerAddForm.ModelSources[currentIdx]
+			clampProviderAddStep(a.providerAddForm)
 		}
 		return a, nil
 	default:
@@ -2647,6 +2706,21 @@ func (a *App) submitProviderAddForm() tea.Cmd {
 		a.providerAddForm.ErrorIsHard = false
 		return nil
 	}
+	if request.ModelSource == provider.ModelSourceManual && a.providerAddForm.Stage == providerAddFormStageFields {
+		a.providerAddForm.Stage = providerAddFormStageManualModels
+		a.providerAddForm.Error = ""
+		a.providerAddForm.ErrorIsHard = false
+		if strings.TrimSpace(a.providerAddForm.ManualModelsJSON) == "" {
+			a.providerAddForm.ManualModelsJSON = providerAddManualModelsJSONTemplate
+		}
+		a.state.StatusText = "Fill manual model JSON"
+		return nil
+	}
+	if request.ModelSource == provider.ModelSourceManual && strings.TrimSpace(request.ManualModelsJSON) == "" {
+		a.providerAddForm.Error = "Please update the form: Model JSON is required for manual model source"
+		a.providerAddForm.ErrorIsHard = false
+		return nil
+	}
 
 	a.providerAddForm.Submitting = true
 	a.providerAddForm.Error = ""
@@ -2661,6 +2735,8 @@ type providerAddRequest struct {
 	Name                     string
 	Driver                   string
 	BaseURL                  string
+	ModelSource              string
+	ManualModelsJSON         string
 	APIStyle                 string
 	DeploymentMode           string
 	APIVersion               string
@@ -2681,7 +2757,9 @@ func buildProviderAddRequest(form providerAddFormState) (providerAddRequest, str
 	request := providerAddRequest{
 		Name:                     normalizeProviderAddFieldValue(form.Name),
 		Driver:                   provider.NormalizeProviderDriver(normalizeProviderAddFieldValue(form.Driver)),
+		ModelSource:              provider.NormalizeModelSource(normalizeProviderAddFieldValue(form.ModelSource)),
 		BaseURL:                  normalizeProviderAddFieldValue(form.BaseURL),
+		ManualModelsJSON:         strings.TrimSpace(form.ManualModelsJSON),
 		APIStyle:                 normalizeProviderAddFieldValue(form.APIStyle),
 		DeploymentMode:           normalizeProviderAddFieldValue(form.DeploymentMode),
 		APIVersion:               normalizeProviderAddFieldValue(form.APIVersion),
@@ -2696,6 +2774,9 @@ func buildProviderAddRequest(form providerAddFormState) (providerAddRequest, str
 	}
 	if request.Driver == "" {
 		return providerAddRequest{}, "Driver is required"
+	}
+	if request.ModelSource == "" {
+		return providerAddRequest{}, "Model Source must be discover or manual"
 	}
 	if request.APIKey == "" {
 		return providerAddRequest{}, "API Key is required"
@@ -2740,6 +2821,17 @@ func buildProviderAddRequest(form providerAddFormState) (providerAddRequest, str
 		request.DeploymentMode = ""
 		request.APIVersion = ""
 	}
+
+	if request.ModelSource == provider.ModelSourceManual {
+		request.DiscoveryEndpointPath = ""
+		request.DiscoveryResponseProfile = ""
+		return request, ""
+	}
+
+	if request.DiscoveryEndpointPath == "" {
+		return providerAddRequest{}, "Discovery Endpoint is required for discover model source"
+	}
+
 	normalizedProtocols, err := provider.NormalizeProviderProtocolSettings(
 		request.Driver,
 		"",
@@ -2775,6 +2867,29 @@ func sanitizeProviderAddInputRunes(runes []rune) string {
 	builder.Grow(len(runes))
 	for _, r := range runes {
 		if unicode.IsControl(r) || unicode.In(r, unicode.Cf) {
+			continue
+		}
+		builder.WriteRune(r)
+	}
+	return builder.String()
+}
+
+// sanitizeProviderAddJSONInputRunes 过滤不可见格式控制字符，保留 JSON 编辑需要的换行与制表符。
+func sanitizeProviderAddJSONInputRunes(runes []rune) string {
+	if len(runes) == 0 {
+		return ""
+	}
+
+	var builder strings.Builder
+	builder.Grow(len(runes))
+	for _, r := range runes {
+		if unicode.In(r, unicode.Cf) {
+			continue
+		}
+		if unicode.IsControl(r) && r != '\n' && r != '\r' && r != '\t' {
+			continue
+		}
+		if r == '\r' {
 			continue
 		}
 		builder.WriteRune(r)
@@ -2828,6 +2943,8 @@ func (a *App) runProviderAddFlow(request providerAddRequest) tea.Cmd {
 			Name:                     request.Name,
 			Driver:                   request.Driver,
 			BaseURL:                  request.BaseURL,
+			ModelSource:              request.ModelSource,
+			ManualModelsJSON:         request.ManualModelsJSON,
 			APIStyle:                 request.APIStyle,
 			DeploymentMode:           request.DeploymentMode,
 			APIVersion:               request.APIVersion,

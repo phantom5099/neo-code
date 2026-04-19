@@ -24,6 +24,7 @@ type customProviderFile struct {
 	Name                     string                      `yaml:"name"`
 	Driver                   string                      `yaml:"driver"`
 	APIKeyEnv                string                      `yaml:"api_key_env"`
+	ModelSource              string                      `yaml:"model_source,omitempty"`
 	BaseURL                  string                      `yaml:"base_url,omitempty"`
 	ChatProtocol             string                      `yaml:"chat_protocol,omitempty"`
 	ChatEndpointPath         string                      `yaml:"chat_endpoint_path,omitempty"`
@@ -41,7 +42,7 @@ type customProviderFile struct {
 
 type customProviderModelFile struct {
 	ID              string `yaml:"id"`
-	Name            string `yaml:"name,omitempty"`
+	Name            string `yaml:"name"`
 	ContextWindow   *int   `yaml:"context_window,omitempty"`
 	MaxOutputTokens *int   `yaml:"max_output_tokens,omitempty"`
 }
@@ -83,6 +84,7 @@ type customAnthropicProviderFile struct {
 }
 
 type customProviderSettings struct {
+	ModelSource              string
 	BaseURL                  string
 	ChatProtocol             string
 	ChatEndpointPath         string
@@ -160,6 +162,9 @@ func loadCustomProvider(providerDir string) (ProviderConfig, error) {
 	if err := validateCustomProviderDiscoveryFieldPlacement(file); err != nil {
 		return ProviderConfig{}, fmt.Errorf("config: custom provider %q: %w", filepath.Base(providerDir), err)
 	}
+	if err := validateCustomProviderModelSource(file.ModelSource); err != nil {
+		return ProviderConfig{}, fmt.Errorf("config: custom provider %q: %w", filepath.Base(providerDir), err)
+	}
 
 	settings := resolveCustomProviderSettings(file)
 	models, err := customProviderModels(file.Models)
@@ -172,6 +177,7 @@ func loadCustomProvider(providerDir string) (ProviderConfig, error) {
 		Driver:                   strings.TrimSpace(file.Driver),
 		BaseURL:                  settings.BaseURL,
 		APIKeyEnv:                strings.TrimSpace(file.APIKeyEnv),
+		ModelSource:              settings.ModelSource,
 		ChatProtocol:             settings.ChatProtocol,
 		ChatEndpointPath:         settings.ChatEndpointPath,
 		DiscoveryProtocol:        settings.DiscoveryProtocol,
@@ -187,16 +193,23 @@ func loadCustomProvider(providerDir string) (ProviderConfig, error) {
 		Source:                   ProviderSourceCustom,
 	}
 
+	normalizedDiscoveryEndpointPath := cfg.DiscoveryEndpointPath
+	normalizedDiscoveryResponseProfile := cfg.DiscoveryResponseProfile
+	if provider.NormalizeModelSource(cfg.ModelSource) == provider.ModelSourceManual {
+		normalizedDiscoveryEndpointPath = ""
+		normalizedDiscoveryResponseProfile = ""
+	}
+
 	normalizedProtocols, err := provider.NormalizeProviderProtocolSettings(
 		cfg.Driver,
 		cfg.ChatProtocol,
 		cfg.ChatEndpointPath,
 		cfg.DiscoveryProtocol,
-		cfg.DiscoveryEndpointPath,
+		normalizedDiscoveryEndpointPath,
 		cfg.AuthStrategy,
 		cfg.ResponseProfile,
 		cfg.APIStyle,
-		cfg.DiscoveryResponseProfile,
+		normalizedDiscoveryResponseProfile,
 	)
 	if err != nil {
 		return ProviderConfig{}, fmt.Errorf("config: custom provider %q: %w", filepath.Base(providerDir), err)
@@ -207,8 +220,13 @@ func loadCustomProvider(providerDir string) (ProviderConfig, error) {
 	cfg.AuthStrategy = normalizedProtocols.AuthStrategy
 	cfg.ResponseProfile = normalizedProtocols.ResponseProfile
 	cfg.APIStyle = normalizedProtocols.LegacyAPIStyle
-	cfg.DiscoveryEndpointPath = normalizedProtocols.DiscoveryEndpointPath
-	cfg.DiscoveryResponseProfile = normalizedProtocols.ResponseProfile
+	if provider.NormalizeModelSource(cfg.ModelSource) == provider.ModelSourceManual {
+		cfg.DiscoveryEndpointPath = ""
+		cfg.DiscoveryResponseProfile = ""
+	} else {
+		cfg.DiscoveryEndpointPath = normalizedProtocols.DiscoveryEndpointPath
+		cfg.DiscoveryResponseProfile = normalizedProtocols.ResponseProfile
+	}
 
 	if err := cfg.Validate(); err != nil {
 		return ProviderConfig{}, fmt.Errorf("config: custom provider %q: %w", filepath.Base(providerDir), err)
@@ -230,6 +248,10 @@ func customProviderModels(models []customProviderModelFile) ([]providertypes.Mod
 		if id == "" {
 			return nil, fmt.Errorf("models[%d].id is empty", index)
 		}
+		name := strings.TrimSpace(model.Name)
+		if name == "" {
+			return nil, fmt.Errorf("models[%d].name is empty", index)
+		}
 
 		key := provider.NormalizeKey(id)
 		if _, exists := seen[key]; exists {
@@ -239,7 +261,7 @@ func customProviderModels(models []customProviderModelFile) ([]providertypes.Mod
 
 		descriptor := providertypes.ModelDescriptor{
 			ID:   id,
-			Name: strings.TrimSpace(model.Name),
+			Name: name,
 		}
 		if model.ContextWindow != nil {
 			if *model.ContextWindow <= 0 {
@@ -262,7 +284,9 @@ func customProviderModels(models []customProviderModelFile) ([]providertypes.Mod
 // resolveCustomProviderSettings 根据 driver 只提取当前协议真正生效的配置字段，避免误吃其他协议块的值。
 // 已知 driver 仅从协议块读取 base_url；未知 driver 使用顶层 base_url 作为唯一入口。
 func resolveCustomProviderSettings(file customProviderFile) customProviderSettings {
-	settings := customProviderSettings{}
+	settings := customProviderSettings{
+		ModelSource: provider.NormalizeModelSource(strings.TrimSpace(file.ModelSource)),
+	}
 
 	switch normalizeProviderDriver(file.Driver) {
 	case provider.DriverOpenAICompat:
@@ -306,8 +330,23 @@ func resolveCustomProviderSettings(file customProviderFile) customProviderSettin
 		settings.DiscoveryResponseProfile = strings.TrimSpace(file.DiscoveryResponseProfile)
 	}
 	settings.ModelFieldAliases = encodeModelFieldAliases(file.ModelFieldAliases)
+	if settings.ModelSource == "" {
+		settings.ModelSource = provider.ModelSourceDiscover
+	}
 
 	return settings
+}
+
+// validateCustomProviderModelSource 校验 model_source 字段；仅允许缺省或合法枚举值，拒绝静默回退。
+func validateCustomProviderModelSource(raw string) error {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil
+	}
+	if provider.NormalizeModelSource(trimmed) == "" {
+		return fmt.Errorf("unsupported model_source %q", raw)
+	}
+	return nil
 }
 
 // validateCustomProviderDiscoveryFieldPlacement 校验 discovery 字段写在与 driver 对应的协议块中，避免静默忽略。
@@ -341,19 +380,52 @@ func validateCustomProviderDiscoveryFieldPlacement(file customProviderFile) erro
 	}
 }
 
-// SaveCustomProvider 保存自定义 provider 到文件系统。
-func SaveCustomProvider(
-	baseDir string,
-	name string,
-	driver string,
-	baseURL string,
-	apiKeyEnv string,
-	apiStyle string,
-	deploymentMode string,
-	apiVersion string,
-	discoveryEndpointPath string,
-	discoveryResponseProfile string,
-) error {
+// SaveCustomProviderInput 定义自定义 Provider 的持久化字段。
+type SaveCustomProviderInput struct {
+	Name                     string
+	Driver                   string
+	BaseURL                  string
+	APIKeyEnv                string
+	APIStyle                 string
+	DeploymentMode           string
+	APIVersion               string
+	DiscoveryEndpointPath    string
+	DiscoveryResponseProfile string
+	ModelSource              string
+	Models                   []providertypes.ModelDescriptor
+}
+
+// SaveCustomProviderWithModels 保存自定义 provider，并可在 manual 模式下写入手工模型列表。
+func SaveCustomProviderWithModels(baseDir string, input SaveCustomProviderInput) error {
+	name := input.Name
+	driver := input.Driver
+	baseURL := input.BaseURL
+	apiKeyEnv := input.APIKeyEnv
+	apiStyle := input.APIStyle
+	deploymentMode := input.DeploymentMode
+	apiVersion := input.APIVersion
+	discoveryEndpointPath := strings.TrimSpace(input.DiscoveryEndpointPath)
+	discoveryResponseProfile := strings.TrimSpace(input.DiscoveryResponseProfile)
+	modelSource := provider.NormalizeModelSource(input.ModelSource)
+	if strings.TrimSpace(input.ModelSource) != "" && modelSource == "" {
+		return fmt.Errorf("config: unsupported model_source %q", input.ModelSource)
+	}
+	if modelSource == "" {
+		modelSource = provider.ModelSourceDiscover
+	}
+	normalizedInputModels, err := validateModelDescriptorsRequireName(input.Models)
+	if err != nil {
+		return err
+	}
+	normalizedModels := providertypes.MergeModelDescriptors(normalizedInputModels)
+	if modelSource == provider.ModelSourceManual {
+		discoveryEndpointPath = ""
+		discoveryResponseProfile = ""
+		if len(normalizedModels) == 0 {
+			return fmt.Errorf("config: provider %q manual model source requires non-empty models", strings.TrimSpace(name))
+		}
+	}
+
 	if err := validateCustomProviderName(name); err != nil {
 		return err
 	}
@@ -365,23 +437,28 @@ func SaveCustomProvider(
 
 	normalizedDriver := normalizeProviderDriver(driver)
 	cfg := customProviderFile{
-		Name:      name,
-		Driver:    normalizedDriver,
-		APIKeyEnv: apiKeyEnv,
+		Name:        name,
+		Driver:      normalizedDriver,
+		APIKeyEnv:   apiKeyEnv,
+		ModelSource: modelSource,
 	}
 
 	switch normalizedDriver {
 	case provider.DriverOpenAICompat:
+		chatEndpointPath := "/chat/completions"
+		if provider.NormalizeProviderAPIStyle(apiStyle) == provider.OpenAICompatibleAPIStyleResponses {
+			chatEndpointPath = "/responses"
+		}
 		cfg.OpenAICompatible = customOpenAICompatibleFile{
 			BaseURL:                  baseURL,
 			ChatProtocol:             provider.ChatProtocolOpenAIChatCompletions,
-			ChatEndpointPath:         "/chat/completions",
+			ChatEndpointPath:         chatEndpointPath,
 			DiscoveryProtocol:        provider.DiscoveryProtocolOpenAIModels,
 			AuthStrategy:             provider.AuthStrategyBearer,
-			ResponseProfile:          strings.TrimSpace(discoveryResponseProfile),
+			ResponseProfile:          discoveryResponseProfile,
 			APIStyle:                 strings.TrimSpace(apiStyle),
-			DiscoveryEndpointPath:    strings.TrimSpace(discoveryEndpointPath),
-			DiscoveryResponseProfile: strings.TrimSpace(discoveryResponseProfile),
+			DiscoveryEndpointPath:    discoveryEndpointPath,
+			DiscoveryResponseProfile: discoveryResponseProfile,
 		}
 	case provider.DriverGemini:
 		cfg.Gemini = customGeminiProviderFile{
@@ -390,10 +467,10 @@ func SaveCustomProvider(
 			ChatEndpointPath:         "/chat/completions",
 			DiscoveryProtocol:        provider.DiscoveryProtocolGeminiModels,
 			AuthStrategy:             provider.AuthStrategyBearer,
-			ResponseProfile:          strings.TrimSpace(discoveryResponseProfile),
+			ResponseProfile:          discoveryResponseProfile,
 			DeploymentMode:           strings.TrimSpace(deploymentMode),
-			DiscoveryEndpointPath:    strings.TrimSpace(discoveryEndpointPath),
-			DiscoveryResponseProfile: strings.TrimSpace(discoveryResponseProfile),
+			DiscoveryEndpointPath:    discoveryEndpointPath,
+			DiscoveryResponseProfile: discoveryResponseProfile,
 		}
 	case provider.DriverAnthropic:
 		cfg.Anthropic = customAnthropicProviderFile{
@@ -402,15 +479,18 @@ func SaveCustomProvider(
 			ChatEndpointPath:         "/messages",
 			DiscoveryProtocol:        provider.DiscoveryProtocolAnthropicModels,
 			AuthStrategy:             provider.AuthStrategyAnthropic,
-			ResponseProfile:          strings.TrimSpace(discoveryResponseProfile),
+			ResponseProfile:          discoveryResponseProfile,
 			APIVersion:               strings.TrimSpace(apiVersion),
-			DiscoveryEndpointPath:    strings.TrimSpace(discoveryEndpointPath),
-			DiscoveryResponseProfile: strings.TrimSpace(discoveryResponseProfile),
+			DiscoveryEndpointPath:    discoveryEndpointPath,
+			DiscoveryResponseProfile: discoveryResponseProfile,
 		}
 	default:
 		cfg.BaseURL = baseURL
-		cfg.DiscoveryEndpointPath = strings.TrimSpace(discoveryEndpointPath)
-		cfg.DiscoveryResponseProfile = strings.TrimSpace(discoveryResponseProfile)
+		cfg.DiscoveryEndpointPath = discoveryEndpointPath
+		cfg.DiscoveryResponseProfile = discoveryResponseProfile
+	}
+	if modelSource == provider.ModelSourceManual {
+		cfg.Models = toCustomProviderModelFiles(normalizedModels)
 	}
 
 	data, err := yaml.Marshal(cfg)
@@ -424,6 +504,59 @@ func SaveCustomProvider(
 	}
 
 	return nil
+}
+
+// validateModelDescriptorsRequireName 校验模型描述的 id/name 必填，拒绝 name 缺省回填为 id。
+func validateModelDescriptorsRequireName(
+	models []providertypes.ModelDescriptor,
+) ([]providertypes.ModelDescriptor, error) {
+	if len(models) == 0 {
+		return nil, nil
+	}
+	normalized := make([]providertypes.ModelDescriptor, 0, len(models))
+	for index, model := range models {
+		id := strings.TrimSpace(model.ID)
+		if id == "" {
+			return nil, fmt.Errorf("config: models[%d].id is empty", index)
+		}
+		name := strings.TrimSpace(model.Name)
+		if name == "" {
+			return nil, fmt.Errorf("config: models[%d].name is empty", index)
+		}
+		normalized = append(normalized, providertypes.ModelDescriptor{
+			ID:              id,
+			Name:            name,
+			Description:     strings.TrimSpace(model.Description),
+			ContextWindow:   model.ContextWindow,
+			MaxOutputTokens: model.MaxOutputTokens,
+			CapabilityHints: model.CapabilityHints,
+		})
+	}
+	return normalized, nil
+}
+
+// toCustomProviderModelFiles 将模型描述列表转换为 custom provider.yaml 可持久化格式。
+func toCustomProviderModelFiles(models []providertypes.ModelDescriptor) []customProviderModelFile {
+	if len(models) == 0 {
+		return nil
+	}
+	items := make([]customProviderModelFile, 0, len(models))
+	for _, model := range providertypes.MergeModelDescriptors(models) {
+		item := customProviderModelFile{
+			ID:   strings.TrimSpace(model.ID),
+			Name: strings.TrimSpace(model.Name),
+		}
+		if model.ContextWindow > 0 {
+			value := model.ContextWindow
+			item.ContextWindow = &value
+		}
+		if model.MaxOutputTokens > 0 {
+			value := model.MaxOutputTokens
+			item.MaxOutputTokens = &value
+		}
+		items = append(items, item)
+	}
+	return items
 }
 
 // encodeModelFieldAliases 将 model field aliases 序列化为稳定字符串，供运行时跨层传递。

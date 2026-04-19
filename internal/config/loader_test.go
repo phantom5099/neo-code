@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"neo-code/internal/provider"
+	providertypes "neo-code/internal/provider/types"
 )
 
 func writeLoaderConfig(t *testing.T, loader *Loader, raw string) {
@@ -23,6 +24,32 @@ func writeLoaderConfig(t *testing.T, loader *Loader, raw string) {
 	if err := os.WriteFile(loader.ConfigPath(), []byte(content), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
+}
+
+func saveCustomProviderWithModelsForTest(
+	baseDir string,
+	name string,
+	driver string,
+	baseURL string,
+	apiKeyEnv string,
+	apiStyle string,
+	deploymentMode string,
+	apiVersion string,
+	discoveryEndpointPath string,
+	discoveryResponseProfile string,
+) error {
+	return SaveCustomProviderWithModels(baseDir, SaveCustomProviderInput{
+		Name:                     name,
+		Driver:                   driver,
+		BaseURL:                  baseURL,
+		APIKeyEnv:                apiKeyEnv,
+		APIStyle:                 apiStyle,
+		DeploymentMode:           deploymentMode,
+		APIVersion:               apiVersion,
+		DiscoveryEndpointPath:    discoveryEndpointPath,
+		DiscoveryResponseProfile: discoveryResponseProfile,
+		ModelSource:              provider.ModelSourceDiscover,
+	})
 }
 
 func TestLoaderLoadMissingConfigCreatesDefault(t *testing.T) {
@@ -374,6 +401,127 @@ func TestLoaderRejectsMalformedCustomProviderYAML(t *testing.T) {
 	}
 }
 
+func TestLoaderRejectsInvalidCustomProviderModelSource(t *testing.T) {
+	t.Parallel()
+
+	loader := NewLoader(t.TempDir(), testDefaultConfig())
+	customDir := filepath.Join(loader.BaseDir(), providersDirName, "company-gateway")
+	if err := os.MkdirAll(customDir, 0o755); err != nil {
+		t.Fatalf("mkdir custom provider dir: %v", err)
+	}
+
+	providerYAML := `
+name: company-gateway
+driver: openaicompat
+api_key_env: COMPANY_GATEWAY_API_KEY
+model_source: manul
+openai_compatible:
+  base_url: https://llm.example.com/v1
+`
+	if err := os.WriteFile(filepath.Join(customDir, customProviderConfigName), []byte(strings.TrimSpace(providerYAML)+"\n"), 0o644); err != nil {
+		t.Fatalf("write provider.yaml: %v", err)
+	}
+
+	_, err := loader.Load(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "unsupported model_source") {
+		t.Fatalf("expected invalid model_source error, got %v", err)
+	}
+}
+
+func TestLoaderLoadManualModelSourceIgnoresDiscoveryFields(t *testing.T) {
+	t.Parallel()
+
+	loader := NewLoader(t.TempDir(), testDefaultConfig())
+	customDir := filepath.Join(loader.BaseDir(), providersDirName, "company-gateway")
+	if err := os.MkdirAll(customDir, 0o755); err != nil {
+		t.Fatalf("mkdir custom provider dir: %v", err)
+	}
+
+	providerYAML := `
+name: company-gateway
+driver: openaicompat
+api_key_env: COMPANY_GATEWAY_API_KEY
+model_source: manual
+models:
+  - id: manual-model
+    name: Manual Model
+openai_compatible:
+  base_url: https://llm.example.com/v1
+  discovery_endpoint_path: /models
+  discovery_response_profile: invalid-profile
+`
+	if err := os.WriteFile(filepath.Join(customDir, customProviderConfigName), []byte(strings.TrimSpace(providerYAML)+"\n"), 0o644); err != nil {
+		t.Fatalf("write provider.yaml: %v", err)
+	}
+
+	cfg, err := loader.Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	loadedProvider, err := cfg.ProviderByName("company-gateway")
+	if err != nil {
+		t.Fatalf("ProviderByName(company-gateway) error = %v", err)
+	}
+	if loadedProvider.ModelSource != provider.ModelSourceManual {
+		t.Fatalf("expected model_source manual, got %q", loadedProvider.ModelSource)
+	}
+	if loadedProvider.DiscoveryEndpointPath != "" {
+		t.Fatalf("expected manual mode to clear discovery endpoint path, got %q", loadedProvider.DiscoveryEndpointPath)
+	}
+	if loadedProvider.DiscoveryResponseProfile != "" {
+		t.Fatalf(
+			"expected manual mode to clear discovery response profile, got %q",
+			loadedProvider.DiscoveryResponseProfile,
+		)
+	}
+}
+
+func TestLoaderDefaultsModelSourceToDiscoverForLegacyCustomProvider(t *testing.T) {
+	t.Parallel()
+
+	loader := NewLoader(t.TempDir(), testDefaultConfig())
+	customDir := filepath.Join(loader.BaseDir(), providersDirName, "company-gateway")
+	if err := os.MkdirAll(customDir, 0o755); err != nil {
+		t.Fatalf("mkdir custom provider dir: %v", err)
+	}
+
+	providerYAML := `
+name: company-gateway
+driver: openaicompat
+api_key_env: COMPANY_GATEWAY_API_KEY
+models:
+  - id: manual-model
+    name: Manual Model
+openai_compatible:
+  base_url: https://llm.example.com/v1
+`
+	if err := os.WriteFile(filepath.Join(customDir, customProviderConfigName), []byte(strings.TrimSpace(providerYAML)+"\n"), 0o644); err != nil {
+		t.Fatalf("write provider.yaml: %v", err)
+	}
+
+	cfg, err := loader.Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	loadedProvider, err := cfg.ProviderByName("company-gateway")
+	if err != nil {
+		t.Fatalf("ProviderByName(company-gateway) error = %v", err)
+	}
+	if loadedProvider.ModelSource != provider.ModelSourceDiscover {
+		t.Fatalf("expected default model_source discover, got %q", loadedProvider.ModelSource)
+	}
+	if loadedProvider.DiscoveryEndpointPath != provider.DiscoveryEndpointPathModels {
+		t.Fatalf("expected discovery endpoint to use default /models, got %q", loadedProvider.DiscoveryEndpointPath)
+	}
+	if loadedProvider.DiscoveryResponseProfile != provider.DiscoveryResponseProfileOpenAI {
+		t.Fatalf(
+			"expected discovery response profile %q, got %q",
+			provider.DiscoveryResponseProfileOpenAI,
+			loadedProvider.DiscoveryResponseProfile,
+		)
+	}
+}
+
 func TestLoaderRejectsTopLevelDiscoverySettingsForKnownDriver(t *testing.T) {
 	t.Parallel()
 
@@ -513,6 +661,7 @@ driver: openaicompat
 api_key_env: COMPANY_GATEWAY_API_KEY
 models:
   - id: deepseek-coder
+    name: DeepSeek Coder
     context_window: 0
 openai_compatible:
   base_url: https://llm.example.com/v1
@@ -542,6 +691,7 @@ driver: openaicompat
 api_key_env: COMPANY_GATEWAY_API_KEY
 models:
   - id: deepseek-coder
+    name: DeepSeek Coder
     max_output_tokens: 0
 openai_compatible:
   base_url: https://llm.example.com/v1
@@ -571,7 +721,9 @@ driver: openaicompat
 api_key_env: COMPANY_GATEWAY_API_KEY
 models:
   - id: deepseek-coder
+    name: DeepSeek Coder
   - id: DeepSeek-Coder
+    name: DeepSeek Coder Duplicate
 openai_compatible:
   base_url: https://llm.example.com/v1
 `
@@ -887,8 +1039,12 @@ func TestResolveCustomProviderSettingsByDriver(t *testing.T) {
 			t.Parallel()
 
 			got := resolveCustomProviderSettings(tt.file)
-			if got != tt.want {
-				t.Fatalf("resolveCustomProviderSettings() = %+v, want %+v", got, tt.want)
+			expected := tt.want
+			if expected.ModelSource == "" {
+				expected.ModelSource = provider.ModelSourceDiscover
+			}
+			if got != expected {
+				t.Fatalf("resolveCustomProviderSettings() = %+v, want %+v", got, expected)
 			}
 		})
 	}
@@ -1034,7 +1190,7 @@ func TestSaveCustomProviderPersistsDriverSpecificSettings(t *testing.T) {
 
 			providerName := strings.ReplaceAll(tt.name, " ", "-")
 			apiKeyEnv := strings.ToUpper(strings.ReplaceAll(providerName, "-", "_")) + "_API_KEY"
-			if err := SaveCustomProvider(
+			if err := saveCustomProviderWithModelsForTest(
 				baseDir,
 				providerName,
 				tt.driver,
@@ -1046,7 +1202,7 @@ func TestSaveCustomProviderPersistsDriverSpecificSettings(t *testing.T) {
 				tt.discoveryEndpointPath,
 				tt.discoveryResponseProfile,
 			); err != nil {
-				t.Fatalf("SaveCustomProvider() error = %v", err)
+				t.Fatalf("SaveCustomProviderWithModels() error = %v", err)
 			}
 
 			cfg, err := loadCustomProvider(filepath.Join(baseDir, providersDirName, providerName))
@@ -1082,7 +1238,7 @@ func TestSaveCustomProviderRejectsUnsafeProviderName(t *testing.T) {
 		"中文",
 	}
 	for _, name := range invalidNames {
-		err := SaveCustomProvider(
+		err := saveCustomProviderWithModelsForTest(
 			baseDir,
 			name,
 			provider.DriverOpenAICompat,
@@ -1095,8 +1251,161 @@ func TestSaveCustomProviderRejectsUnsafeProviderName(t *testing.T) {
 			"",
 		)
 		if err == nil {
-			t.Fatalf("expected SaveCustomProvider to reject %q", name)
+			t.Fatalf("expected SaveCustomProviderWithModels to reject %q", name)
 		}
+	}
+}
+
+func TestSaveCustomProviderRejectsManualSourceWithoutModels(t *testing.T) {
+	t.Parallel()
+
+	err := SaveCustomProviderWithModels(t.TempDir(), SaveCustomProviderInput{
+		Name:        "manual-empty-models",
+		Driver:      provider.DriverOpenAICompat,
+		BaseURL:     "https://llm.example.com/v1",
+		APIKeyEnv:   "MANUAL_EMPTY_MODELS_API_KEY",
+		ModelSource: provider.ModelSourceManual,
+		Models:      nil,
+	})
+	if err == nil || !strings.Contains(err.Error(), "manual model source requires non-empty models") {
+		t.Fatalf("expected manual source empty models validation error, got %v", err)
+	}
+}
+
+func TestSaveCustomProviderRejectsModelWithoutName(t *testing.T) {
+	t.Parallel()
+
+	err := SaveCustomProviderWithModels(t.TempDir(), SaveCustomProviderInput{
+		Name:        "manual-missing-model-name",
+		Driver:      provider.DriverOpenAICompat,
+		BaseURL:     "https://llm.example.com/v1",
+		APIKeyEnv:   "MANUAL_MISSING_MODEL_NAME_API_KEY",
+		ModelSource: provider.ModelSourceManual,
+		Models: []providertypes.ModelDescriptor{
+			{ID: "manual-model-1"},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "models[0].name is empty") {
+		t.Fatalf("expected empty model name validation error, got %v", err)
+	}
+}
+
+func TestSaveCustomProviderRejectsInvalidModelSource(t *testing.T) {
+	t.Parallel()
+
+	err := SaveCustomProviderWithModels(t.TempDir(), SaveCustomProviderInput{
+		Name:        "invalid-model-source",
+		Driver:      provider.DriverOpenAICompat,
+		BaseURL:     "https://llm.example.com/v1",
+		APIKeyEnv:   "INVALID_MODEL_SOURCE_API_KEY",
+		ModelSource: "manul",
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported model_source") {
+		t.Fatalf("expected invalid model_source error, got %v", err)
+	}
+}
+
+func TestSaveCustomProviderManualModelsPersistOptionalFields(t *testing.T) {
+	t.Parallel()
+
+	baseDir := t.TempDir()
+	const providerName = "manual-models-provider"
+	err := SaveCustomProviderWithModels(baseDir, SaveCustomProviderInput{
+		Name:        providerName,
+		Driver:      provider.DriverOpenAICompat,
+		BaseURL:     "https://llm.example.com/v1",
+		APIKeyEnv:   "MANUAL_MODELS_PROVIDER_API_KEY",
+		ModelSource: provider.ModelSourceManual,
+		Models: []providertypes.ModelDescriptor{
+			{
+				ID:   "manual-model-1",
+				Name: "Manual Model 1",
+			},
+			{
+				ID:              "manual-model-2",
+				Name:            "Manual Model 2",
+				ContextWindow:   131072,
+				MaxOutputTokens: 8192,
+			},
+			{
+				ID:   "Manual-Model-1",
+				Name: "Duplicate by key should be merged",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SaveCustomProviderWithModels() error = %v", err)
+	}
+
+	cfg, err := loadCustomProvider(filepath.Join(baseDir, providersDirName, providerName))
+	if err != nil {
+		t.Fatalf("loadCustomProvider() error = %v", err)
+	}
+	if cfg.ModelSource != provider.ModelSourceManual {
+		t.Fatalf("expected model source manual, got %q", cfg.ModelSource)
+	}
+	if cfg.DiscoveryEndpointPath != "" || cfg.DiscoveryResponseProfile != "" {
+		t.Fatalf("expected discovery settings to be empty in manual mode, got %+v", cfg)
+	}
+	if len(cfg.Models) != 2 {
+		t.Fatalf("expected merged model list with 2 entries, got %+v", cfg.Models)
+	}
+	if cfg.Models[0].ContextWindow != 0 || cfg.Models[0].MaxOutputTokens != 0 {
+		t.Fatalf("expected optional fields omitted for model-1, got %+v", cfg.Models[0])
+	}
+	if cfg.Models[1].ContextWindow != 131072 || cfg.Models[1].MaxOutputTokens != 8192 {
+		t.Fatalf("expected optional fields persisted for model-2, got %+v", cfg.Models[1])
+	}
+}
+
+func TestToCustomProviderModelFiles(t *testing.T) {
+	t.Parallel()
+
+	if got := toCustomProviderModelFiles(nil); got != nil {
+		t.Fatalf("expected nil result for empty models, got %+v", got)
+	}
+
+	converted := toCustomProviderModelFiles([]providertypes.ModelDescriptor{
+		{
+			ID:   "model-a",
+			Name: "Model A",
+		},
+		{
+			ID:              "model-b",
+			Name:            "Model B",
+			ContextWindow:   32768,
+			MaxOutputTokens: 2048,
+		},
+		{
+			ID:   "Model-A",
+			Name: "Merged duplicate key",
+		},
+	})
+	if len(converted) != 2 {
+		t.Fatalf("expected merged model count 2, got %+v", converted)
+	}
+	if converted[0].ID != "model-a" || converted[0].Name != "Model A" {
+		t.Fatalf("expected normalized merge result for model-a, got %+v", converted[0])
+	}
+	if converted[0].ContextWindow != nil || converted[0].MaxOutputTokens != nil {
+		t.Fatalf("expected model-a optional pointers nil, got %+v", converted[0])
+	}
+	if converted[1].ContextWindow == nil || *converted[1].ContextWindow != 32768 {
+		t.Fatalf("expected model-b context window pointer, got %+v", converted[1])
+	}
+	if converted[1].MaxOutputTokens == nil || *converted[1].MaxOutputTokens != 2048 {
+		t.Fatalf("expected model-b max output tokens pointer, got %+v", converted[1])
+	}
+}
+
+func TestValidateCustomProviderName(t *testing.T) {
+	t.Parallel()
+
+	if err := ValidateCustomProviderName("team.gateway_01"); err != nil {
+		t.Fatalf("expected valid provider name, got %v", err)
+	}
+	if err := ValidateCustomProviderName("../escape"); err == nil {
+		t.Fatal("expected invalid provider name rejection")
 	}
 }
 
@@ -1233,7 +1542,7 @@ func TestSaveCustomProviderFileSystemErrors(t *testing.T) {
 			t.Fatalf("WriteFile() error = %v", err)
 		}
 
-		err := SaveCustomProvider(
+		err := saveCustomProviderWithModelsForTest(
 			baseDir,
 			"team-gateway",
 			provider.DriverOpenAICompat,
@@ -1257,7 +1566,7 @@ func TestSaveCustomProviderFileSystemErrors(t *testing.T) {
 			t.Fatalf("MkdirAll() error = %v", err)
 		}
 
-		err := SaveCustomProvider(
+		err := saveCustomProviderWithModelsForTest(
 			baseDir,
 			"team-gateway",
 			provider.DriverOpenAICompat,

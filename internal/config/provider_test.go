@@ -291,12 +291,22 @@ func TestCustomProviderModelsRejectsEmptyID(t *testing.T) {
 	}
 }
 
+func TestCustomProviderModelsRejectsEmptyName(t *testing.T) {
+	t.Parallel()
+
+	_, err := customProviderModels([]customProviderModelFile{{ID: "deepseek-coder"}})
+	if err == nil || !strings.Contains(err.Error(), "models[0].name") {
+		t.Fatalf("expected empty name validation error, got %v", err)
+	}
+}
+
 func TestCustomProviderModelsRejectsNonPositiveContextWindow(t *testing.T) {
 	t.Parallel()
 
 	contextWindow := 0
 	_, err := customProviderModels([]customProviderModelFile{{
 		ID:            "deepseek-coder",
+		Name:          "DeepSeek Coder",
 		ContextWindow: &contextWindow,
 	}})
 	if err == nil || !strings.Contains(err.Error(), "context_window") {
@@ -310,6 +320,7 @@ func TestCustomProviderModelsRejectsNonPositiveMaxOutputTokens(t *testing.T) {
 	maxOutputTokens := 0
 	_, err := customProviderModels([]customProviderModelFile{{
 		ID:              "deepseek-coder",
+		Name:            "DeepSeek Coder",
 		MaxOutputTokens: &maxOutputTokens,
 	}})
 	if err == nil || !strings.Contains(err.Error(), "max_output_tokens") {
@@ -321,8 +332,8 @@ func TestCustomProviderModelsRejectsDuplicateID(t *testing.T) {
 	t.Parallel()
 
 	_, err := customProviderModels([]customProviderModelFile{
-		{ID: "deepseek-coder"},
-		{ID: " DeepSeek-Coder "},
+		{ID: "deepseek-coder", Name: "DeepSeek Coder"},
+		{ID: " DeepSeek-Coder ", Name: "DeepSeek Coder Duplicate"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "duplicated") {
 		t.Fatalf("expected duplicate id validation error, got %v", err)

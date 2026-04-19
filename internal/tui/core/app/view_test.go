@@ -284,6 +284,9 @@ func TestRenderProviderAddFormMasksAPIKeyAndShowsHints(t *testing.T) {
 	if !strings.Contains(form, "API Key: ******") {
 		t.Fatalf("expected masked api key, got %q", form)
 	}
+	if !strings.Contains(form, "Model Source: discover") {
+		t.Fatalf("expected model source field, got %q", form)
+	}
 	if !strings.Contains(form, "留空会自动填充默认地址") {
 		t.Fatalf("expected base url hint, got %q", form)
 	}
@@ -305,6 +308,21 @@ func TestRenderProviderAddFormPromptLabel(t *testing.T) {
 	form := app.renderProviderAddForm()
 	if !strings.Contains(form, "[Prompt] continue input") {
 		t.Fatalf("expected prompt label, got %q", form)
+	}
+}
+
+func TestRenderProviderAddFormManualModelsStage(t *testing.T) {
+	app, _ := newTestApp(t)
+	app.startProviderAddForm()
+	app.providerAddForm.Stage = providerAddFormStageManualModels
+	app.providerAddForm.ManualModelsJSON = ""
+
+	form := app.renderProviderAddForm()
+	if !strings.Contains(form, "Manual Model JSON") {
+		t.Fatalf("expected manual model json title, got %q", form)
+	}
+	if !strings.Contains(form, "\"id\": \"model-id\"") {
+		t.Fatalf("expected manual model json template, got %q", form)
 	}
 }
 
