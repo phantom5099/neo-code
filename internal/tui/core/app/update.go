@@ -291,12 +291,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, tea.Batch(cmds...)
 		}
 		if key.Matches(typed, a.keys.FocusInput) {
-			if a.logViewerVisible {
-				a.logViewerVisible = false
-				a.state.StatusText = statusReady
-				a.applyComponentLayout(false)
-				return a, tea.Batch(cmds...)
-			}
 			a.focus = panelInput
 			a.applyFocus()
 			return a, tea.Batch(cmds...)
@@ -315,16 +309,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		if key.Matches(typed, a.keys.LogViewer) {
-			a.logViewerVisible = !a.logViewerVisible
-			if a.logViewerVisible {
-				a.logViewerOffset = 0
-			}
+			a.logViewerVisible = true
+			a.logViewerOffset = 0
 			a.viewDirty = true
-			if a.logViewerVisible {
-				a.state.StatusText = "Log viewer"
-			} else {
-				a.state.StatusText = statusReady
-			}
+			a.state.StatusText = "Log viewer"
 			a.applyComponentLayout(false)
 			return a, tea.Batch(cmds...)
 		}
@@ -516,7 +504,8 @@ func (a App) updateInputPanel(msg tea.Msg, typed tea.KeyMsg, cmds []tea.Cmd) (te
 			}
 
 			// image capability precheck is intentionally disabled.
-			// 淇濇寔涓?CLI 涓€鑷达紝鍏堝厑璁歌緭鍏ユ彁浜ゆ祦杞紝鍐嶇敱鍚庣画閾捐矾缁熶竴澶勭悊鑳藉姏鍏滃簳銆?			a.input.Reset()
+			// 保持与 CLI 一致，先允许输入提交流转，再由后续链路统一处理能力兜底。
+			a.input.Reset()
 			a.state.InputText = ""
 			a.applyComponentLayout(true)
 			a.refreshCommandMenu()
@@ -1010,7 +999,7 @@ func (a *App) refreshRuntimeSourceSnapshot() {
 	}
 }
 
-// runtimeSessionContextSource 缂傚倷鐒﹂幏婵嬫⒔閸曨偒鐒芥い鎰剁畱閻銇勯弽顐汗闁稿鎸诲鍕沪閸撗勬濠电偞娼欓崥瀣┍濞差亝鍎婇柤鎭掑劤閳绘柨鈹戦悩杈厡闁荤喐鎹囬弻锟犲磼濮橆厼顦╅梺缁樻惈缁辨洟骞忛悩璇差潊闁挎繂鎳庨獮瀣⒑閸涘﹥鈷愮紒瀣箻閸┾偓
+// runtimeSessionContextSource 定义读取会话上下文快照的最小接口，便于在 UI 侧按需刷新运行态信息。
 type runtimeSessionContextSource interface {
 	GetSessionContext(ctx context.Context, sessionID string) (any, error)
 }
@@ -1064,7 +1053,7 @@ func runtimeEventPhaseChangedHandler(a *App, event agentruntime.RuntimeEvent) bo
 	return false
 }
 
-// runtimeEventStopReasonDecidedHandler 濠电姰鍨煎▔娑氣偓姘煎櫍楠炲啯绻濋崶褑鍩炲銈嗙墬閻熝囶敂鏉堚晝纾藉ù锝呮憸婢ф稒銇勯幒鎾垛姇缂佸倸绉堕埀顒婄秵娴滅偤寮堕挊澹濈懓顭ㄩ崘鎯у壆濠电偛妫庨崹鑺ヤ繆
+// runtimeEventStopReasonDecidedHandler 在运行结束原因落地后统一收敛状态与提示信息。
 func runtimeEventStopReasonDecidedHandler(a *App, event agentruntime.RuntimeEvent) bool {
 	payload, ok := event.Payload.(agentruntime.StopReasonDecidedPayload)
 	if !ok {
@@ -1341,7 +1330,7 @@ func runtimeEventUsageHandler(a *App, event agentruntime.RuntimeEvent) bool {
 	return false
 }
 
-// runtimeEventToolCallThinkingHandler 濠电姰鍨煎▔娑氣偓姘煎櫍楠炲啯绻濋崒銈呮櫊闂侀潧顦崕鍗烆嚗閺冨牊鍋℃繛鍡楃箰椤忊晠鏌涢妸锔剧疄婵﹤銈搁幊婊冣枔閸喗鏉稿┑鐐茬摠缁矂顢栭崟顐熸瀻闁靛繈鍊曡繚
+// runtimeEventToolCallThinkingHandler 在工具调用进入思考阶段时同步当前工具与进度提示。
 func runtimeEventToolCallThinkingHandler(a *App, event agentruntime.RuntimeEvent) bool {
 	if payload, ok := event.Payload.(string); ok && strings.TrimSpace(payload) != "" {
 		a.state.CurrentTool = payload
@@ -1351,7 +1340,7 @@ func runtimeEventToolCallThinkingHandler(a *App, event agentruntime.RuntimeEvent
 	return false
 }
 
-// runtimeEventToolStartHandler 濠电姰鍨煎▔娑氣偓姘煎櫍楠炲啯绻濋崒銈呮櫊闂侀潧顦崕鍗烆嚗閺冨倵鍋撳▓鍨灀闁稿鎸搁埞鎴︻敊绾板崬鍓辨繝鈷€鍛珪闁诡喗澹嗘禒锕傛嚃閳哄啯顓诲┑鐐差嚟婵墽绱欐导鏉戠劦
+// runtimeEventToolStartHandler 在工具实际执行时更新状态条和活动记录。
 func runtimeEventToolStartHandler(a *App, event agentruntime.RuntimeEvent) bool {
 	a.state.StatusText = statusRunningTool
 	a.state.StreamingReply = false
@@ -1387,7 +1376,7 @@ func runtimeEventToolResultHandler(a *App, event agentruntime.RuntimeEvent) bool
 	return true
 }
 
-// runtimeEventAgentChunkHandler 濠电姰鍨煎▔娑氣偓姘煎櫍楠炲啯绻濋崑鐣屽枛閸ㄦ儳鐣烽崶锝呬壕鐎瑰嫭鍣寸憴鍕闁告縿鍎抽、鍛節閳封偓閸涱厺妲愰梺闈╃悼閸庛倕顭囪箛娑樼闁告劕寮堕惁鏃堟⒑
+// runtimeEventAgentChunkHandler 将流式回复分片持续追加到转录区，并推进运行进度。
 func runtimeEventAgentChunkHandler(a *App, event agentruntime.RuntimeEvent) bool {
 	payload, ok := event.Payload.(string)
 	if !ok {
@@ -1408,7 +1397,7 @@ func runtimeEventToolChunkHandler(a *App, event agentruntime.RuntimeEvent) bool 
 	return false
 }
 
-// runtimeEventAgentDoneHandler 濠电姰鍨煎▔娑氣偓姘煎櫍楠炲啯绻濋崘鈺€姘﹂梺褰掑亰閸ㄥジ寮ㄦ禒瀣€甸柣鐔哄濠€浼存煕閵婏妇顣茬紒鍌氱Ф閳ь剨绲洪弲婊堫敃娴犲鐓
+// runtimeEventAgentDoneHandler 在代理回复结束时收尾状态并补齐最终 assistant 消息。
 func runtimeEventAgentDoneHandler(a *App, event agentruntime.RuntimeEvent) bool {
 	a.state.IsAgentRunning = false
 	a.state.StreamingReply = false
@@ -1442,7 +1431,7 @@ func runtimeEventRunCanceledHandler(a *App, event agentruntime.RuntimeEvent) boo
 	return false
 }
 
-// runtimeEventErrorHandler 濠电姰鍨煎▔娑氣偓姘煎櫍楠炲啯绻濋崘鈺€姘﹂梺褰掑亰閸ㄥジ寮ㄦ禒瀣厸闁告劑鍔庨崺锝夋煛娴ｉ潻鍔熼柟椋庡█椤㈡稑鈻庨幋鐘愁吇濠电偛顕慨鍓х礄娴兼潙鐒
+// runtimeEventErrorHandler 在运行报错时统一清理现场并展示错误信息。
 func runtimeEventErrorHandler(a *App, event agentruntime.RuntimeEvent) bool {
 	a.state.StatusText = statusError
 	a.state.IsAgentRunning = false
@@ -1527,7 +1516,7 @@ func runtimeEventPermissionResolvedHandler(a *App, event agentruntime.RuntimeEve
 	return false
 }
 
-// refreshPermissionPromptLayout 闂備線娼荤拹鐔煎礉瀹€鈧划鈺傤槹鎼存繃鍕冮梺閫炲苯澧い鏂跨箻楠炴捇骞掗幋鐘辨樊濠电姵顔栭崰鏍敄閸涱垪鍋撻崹顐ゅ弨鐎殿噮鍠氶幑鍕传閸曨厼骞堥梻浣告惈閸婄粯鏅跺Δ鈧…鍥醇閵夛腹鎸冮梺瑙勫婢ф顩奸妸鈺傜厸濠㈣泛瀛╃涵鑸电箾閺夋埈妯€鐎规洘顨婇幖褰掝敃閵忋垻鎳囬梻浣虹帛椤ㄥ懘鎮ч崟顖氱劦
+// refreshPermissionPromptLayout 在权限提示出现或消失后刷新布局，避免遮挡输入区。
 func (a *App) refreshPermissionPromptLayout() {
 	if a.width <= 0 || a.height <= 0 {
 		return
@@ -2217,20 +2206,9 @@ func (a *App) applyComponentLayout(rebuildTranscript bool) {
 	transcriptHeight, activityHeight, _, todoHeight := a.waterfallMetrics(lay.contentWidth, lay.contentHeight)
 	a.transcript.Height = transcriptHeight
 
-	if activityHeight > 0 {
-		panelStyle := a.styles.panelFocused
-		frameHeight := panelStyle.GetVerticalFrameSize()
-		borderWidth := 2
-		paddingWidth := panelStyle.GetHorizontalFrameSize() - borderWidth
-		panelWidth := max(1, lay.contentWidth-borderWidth)
-		bodyWidth := max(10, panelWidth-paddingWidth)
-		bodyHeight := max(1, activityHeight-frameHeight-1)
-		a.activity.Width = bodyWidth
-		a.activity.Height = bodyHeight
-	} else {
-		a.activity.Width = max(10, lay.contentWidth-4)
-		a.activity.Height = 0
-	}
+	_ = activityHeight
+	a.activity.Width = max(10, lay.contentWidth-4)
+	a.activity.Height = 0
 
 	if todoHeight > 0 {
 		panelStyle := a.styles.panelFocused
@@ -2649,10 +2627,7 @@ func (a *App) persistLogEntriesForActiveSession() {
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
 		return
 	}
-	payload, err := json.Marshal(clampLogEntries(a.logEntries))
-	if err != nil {
-		return
-	}
+	payload, _ := json.Marshal(clampLogEntries(a.logEntries))
 	_ = os.WriteFile(logPath, payload, 0o600)
 }
 
@@ -3176,7 +3151,7 @@ func buildProviderAddRequest(form providerAddFormState) (providerAddRequest, str
 	return request, ""
 }
 
-// sanitizeProviderAddInputRunes 杩囨护 provider 琛ㄥ崟杈撳叆涓殑鎺у埗瀛楃锛岄伩鍏嶄笉鍙瀛楃姹℃煋閰嶇疆瀛楁銆
+// sanitizeProviderAddInputRunes 过滤 provider 表单输入中的控制字符，避免不可见字符污染配置字段。
 func sanitizeProviderAddInputRunes(runes []rune) string {
 	if len(runes) == 0 {
 		return ""
@@ -3193,7 +3168,7 @@ func sanitizeProviderAddInputRunes(runes []rune) string {
 	return builder.String()
 }
 
-// sanitizeProviderAddJSONInputRunes 杩囨护涓嶅彲瑙佹牸寮忔帶鍒跺瓧绗︼紝淇濈暀 JSON 缂栬緫闇€瑕佺殑鎹㈣涓庡埗琛ㄧ銆
+// sanitizeProviderAddJSONInputRunes 过滤不可见格式控制字符，同时保留 JSON 编辑所需的换行与制表符。
 func sanitizeProviderAddJSONInputRunes(runes []rune) string {
 	if len(runes) == 0 {
 		return ""
@@ -3216,7 +3191,7 @@ func sanitizeProviderAddJSONInputRunes(runes []rune) string {
 	return builder.String()
 }
 
-// normalizeProviderAddFieldValue 瀵?provider 琛ㄥ崟瀛楁鍋氱粺涓€娓呯悊锛屽幓闄ゆ帶鍒跺瓧绗﹀苟瑁佸壀棣栧熬绌虹櫧銆
+// normalizeProviderAddFieldValue 对 provider 表单字段做统一清理，去除控制字符并裁剪首尾空白。
 func normalizeProviderAddFieldValue(value string) string {
 	return strings.TrimSpace(sanitizeProviderAddInputRunes([]rune(value)))
 }
@@ -3332,6 +3307,3 @@ func (a *App) handleProviderAddResultMsg(msg providerAddResultMsg) {
 		a.appendActivity("system", "Failed to refresh models", err.Error(), true)
 	}
 }
-
-
-

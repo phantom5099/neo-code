@@ -624,3 +624,83 @@ func TestRenderLogViewerHonorsOffset(t *testing.T) {
 		t.Fatalf("expected older log message at offset 2, got %q", view)
 	}
 }
+
+func TestRenderActivityLineAndScrollbarHelpers(t *testing.T) {
+	app, _ := newTestApp(t)
+
+	line := app.renderActivityLine(tuistate.ActivityEntry{
+		Time:    time.Unix(1_700_000_000, 0),
+		Kind:    "tool",
+		Title:   "Run",
+		Detail:  "details",
+		IsError: false,
+	}, 72)
+	if strings.TrimSpace(line) == "" {
+		t.Fatalf("expected renderActivityLine to return non-empty text")
+	}
+
+	if got := app.transcriptScrollbarWidth(3); got != 0 {
+		t.Fatalf("expected narrow transcript width to disable scrollbar, got %d", got)
+	}
+	if got := app.transcriptScrollbarWidth(20); got != transcriptScrollbarWidth {
+		t.Fatalf("expected transcript scrollbar width %d, got %d", transcriptScrollbarWidth, got)
+	}
+
+	if got := app.renderTranscriptScrollbar(0, 10); got != "" {
+		t.Fatalf("expected empty scrollbar when width is zero, got %q", got)
+	}
+	if got := app.renderTranscriptScrollbar(2, 0); got != "" {
+		t.Fatalf("expected empty scrollbar when height is zero, got %q", got)
+	}
+
+	app.transcript.Width = 20
+	app.transcript.Height = 5
+	app.transcript.SetContent(strings.Repeat("line\n", 30))
+	app.transcript.SetYOffset(3)
+	if got := app.renderTranscriptScrollbar(2, 5); got == "" {
+		t.Fatalf("expected non-empty scrollbar when transcript is scrollable")
+	}
+}
+
+func TestRenderLogViewerEmptyAndNarrowWidthBranches(t *testing.T) {
+	app, _ := newTestApp(t)
+
+	empty := app.renderLogViewer(60, 8)
+	if !strings.Contains(empty, "No log entries") {
+		t.Fatalf("expected empty log viewer hint, got %q", empty)
+	}
+
+	app.logEntries = []logEntry{
+		{
+			Timestamp: time.Unix(1_700_000_100, 0),
+			Level:     "warning",
+			Source:    "source-with-long-name",
+			Message:   "long message that should be truncated or hidden in narrow layouts",
+		},
+	}
+	narrow := app.renderLogViewer(45, 8)
+	if strings.Contains(narrow, "long message") {
+		t.Fatalf("expected message text hidden when message width is zero, got %q", narrow)
+	}
+
+	wide := app.renderLogViewer(70, 8)
+	if !strings.Contains(wide, "Use Up/Down/PgUp/PgDn to scroll") {
+		t.Fatalf("expected scroll hint in log viewer footer, got %q", wide)
+	}
+}
+
+func TestRenderWaterfallAndTranscriptWithoutScrollbar(t *testing.T) {
+	app, _ := newTestApp(t)
+	app.state.ActivePicker = pickerNone
+	app.logViewerVisible = true
+	logView := app.renderWaterfall(80, 20)
+	if !strings.Contains(logView, "Log Viewer") {
+		t.Fatalf("expected log viewer branch in waterfall, got %q", logView)
+	}
+
+	app.logViewerVisible = false
+	plain := app.renderTranscriptWithScrollbar(2, "hello")
+	if strings.TrimSpace(plain) == "" {
+		t.Fatalf("expected transcript to render without scrollbar in very narrow width")
+	}
+}

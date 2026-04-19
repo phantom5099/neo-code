@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -3550,4 +3551,415 @@ func TestSessionLogViewerPersistenceAndCap(t *testing.T) {
 	if !strings.Contains(app.logEntries[len(app.logEntries)-1].Message, "entry-519") {
 		t.Fatalf("expected restored newest entry entry-519, got %q", app.logEntries[len(app.logEntries)-1].Message)
 	}
+}
+
+func TestSanitizeProviderAddJSONInputRunes(t *testing.T) {
+	input := []rune{'a', '\u200b', '\n', '\t', '\r', 0x01, 'b'}
+	got := sanitizeProviderAddJSONInputRunes(input)
+	if got != "a\n\tb" {
+		t.Fatalf("sanitizeProviderAddJSONInputRunes() = %q, want %q", got, "a\n\tb")
+	}
+}
+
+func TestFooterErrorToastSyncBranches(t *testing.T) {
+	app, _ := newTestApp(t)
+	base := time.Unix(1_700_000_100, 0)
+	app.nowFn = func() time.Time { return base }
+
+	app.showFooterError(" permission denied ")
+	if app.footerErrorText != "Error: permission denied" {
+		t.Fatalf("expected error prefix applied, got %q", app.footerErrorText)
+	}
+	if !app.footerErrorUntil.Equal(base.Add(footerErrorFlashDuration)) {
+		t.Fatalf("unexpected footer toast expiration: %v", app.footerErrorUntil)
+	}
+
+	app.state.ExecutionError = "Runtime failed"
+	app.syncFooterErrorToast()
+	firstUntil := app.footerErrorUntil
+	if app.footerErrorLast != "Runtime failed" {
+		t.Fatalf("expected footerErrorLast to track latest execution error, got %q", app.footerErrorLast)
+	}
+
+	app.nowFn = func() time.Time { return base.Add(5 * time.Second) }
+	app.state.ExecutionError = "runtime FAILED"
+	app.syncFooterErrorToast()
+	if !app.footerErrorUntil.Equal(firstUntil) {
+		t.Fatalf("expected equal-fold duplicate error to avoid refreshing toast timeout")
+	}
+
+	app.state.ExecutionError = ""
+	app.syncFooterErrorToast()
+	if app.footerErrorLast != "" {
+		t.Fatalf("expected empty execution error to clear footerErrorLast")
+	}
+}
+
+func TestHandleLogViewerKeyAndScrollBranches(t *testing.T) {
+	app, _ := newTestApp(t)
+	app.width = 100
+	app.height = 24
+	app.applyComponentLayout(true)
+	app.logViewerVisible = true
+	for i := 0; i < 30; i++ {
+		app.logEntries = append(app.logEntries, logEntry{Timestamp: time.Unix(int64(i), 0), Level: "info", Source: "test", Message: "m"})
+	}
+
+	_, _, _, height := app.logViewerBounds()
+	app.logViewerOffset = app.logViewerMaxOffset(height)
+	app.handleLogViewerKey(tea.KeyMsg{Type: tea.KeyHome})
+	if app.logViewerOffset != 0 {
+		t.Fatalf("expected Home to jump to newest offset 0, got %d", app.logViewerOffset)
+	}
+
+	app.handleLogViewerKey(tea.KeyMsg{Type: tea.KeyEnd})
+	if app.logViewerOffset != app.logViewerMaxOffset(height) {
+		t.Fatalf("expected End to jump to oldest offset, got %d", app.logViewerOffset)
+	}
+
+	app.handleLogViewerKey(tea.KeyMsg{Type: tea.KeyPgUp})
+	if app.logViewerOffset > app.logViewerMaxOffset(height) {
+		t.Fatalf("expected PgUp offset to stay clamped, got %d", app.logViewerOffset)
+	}
+	app.handleLogViewerKey(tea.KeyMsg{Type: tea.KeyPgDown})
+	app.handleLogViewerKey(tea.KeyMsg{Type: tea.KeyUp})
+	app.handleLogViewerKey(tea.KeyMsg{Type: tea.KeyDown})
+
+	app.handleLogViewerKey(tea.KeyMsg{Type: tea.KeyEsc})
+	if app.logViewerVisible {
+		t.Fatalf("expected Esc to close log viewer")
+	}
+	if app.state.StatusText != statusReady {
+		t.Fatalf("expected status reset when closing log viewer, got %q", app.state.StatusText)
+	}
+}
+
+func TestHandleLogViewerMouseAndClampOffset(t *testing.T) {
+	app, _ := newTestApp(t)
+	app.width = 100
+	app.height = 24
+	app.applyComponentLayout(true)
+	app.logViewerVisible = true
+	for i := 0; i < 60; i++ {
+		app.logEntries = append(app.logEntries, logEntry{Timestamp: time.Unix(int64(i), 0), Level: "info", Source: "test", Message: "m"})
+	}
+
+	if !app.handleLogViewerMouse(tea.MouseMsg{X: 0, Y: 0, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress}) {
+		t.Fatalf("expected outside click to be treated as handled while log viewer is visible")
+	}
+
+	x, y, w, h := app.logViewerBounds()
+	if w <= 2 || h <= 2 {
+		t.Fatalf("expected log viewer bounds to be drawable, got w=%d h=%d", w, h)
+	}
+	app.handleLogViewerMouse(tea.MouseMsg{
+		X:      x + w/2,
+		Y:      y + h/2,
+		Button: tea.MouseButtonWheelDown,
+		Action: tea.MouseActionPress,
+	})
+	if app.logViewerOffset != 1 {
+		t.Fatalf("expected wheel down to increase offset, got %d", app.logViewerOffset)
+	}
+
+	app.logViewerOffset = 999
+	app.clampLogViewerOffset()
+	_, _, _, height := app.logViewerBounds()
+	if app.logViewerOffset != app.logViewerMaxOffset(height) {
+		t.Fatalf("expected clampLogViewerOffset to constrain offset, got %d", app.logViewerOffset)
+	}
+}
+
+func TestSetTranscriptOffsetFromScrollbarY(t *testing.T) {
+	app, _ := newTestApp(t)
+	app.width = 100
+	app.height = 28
+	app.applyComponentLayout(true)
+	app.setTranscriptContent(strings.Repeat("line\n", 200))
+	app.transcript.SetYOffset(0)
+
+	_, y, _, h := app.transcriptScrollbarBounds()
+	app.setTranscriptOffsetFromScrollbarY(y - 5)
+	if app.transcript.YOffset != 0 {
+		t.Fatalf("expected dragging above track to clamp to top, got %d", app.transcript.YOffset)
+	}
+
+	app.setTranscriptOffsetFromScrollbarY(y + h + 10)
+	if app.transcript.YOffset != app.transcriptMaxOffset() {
+		t.Fatalf("expected dragging below track to clamp to bottom, got %d want %d", app.transcript.YOffset, app.transcriptMaxOffset())
+	}
+}
+
+func TestSessionLogHelpersAndSwitchBootstrap(t *testing.T) {
+	app, _ := newTestApp(t)
+	baseDir := app.configManager.BaseDir()
+	path := app.sessionLogEntriesPath("session-A")
+	if !strings.HasPrefix(path, baseDir) || !strings.Contains(path, "log-viewer") {
+		t.Fatalf("expected session log path under config dir, got %q", path)
+	}
+	if got := sanitizeSessionIDForFilename(" /a:b?c* "); got != "a_b_c" {
+		t.Fatalf("unexpected sanitized session id: %q", got)
+	}
+
+	now := time.Unix(1_700_001_000, 0)
+	app.logEntries = []logEntry{{Timestamp: now, Level: "info", Source: "bootstrap", Message: "in-memory"}}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+	fileEntries := []logEntry{{Timestamp: now, Level: "info", Source: "file", Message: "persisted"}}
+	payload, _ := json.Marshal(fileEntries)
+	if err := os.WriteFile(path, payload, 0o600); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+
+	app.setActiveSessionID("session-A")
+	if len(app.logEntries) != 2 {
+		t.Fatalf("expected bootstrap switch to merge file + in-memory entries, got %d", len(app.logEntries))
+	}
+
+	app.setActiveSessionID("")
+	if len(app.logEntries) != 0 || app.logViewerOffset != 0 {
+		t.Fatalf("expected clearing active session to reset log state")
+	}
+
+	invalidPath := app.sessionLogEntriesPath("session-invalid")
+	if err := os.WriteFile(invalidPath, []byte("{invalid json"), 0o600); err != nil {
+		t.Fatalf("write invalid json failed: %v", err)
+	}
+	if got := app.readLogEntriesForSession("session-invalid"); got != nil {
+		t.Fatalf("expected invalid json log file to return nil entries, got %+v", got)
+	}
+}
+
+func TestAppendActivityCapsAndFooterError(t *testing.T) {
+	app, _ := newTestApp(t)
+	app.width = 100
+	app.height = 24
+	app.applyComponentLayout(true)
+
+	for i := 0; i < maxActivityEntries+3; i++ {
+		app.appendActivity("tool", fmt.Sprintf("warn-%03d", i), "detail", false)
+	}
+	if len(app.activities) != maxActivityEntries {
+		t.Fatalf("expected activities capped at %d, got %d", maxActivityEntries, len(app.activities))
+	}
+
+	app.showFooterError("  ")
+	before := app.footerErrorText
+	app.appendActivity("tool", "failed-run", "", true)
+	if app.footerErrorText == before || !strings.Contains(app.footerErrorText, "Error:") {
+		t.Fatalf("expected error activity to refresh footer toast, got %q", app.footerErrorText)
+	}
+}
+
+func TestAddLogEntryWarnAndOffsetClamp(t *testing.T) {
+	app, _ := newTestApp(t)
+	app.width = 100
+	app.height = 24
+	app.applyComponentLayout(true)
+	app.logViewerOffset = 999
+
+	app.addLogEntry("tool", "Warn threshold", "almost full")
+	if len(app.logEntries) == 0 || app.logEntries[len(app.logEntries)-1].Level != "warn" {
+		t.Fatalf("expected warn title to map to warn log level")
+	}
+	if app.logViewerOffset > app.logViewerMaxOffset(app.logViewerRows(app.height)) {
+		t.Fatalf("expected log viewer offset to be clamped, got %d", app.logViewerOffset)
+	}
+}
+
+func TestHandleLogViewerMouseWheelUpAndScrollClamp(t *testing.T) {
+	app, _ := newTestApp(t)
+	app.width = 100
+	app.height = 24
+	app.applyComponentLayout(true)
+	app.logViewerVisible = true
+	for i := 0; i < 60; i++ {
+		app.logEntries = append(app.logEntries, logEntry{Timestamp: time.Unix(int64(i), 0), Level: "info", Source: "test", Message: "m"})
+	}
+	_, _, _, h := app.logViewerBounds()
+	app.logViewerOffset = 5
+
+	x, y, w, height := app.logViewerBounds()
+	app.handleLogViewerMouse(tea.MouseMsg{
+		X:      x + w/2,
+		Y:      y + height/2,
+		Button: tea.MouseButtonWheelUp,
+		Action: tea.MouseActionPress,
+	})
+	if app.logViewerOffset != 4 {
+		t.Fatalf("expected wheel up to decrease offset, got %d", app.logViewerOffset)
+	}
+
+	app.scrollLogViewer(0, h)
+	if app.logViewerOffset != 4 {
+		t.Fatalf("expected zero-delta scroll to keep offset unchanged, got %d", app.logViewerOffset)
+	}
+	app.scrollLogViewer(-1000, h)
+	if app.logViewerOffset != 0 {
+		t.Fatalf("expected large negative scroll to clamp to 0, got %d", app.logViewerOffset)
+	}
+	app.scrollLogViewer(1000, h)
+	if app.logViewerOffset != app.logViewerMaxOffset(h) {
+		t.Fatalf("expected large positive scroll to clamp to max offset, got %d", app.logViewerOffset)
+	}
+}
+
+func TestMouseHitHelpersGuardWhenBoundsZero(t *testing.T) {
+	app, _ := newTestApp(t)
+	app.width = 0
+	app.height = 0
+	app.transcript.Width = 0
+	app.transcript.Height = 0
+
+	msg := tea.MouseMsg{X: 0, Y: 0}
+	if app.isMouseWithinTranscriptScrollbar(msg) {
+		t.Fatalf("expected transcript scrollbar hit test to fail when bounds are zero")
+	}
+	if app.isMouseWithinLogViewer(msg) {
+		t.Fatalf("expected log viewer hit test to fail when bounds are zero")
+	}
+}
+
+func TestReadAndPersistLogEntriesGuardBranches(t *testing.T) {
+	app, _ := newTestApp(t)
+	if got := app.readLogEntriesForSession("   "); got != nil {
+		t.Fatalf("expected blank session id to return nil log entries, got %+v", got)
+	}
+
+	app.state.ActiveSessionID = ""
+	app.persistLogEntriesForActiveSession()
+
+	if got := app.sessionLogEntriesPath("___"); got != "" {
+		t.Fatalf("expected sanitized empty session id to yield empty path, got %q", got)
+	}
+}
+
+func TestUpdateFocusInputNewSessionAndTodoScroll(t *testing.T) {
+	app, runtime := newTestApp(t)
+	app.width = 100
+	app.height = 24
+	app.applyComponentLayout(true)
+
+	app.focus = panelTranscript
+	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	app = model.(App)
+	if app.focus != panelInput {
+		t.Fatalf("expected Esc to focus input panel")
+	}
+
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	app = model.(App)
+	if len(runtime.listSessions) != 0 && strings.TrimSpace(app.state.ActiveSessionID) == "" {
+		t.Fatalf("expected Ctrl+N to create or activate draft session")
+	}
+
+	app.focus = panelTodo
+	app.todoItems = []todoViewItem{
+		{ID: "1", Title: "a", Status: "pending"},
+		{ID: "2", Title: "b", Status: "pending"},
+	}
+	app.todoSelectedIndex = 1
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyUp})
+	app = model.(App)
+	if app.todoSelectedIndex != 0 {
+		t.Fatalf("expected todo selection to move up, got %d", app.todoSelectedIndex)
+	}
+}
+
+func TestActivateSessionByIDAndCompactDoneInvalidPayload(t *testing.T) {
+	app, _ := newTestApp(t)
+	app.state.Sessions = []agentsession.Summary{{ID: "s1", Title: "Session 1"}}
+	if err := app.activateSessionByID("s1"); err != nil {
+		t.Fatalf("activateSessionByID() error = %v", err)
+	}
+
+	if handled := runtimeEventCompactDoneHandler(&app, agentruntime.RuntimeEvent{Payload: "invalid"}); handled {
+		t.Fatalf("expected compact done handler to ignore invalid payload")
+	}
+}
+
+func TestHandleTranscriptMouseWheelAndClickFallback(t *testing.T) {
+	app, _ := newTestApp(t)
+	app.width = 100
+	app.height = 24
+	app.applyComponentLayout(true)
+	app.setTranscriptContent(strings.Repeat("line\n", 120))
+	app.transcript.SetYOffset(20)
+
+	x, y, w, h := app.transcriptBounds()
+	if w <= 2 || h <= 2 {
+		t.Fatalf("expected transcript bounds to be drawable, got w=%d h=%d", w, h)
+	}
+
+	if !app.handleTranscriptMouse(tea.MouseMsg{
+		X:      x + w/2,
+		Y:      y + h/2,
+		Button: tea.MouseButtonWheelUp,
+		Action: tea.MouseActionPress,
+	}) {
+		t.Fatalf("expected transcript wheel up to be handled")
+	}
+
+	if !app.handleTranscriptMouse(tea.MouseMsg{
+		X:      x + w/2,
+		Y:      y + h/2,
+		Button: tea.MouseButtonWheelDown,
+		Action: tea.MouseActionPress,
+	}) {
+		t.Fatalf("expected transcript wheel down to be handled")
+	}
+
+	app.pendingCopyID = 9
+	if app.handleTranscriptMouse(tea.MouseMsg{
+		X:      x + 1,
+		Y:      y + 1,
+		Button: tea.MouseButtonLeft,
+		Action: tea.MouseActionPress,
+	}) {
+		t.Fatalf("expected plain left click without copy button hit to return false")
+	}
+	if app.pendingCopyID != 0 {
+		t.Fatalf("expected pendingCopyID reset when click does not hit copy button, got %d", app.pendingCopyID)
+	}
+}
+
+func TestInputBoundsAndTranscriptOffsetGuardBranches(t *testing.T) {
+	app, _ := newTestApp(t)
+	app.width = 0
+	app.height = 0
+	if app.isMouseWithinInput(tea.MouseMsg{X: 0, Y: 0}) {
+		t.Fatalf("expected input hit test to fail when layout is zero-sized")
+	}
+
+	app.width = 100
+	app.height = 24
+	app.applyComponentLayout(true)
+	app.transcript.Height = 0
+	app.setTranscriptOffsetFromScrollbarY(10)
+
+	app.transcript.Height = 8
+	app.setTranscriptContent("short\n")
+	app.transcript.SetYOffset(5)
+	_, y, _, _ := app.transcriptScrollbarBounds()
+	app.setTranscriptOffsetFromScrollbarY(y + 1)
+	if app.transcript.YOffset != 0 {
+		t.Fatalf("expected maxOffset<=0 branch to reset transcript y-offset, got %d", app.transcript.YOffset)
+	}
+}
+
+func TestRebuildActivityWithHeightAndPersistPathGuard(t *testing.T) {
+	app, _ := newTestApp(t)
+	app.activity.Width = 30
+	app.activity.Height = 5
+	app.activities = []tuistate.ActivityEntry{
+		{Kind: "tool", Title: "run", Detail: "ok"},
+	}
+	app.rebuildActivity()
+	if strings.TrimSpace(app.activity.View()) == "" {
+		t.Fatalf("expected rebuildActivity to render entries when viewport height is available")
+	}
+
+	app.state.ActiveSessionID = "___"
+	app.persistLogEntriesForActiveSession()
 }
