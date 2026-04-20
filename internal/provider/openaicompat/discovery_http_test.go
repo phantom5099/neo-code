@@ -357,12 +357,12 @@ func TestDiscoverRawModelsContextAndClientValidation(t *testing.T) {
 }
 
 func TestRequestConfigFromRuntime(t *testing.T) {
-	t.Parallel()
+	t.Setenv("OPENAICOMPAT_DISCOVERY_TEST_KEY", "test-key")
 
 	cfg, err := RequestConfigFromRuntime(provider.RuntimeConfig{
 		Driver:                provider.DriverOpenAICompat,
 		BaseURL:               "https://api.openai.com/v1",
-		APIKey:                "test-key",
+		APIKeyEnvVar:          "OPENAICOMPAT_DISCOVERY_TEST_KEY",
 		DiscoveryEndpointPath: "/models",
 	})
 	if err != nil {
@@ -383,11 +383,12 @@ func TestRequestConfigFromRuntime(t *testing.T) {
 }
 
 func TestRequestConfigFromRuntimeRejectsInvalidDiscoveryPath(t *testing.T) {
-	t.Parallel()
+	t.Setenv("OPENAICOMPAT_DISCOVERY_TEST_KEY", "test-key")
 
 	_, err := RequestConfigFromRuntime(provider.RuntimeConfig{
 		Driver:                provider.DriverOpenAICompat,
 		BaseURL:               "https://api.example.com/v1",
+		APIKeyEnvVar:          "OPENAICOMPAT_DISCOVERY_TEST_KEY",
 		DiscoveryEndpointPath: "https://api.example.com/models",
 	})
 	if err == nil {
@@ -399,11 +400,12 @@ func TestRequestConfigFromRuntimeRejectsInvalidDiscoveryPath(t *testing.T) {
 }
 
 func TestRequestConfigFromRuntimeDefaultsEmptyDiscoveryPath(t *testing.T) {
-	t.Parallel()
+	t.Setenv("OPENAICOMPAT_DISCOVERY_TEST_KEY", "test-key")
 
 	cfg, err := RequestConfigFromRuntime(provider.RuntimeConfig{
-		Driver:  provider.DriverOpenAICompat,
-		BaseURL: "https://api.example.com/v1",
+		Driver:       provider.DriverOpenAICompat,
+		BaseURL:      "https://api.example.com/v1",
+		APIKeyEnvVar: "OPENAICOMPAT_DISCOVERY_TEST_KEY",
 	})
 	if err != nil {
 		t.Fatalf("RequestConfigFromRuntime() error = %v", err)

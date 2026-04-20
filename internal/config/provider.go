@@ -33,8 +33,6 @@ type ProviderConfig struct {
 
 type ResolvedProviderConfig struct {
 	ProviderConfig
-	APIKey             string                           `yaml:"-"`
-	SessionAssetLimits providertypes.SessionAssetLimits `yaml:"-"`
 }
 
 // ResolveSelectedProvider 解析当前配置中选中的 provider，并补全运行时所需的密钥信息。
@@ -52,7 +50,6 @@ func ResolveSelectedProvider(cfg Config) (ResolvedProviderConfig, error) {
 	if err != nil {
 		return ResolvedProviderConfig{}, err
 	}
-	resolved.SessionAssetLimits = cfg.Runtime.ResolveSessionAssetLimits()
 	return resolved, nil
 }
 
@@ -135,14 +132,12 @@ func (p ProviderConfig) ResolveAPIKey() (string, error) {
 }
 
 func (p ProviderConfig) Resolve() (ResolvedProviderConfig, error) {
-	apiKey, err := p.ResolveAPIKey()
-	if err != nil {
+	if _, err := p.ResolveAPIKey(); err != nil {
 		return ResolvedProviderConfig{}, err
 	}
 
 	return ResolvedProviderConfig{
 		ProviderConfig: p,
-		APIKey:         apiKey,
 	}, nil
 }
 
@@ -241,8 +236,7 @@ func (p ResolvedProviderConfig) ToRuntimeConfig() (provider.RuntimeConfig, error
 		Driver:                p.Driver,
 		BaseURL:               baseURL,
 		DefaultModel:          p.Model,
-		APIKey:                p.APIKey,
-		SessionAssetLimits:    p.SessionAssetLimits,
+		APIKeyEnvVar:          p.APIKeyEnv,
 		ChatEndpointPath:      chatEndpointPath,
 		DiscoveryEndpointPath: discoveryEndpointPath,
 	}, nil

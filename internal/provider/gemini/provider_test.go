@@ -15,7 +15,7 @@ import (
 )
 
 func TestProviderGenerate(t *testing.T) {
-	t.Parallel()
+	t.Setenv("GEMINI_PROVIDER_TEST_KEY", "test-key")
 
 	var capturedPath string
 	var capturedAuth string
@@ -32,7 +32,7 @@ func TestProviderGenerate(t *testing.T) {
 		Driver:       provider.DriverGemini,
 		BaseURL:      server.URL,
 		DefaultModel: "gemini-2.5-flash",
-		APIKey:       "test-key",
+		APIKeyEnvVar: "GEMINI_PROVIDER_TEST_KEY",
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -90,13 +90,13 @@ func TestProviderGenerate(t *testing.T) {
 }
 
 func TestNewAcceptsCustomChatEndpointPath(t *testing.T) {
-	t.Parallel()
+	t.Setenv("GEMINI_PROVIDER_CUSTOM_TEST_KEY", "test-key")
 
 	p, err := New(provider.RuntimeConfig{
 		Driver:           provider.DriverGemini,
 		BaseURL:          "https://generativelanguage.googleapis.com/v1beta",
 		DefaultModel:     "gemini-2.5-flash",
-		APIKey:           "test-key",
+		APIKeyEnvVar:     "GEMINI_PROVIDER_CUSTOM_TEST_KEY",
 		ChatEndpointPath: "/custom/models",
 	})
 	if err != nil {
@@ -114,7 +114,6 @@ func TestBuildRequestSupportsImageParts(t *testing.T) {
 		Driver:       provider.DriverGemini,
 		BaseURL:      "https://generativelanguage.googleapis.com/v1beta",
 		DefaultModel: "gemini-2.5-flash",
-		APIKey:       "test-key",
 	}
 	model, contents, requestConfig, err := BuildRequest(context.Background(), cfg, providertypes.GenerateRequest{
 		Messages: []providertypes.Message{
@@ -167,7 +166,6 @@ func TestBuildRequestRejectsSessionAssetWithoutReader(t *testing.T) {
 		Driver:       provider.DriverGemini,
 		BaseURL:      "https://generativelanguage.googleapis.com/v1beta",
 		DefaultModel: "gemini-2.5-flash",
-		APIKey:       "test-key",
 	}
 	_, _, _, err := BuildRequest(context.Background(), cfg, providertypes.GenerateRequest{
 		Messages: []providertypes.Message{

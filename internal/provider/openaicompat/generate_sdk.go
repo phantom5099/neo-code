@@ -66,10 +66,13 @@ func (p *Provider) sendSDKStreamRequest(
 	parseError func(*http.Response) error,
 	events chan<- providertypes.StreamEvent,
 ) error {
-	client := p.newSDKClient()
+	client, err := p.newSDKClient()
+	if err != nil {
+		return err
+	}
 	var resp *http.Response
 
-	err := client.Post(
+	err = client.Post(
 		ctx,
 		strings.TrimSpace(endpoint),
 		payload,
@@ -108,11 +111,15 @@ func (p *Provider) sendSDKStreamRequest(
 	return consumeStream(ctx, resp.Body, events)
 }
 
-func (p *Provider) newSDKClient() openai.Client {
+func (p *Provider) newSDKClient() (openai.Client, error) {
+	apiKey, err := p.cfg.ResolveAPIKey()
+	if err != nil {
+		return openai.Client{}, fmt.Errorf("%sresolve api key: %w", errorPrefix, err)
+	}
 	return openai.NewClient(
 		option.WithHTTPClient(p.client),
-		option.WithAPIKey(strings.TrimSpace(p.cfg.APIKey)),
-	)
+		option.WithAPIKey(apiKey),
+	), nil
 }
 
 func resolveChatEndpoint(cfg provider.RuntimeConfig) (string, error) {

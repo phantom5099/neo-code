@@ -32,7 +32,7 @@ func BuildRequest(ctx context.Context, cfg provider.RuntimeConfig, req providert
 		Stream:   true,
 		Messages: make([]Message, 0, len(req.Messages)+1),
 	}
-	assetLimits := providertypes.NormalizeSessionAssetLimits(cfg.SessionAssetLimits)
+	assetLimits := providertypes.NormalizeSessionAssetLimits(req.SessionAssetLimits)
 
 	if strings.TrimSpace(req.SystemPrompt) != "" {
 		payload.Messages = append(payload.Messages, Message{

@@ -62,11 +62,7 @@ func TestResolveSelectedProviderNotFound(t *testing.T) {
 	}
 }
 
-func TestResolveSelectedProviderIncludesRuntimeSessionAssetLimits(t *testing.T) {
-	const (
-		maxSingle = int64(128)
-		maxTotal  = int64(512)
-	)
+func TestResolveSelectedProviderResolvesWithoutSessionAssetLimits(t *testing.T) {
 	envName := "TEST_PROVIDER_KEY"
 	t.Setenv(envName, "secret")
 
@@ -81,28 +77,14 @@ func TestResolveSelectedProviderIncludesRuntimeSessionAssetLimits(t *testing.T) 
 				Source:    ProviderSourceCustom,
 			},
 		},
-		Runtime: RuntimeConfig{
-			Assets: RuntimeAssetsConfig{
-				MaxSessionAssetBytes:       maxSingle,
-				MaxSessionAssetsTotalBytes: maxTotal,
-			},
-		},
 	}
 
 	resolved, err := ResolveSelectedProvider(cfg)
 	if err != nil {
 		t.Fatalf("ResolveSelectedProvider() error = %v", err)
 	}
-
-	if resolved.SessionAssetLimits.MaxSessionAssetBytes != maxSingle {
-		t.Fatalf("expected MaxSessionAssetBytes=%d, got %d", maxSingle, resolved.SessionAssetLimits.MaxSessionAssetBytes)
-	}
-	if resolved.SessionAssetLimits.MaxSessionAssetsTotalBytes != maxTotal {
-		t.Fatalf(
-			"expected MaxSessionAssetsTotalBytes=%d, got %d",
-			maxTotal,
-			resolved.SessionAssetLimits.MaxSessionAssetsTotalBytes,
-		)
+	if resolved.APIKeyEnv != envName {
+		t.Fatalf("expected APIKeyEnv=%q, got %q", envName, resolved.APIKeyEnv)
 	}
 }
 
@@ -607,15 +589,11 @@ func TestResolvedProviderConfigToRuntimeConfig(t *testing.T) {
 
 	resolved := ResolvedProviderConfig{
 		ProviderConfig: ProviderConfig{
-			Name:    "company-gateway",
-			Driver:  "openaicompat",
-			BaseURL: "https://llm.example.com/v1",
-			Model:   "server-default",
-		},
-		APIKey: "secret-key",
-		SessionAssetLimits: providertypes.SessionAssetLimits{
-			MaxSessionAssetBytes:       1024,
-			MaxSessionAssetsTotalBytes: 2048,
+			Name:      "company-gateway",
+			Driver:    "openaicompat",
+			BaseURL:   "https://llm.example.com/v1",
+			Model:     "server-default",
+			APIKeyEnv: "TEST_KEY",
 		},
 	}
 
@@ -624,15 +602,11 @@ func TestResolvedProviderConfigToRuntimeConfig(t *testing.T) {
 		t.Fatalf("ToRuntimeConfig() error = %v", err)
 	}
 	want := providerpkg.RuntimeConfig{
-		Name:         "company-gateway",
-		Driver:       "openaicompat",
-		BaseURL:      "https://llm.example.com/v1",
-		DefaultModel: "server-default",
-		APIKey:       "secret-key",
-		SessionAssetLimits: providertypes.SessionAssetLimits{
-			MaxSessionAssetBytes:       1024,
-			MaxSessionAssetsTotalBytes: 2048,
-		},
+		Name:                  "company-gateway",
+		Driver:                "openaicompat",
+		BaseURL:               "https://llm.example.com/v1",
+		DefaultModel:          "server-default",
+		APIKeyEnvVar:          "TEST_KEY",
 		ChatEndpointPath:      "",
 		DiscoveryEndpointPath: providerpkg.DiscoveryEndpointPathModels,
 	}
@@ -647,12 +621,12 @@ func TestResolvedProviderConfigToRuntimeConfigStripsBaseURLUserinfo(t *testing.T
 
 	resolved := ResolvedProviderConfig{
 		ProviderConfig: ProviderConfig{
-			Name:    "company-gateway",
-			Driver:  "openaicompat",
-			BaseURL: "https://token@llm.example.com/v1",
-			Model:   "server-default",
+			Name:      "company-gateway",
+			Driver:    "openaicompat",
+			BaseURL:   "https://token@llm.example.com/v1",
+			Model:     "server-default",
+			APIKeyEnv: "TEST_KEY",
 		},
-		APIKey: "secret-key",
 	}
 
 	got, err := resolved.ToRuntimeConfig()
@@ -678,7 +652,6 @@ func TestResolvedProviderConfigToRuntimeConfigReturnsProtocolNormalizationError(
 			APIKeyEnv:        "TEST_KEY",
 			ChatEndpointPath: "https://llm.example.com/chat/completions",
 		},
-		APIKey: "secret-key",
 	}
 
 	_, err := resolved.ToRuntimeConfig()
@@ -699,9 +672,9 @@ func TestResolvedProviderConfigToRuntimeConfigUsesNormalizedOpenAICompatPaths(t 
 			Driver:           "openaicompat",
 			BaseURL:          "https://llm.example.com/v1",
 			Model:            "gpt-5.4",
+			APIKeyEnv:        "TEST_KEY",
 			ChatEndpointPath: "/responses",
 		},
-		APIKey: "secret-key",
 	}
 
 	got, err := resolved.ToRuntimeConfig()
@@ -722,10 +695,10 @@ func TestResolvedProviderConfigToRuntimeConfigStripsSDKChatEndpointPath(t *testi
 			Driver:                providerpkg.DriverGemini,
 			BaseURL:               GeminiDefaultBaseURL,
 			Model:                 GeminiDefaultModel,
+			APIKeyEnv:             "TEST_KEY",
 			ChatEndpointPath:      "/models",
 			DiscoveryEndpointPath: providerpkg.DiscoveryEndpointPathModels,
 		},
-		APIKey: "secret-key",
 	}
 
 	got, err := resolved.ToRuntimeConfig()

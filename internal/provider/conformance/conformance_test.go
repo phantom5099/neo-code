@@ -37,7 +37,7 @@ func TestGenerateContractAcrossDrivers(t *testing.T) {
 					Driver:           provider.DriverOpenAICompat,
 					BaseURL:          baseURL,
 					DefaultModel:     "gpt-4.1",
-					APIKey:           "test-key",
+					APIKeyEnvVar:     "PROVIDER_CONFORMANCE_TEST_KEY",
 					ChatEndpointPath: "/chat/completions",
 				}
 			},
@@ -59,7 +59,7 @@ func TestGenerateContractAcrossDrivers(t *testing.T) {
 					Driver:           provider.DriverGemini,
 					BaseURL:          baseURL,
 					DefaultModel:     "gemini-2.5-flash",
-					APIKey:           "test-key",
+					APIKeyEnvVar:     "PROVIDER_CONFORMANCE_TEST_KEY",
 					ChatEndpointPath: "/models",
 				}
 			},
@@ -79,7 +79,7 @@ func TestGenerateContractAcrossDrivers(t *testing.T) {
 					Driver:           provider.DriverAnthropic,
 					BaseURL:          baseURL,
 					DefaultModel:     "claude-3-7-sonnet",
-					APIKey:           "test-key",
+					APIKeyEnvVar:     "PROVIDER_CONFORMANCE_TEST_KEY",
 					ChatEndpointPath: "/messages",
 				}
 			},
@@ -103,6 +103,7 @@ func TestGenerateContractAcrossDrivers(t *testing.T) {
 	for _, tt := range testCases {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("PROVIDER_CONFORMANCE_TEST_KEY", "test-key")
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path != tt.expectedPath {
 					t.Fatalf("expected path %q, got %q", tt.expectedPath, r.URL.Path)
@@ -174,7 +175,7 @@ func TestDiscoverContractAcrossDrivers(t *testing.T) {
 					Name:                  "openai",
 					Driver:                provider.DriverOpenAICompat,
 					BaseURL:               baseURL,
-					APIKey:                "test-key",
+					APIKeyEnvVar:          "PROVIDER_CONFORMANCE_TEST_KEY",
 					DiscoveryEndpointPath: "/models",
 				}
 			},
@@ -190,7 +191,7 @@ func TestDiscoverContractAcrossDrivers(t *testing.T) {
 					Name:                  "gemini",
 					Driver:                provider.DriverGemini,
 					BaseURL:               baseURL,
-					APIKey:                "test-key",
+					APIKeyEnvVar:          "PROVIDER_CONFORMANCE_TEST_KEY",
 					DiscoveryEndpointPath: "/models",
 				}
 			},
@@ -206,7 +207,7 @@ func TestDiscoverContractAcrossDrivers(t *testing.T) {
 					Name:                  "anthropic",
 					Driver:                provider.DriverAnthropic,
 					BaseURL:               baseURL,
-					APIKey:                "test-key",
+					APIKeyEnvVar:          "PROVIDER_CONFORMANCE_TEST_KEY",
 					DiscoveryEndpointPath: "/models",
 				}
 			},
@@ -219,6 +220,7 @@ func TestDiscoverContractAcrossDrivers(t *testing.T) {
 	for _, tt := range testCases {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("PROVIDER_CONFORMANCE_TEST_KEY", "test-key")
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path != tt.expectedPath {
 					t.Fatalf("expected path %q, got %q", tt.expectedPath, r.URL.Path)
@@ -258,7 +260,7 @@ func TestGenerateErrorClassificationAcrossDrivers(t *testing.T) {
 					Driver:           provider.DriverOpenAICompat,
 					BaseURL:          baseURL,
 					DefaultModel:     "gpt-4.1",
-					APIKey:           "test-key",
+					APIKeyEnvVar:     "PROVIDER_CONFORMANCE_TEST_KEY",
 					ChatEndpointPath: "/chat/completions",
 				}
 			},
@@ -273,7 +275,7 @@ func TestGenerateErrorClassificationAcrossDrivers(t *testing.T) {
 					Driver:           provider.DriverGemini,
 					BaseURL:          baseURL,
 					DefaultModel:     "gemini-2.5-flash",
-					APIKey:           "test-key",
+					APIKeyEnvVar:     "PROVIDER_CONFORMANCE_TEST_KEY",
 					ChatEndpointPath: "/models",
 				}
 			},
@@ -288,7 +290,7 @@ func TestGenerateErrorClassificationAcrossDrivers(t *testing.T) {
 					Driver:           provider.DriverAnthropic,
 					BaseURL:          baseURL,
 					DefaultModel:     "claude-3-7-sonnet",
-					APIKey:           "test-key",
+					APIKeyEnvVar:     "PROVIDER_CONFORMANCE_TEST_KEY",
 					ChatEndpointPath: "/messages",
 				}
 			},
@@ -300,6 +302,7 @@ func TestGenerateErrorClassificationAcrossDrivers(t *testing.T) {
 	for _, tt := range testCases {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("PROVIDER_CONFORMANCE_TEST_KEY", "test-key")
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path != tt.path {
 					t.Fatalf("expected path %q, got %q", tt.path, r.URL.Path)

@@ -735,12 +735,15 @@ func TestProviderLookupAndResolveSelectedProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("selected provider error = %v", err)
 	}
-	resolved, err := selected.Resolve()
-	if err != nil {
+	if _, err := selected.Resolve(); err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
-	if resolved.APIKey != "lookup-key" {
-		t.Fatalf("expected resolved key %q, got %q", "lookup-key", resolved.APIKey)
+	apiKey, err := selected.ResolveAPIKey()
+	if err != nil {
+		t.Fatalf("ResolveAPIKey() error = %v", err)
+	}
+	if apiKey != "lookup-key" {
+		t.Fatalf("expected resolved key %q, got %q", "lookup-key", apiKey)
 	}
 }
 
@@ -1918,7 +1921,6 @@ func TestToRuntimeConfigMapsAllFields(t *testing.T) {
 			Model:     "gemini-2.5-flash",
 			APIKeyEnv: "TEST_ENV_KEY",
 		},
-		APIKey: "resolved-secret-key",
 	}
 
 	got, err := resolved.ToRuntimeConfig()
@@ -1934,8 +1936,8 @@ func TestToRuntimeConfigMapsAllFields(t *testing.T) {
 	if got.DefaultModel != "gemini-2.5-flash" {
 		t.Fatalf("expected DefaultModel=gemini-2.5-flash, got %q", got.DefaultModel)
 	}
-	if got.APIKey != "resolved-secret-key" {
-		t.Fatalf("expected APIKey=resolved-secret-key, got %q", got.APIKey)
+	if got.APIKeyEnvVar != "TEST_ENV_KEY" {
+		t.Fatalf("expected APIKeyEnvVar=TEST_ENV_KEY, got %q", got.APIKeyEnvVar)
 	}
 }
 

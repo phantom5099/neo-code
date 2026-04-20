@@ -11,7 +11,7 @@ import (
 )
 
 func TestDriverDiscover(t *testing.T) {
-	t.Parallel()
+	t.Setenv("GEMINI_DRIVER_DISCOVER_TEST_KEY", "test-key")
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("x-goog-api-key"); got != "test-key" {
@@ -30,7 +30,7 @@ func TestDriverDiscover(t *testing.T) {
 	models, err := driver.Discover(context.Background(), provider.RuntimeConfig{
 		Driver:                DriverName,
 		BaseURL:               server.URL,
-		APIKey:                "test-key",
+		APIKeyEnvVar:          "GEMINI_DRIVER_DISCOVER_TEST_KEY",
 		DiscoveryEndpointPath: "/models",
 	})
 	if err != nil {
@@ -42,13 +42,13 @@ func TestDriverDiscover(t *testing.T) {
 }
 
 func TestDriverBuild(t *testing.T) {
-	t.Parallel()
+	t.Setenv("GEMINI_DRIVER_BUILD_TEST_KEY", "test-key")
 
 	driver := Driver()
 	p, err := driver.Build(context.Background(), provider.RuntimeConfig{
-		Driver:  DriverName,
-		BaseURL: "https://generativelanguage.googleapis.com/v1beta",
-		APIKey:  "test-key",
+		Driver:       DriverName,
+		BaseURL:      "https://generativelanguage.googleapis.com/v1beta",
+		APIKeyEnvVar: "GEMINI_DRIVER_BUILD_TEST_KEY",
 	})
 	if err != nil {
 		t.Fatalf("Build() error = %v", err)

@@ -2,6 +2,9 @@ package provider
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"strings"
 
 	providertypes "neo-code/internal/provider/types"
 )
@@ -12,10 +15,22 @@ type RuntimeConfig struct {
 	Driver                string
 	BaseURL               string
 	DefaultModel          string
-	APIKey                string
-	SessionAssetLimits    providertypes.SessionAssetLimits
+	APIKeyEnvVar          string
 	ChatEndpointPath      string
 	DiscoveryEndpointPath string
+}
+
+// ResolveAPIKey 从 RuntimeConfig 指定的环境变量解析 API Key。
+func (c RuntimeConfig) ResolveAPIKey() (string, error) {
+	envName := strings.TrimSpace(c.APIKeyEnvVar)
+	if envName == "" {
+		return "", fmt.Errorf("provider runtime config api key env var is empty")
+	}
+	apiKey := strings.TrimSpace(os.Getenv(envName))
+	if apiKey == "" {
+		return "", fmt.Errorf("provider runtime config api key env var %s is empty", envName)
+	}
+	return apiKey, nil
 }
 
 // Provider 定义模型生成能力，通过 channel 推送流式事件给上层消费。

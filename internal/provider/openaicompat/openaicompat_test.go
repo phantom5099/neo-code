@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -54,12 +55,12 @@ func TestNewValidationErrors(t *testing.T) {
 	t.Run("empty api key returns error", func(t *testing.T) {
 		t.Parallel()
 		cfg := resolvedConfig("", "")
-		cfg.APIKey = ""
+		cfg.APIKeyEnvVar = ""
 		_, err := New(cfg)
 		if err == nil {
 			t.Fatal("expected error for empty api key")
 		}
-		if !strings.Contains(err.Error(), "api key is empty") {
+		if !strings.Contains(err.Error(), "api key env var is empty") {
 			t.Fatalf("expected api key error, got: %v", err)
 		}
 	})
@@ -67,7 +68,7 @@ func TestNewValidationErrors(t *testing.T) {
 	t.Run("whitespace-only api key returns error", func(t *testing.T) {
 		t.Parallel()
 		cfg := resolvedConfig("", "")
-		cfg.APIKey = "   "
+		cfg.APIKeyEnvVar = "   "
 		_, err := New(cfg)
 		if err == nil {
 			t.Fatal("expected error for whitespace-only api key")
@@ -81,7 +82,7 @@ func TestNewValidationErrors(t *testing.T) {
 			Driver:       DriverName,
 			BaseURL:      "",
 			DefaultModel: config.OpenAIDefaultModel,
-			APIKey:       "test-key",
+			APIKeyEnvVar: config.OpenAIDefaultAPIKeyEnv,
 		}
 		_, err := New(cfg)
 		if err == nil {
@@ -442,7 +443,7 @@ func TestBuildRequest_EmptyModelReturnsError(t *testing.T) {
 			Driver:       DriverName,
 			BaseURL:      config.OpenAIDefaultBaseURL,
 			DefaultModel: "",
-			APIKey:       "test-key",
+			APIKeyEnvVar: config.OpenAIDefaultAPIKeyEnv,
 		},
 		client: &http.Client{},
 	}
@@ -1605,18 +1606,20 @@ func TestProviderConsumeStreamRejectsDirtyJSON(t *testing.T) {
 // --- test helpers ---
 
 func resolvedConfig(baseURL string, model string) provider.RuntimeConfig {
+	const resolvedConfigAPIKeyEnv = "OPENAICOMPAT_RESOLVED_CONFIG_TEST_KEY"
 	if strings.TrimSpace(baseURL) == "" {
 		baseURL = config.OpenAIDefaultBaseURL
 	}
 	if strings.TrimSpace(model) == "" {
 		model = config.OpenAIDefaultModel
 	}
+	_ = os.Setenv(resolvedConfigAPIKeyEnv, "test-key")
 	return provider.RuntimeConfig{
 		Name:             DriverName,
 		Driver:           DriverName,
 		BaseURL:          baseURL,
 		DefaultModel:     model,
-		APIKey:           "test-key",
+		APIKeyEnvVar:     resolvedConfigAPIKeyEnv,
 		ChatEndpointPath: "/chat/completions",
 	}
 }

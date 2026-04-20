@@ -40,7 +40,7 @@ func newTestRegistry(t *testing.T) *provider.Registry {
 }
 
 func TestRegistryBuildsRegisteredDriverCaseInsensitively(t *testing.T) {
-	t.Parallel()
+	t.Setenv("REGISTRY_TEST_KEY", "test-key")
 
 	registry := newTestRegistry(t)
 	got, err := registry.Build(context.Background(), provider.RuntimeConfig{
@@ -48,7 +48,7 @@ func TestRegistryBuildsRegisteredDriverCaseInsensitively(t *testing.T) {
 		Driver:       "OPENAICOMPAT",
 		BaseURL:      config.OpenAIDefaultBaseURL,
 		DefaultModel: config.OpenAIDefaultModel,
-		APIKey:       "test-key",
+		APIKeyEnvVar: "REGISTRY_TEST_KEY",
 	})
 	if err != nil {
 		t.Fatalf("Build() error = %v", err)

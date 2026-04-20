@@ -145,10 +145,6 @@ func TestBuildRequestValidationErrors(t *testing.T) {
 
 		_, err := BuildRequest(context.Background(), provider.RuntimeConfig{
 			DefaultModel: "m",
-			SessionAssetLimits: providertypes.SessionAssetLimits{
-				MaxSessionAssetBytes:       2,
-				MaxSessionAssetsTotalBytes: 3,
-			},
 		}, providertypes.GenerateRequest{
 			Messages: []providertypes.Message{
 				{
@@ -159,6 +155,10 @@ func TestBuildRequestValidationErrors(t *testing.T) {
 					Role:  providertypes.RoleUser,
 					Parts: []providertypes.ContentPart{providertypes.NewSessionAssetImagePart("asset_2", "image/png")},
 				},
+			},
+			SessionAssetLimits: providertypes.SessionAssetLimits{
+				MaxSessionAssetBytes:       2,
+				MaxSessionAssetsTotalBytes: 3,
 			},
 			SessionAssetReader: assetReader,
 		})

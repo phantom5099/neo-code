@@ -292,6 +292,7 @@ func (s *Service) prepareTurnSnapshot(ctx context.Context, state *runState) (tur
 			SystemPrompt:       systemPrompt,
 			Messages:           builtContext.Messages,
 			Tools:              toolSpecs,
+			SessionAssetLimits: cfg.Runtime.ResolveSessionAssetLimits(),
 			SessionAssetReader: s.buildSessionAssetReader(ctx, state.session.ID),
 		},
 	}, false, nil

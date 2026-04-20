@@ -36,7 +36,7 @@ func BuildRequest(ctx context.Context, cfg provider.RuntimeConfig, req providert
 		params.System = []anthropic.TextBlockParam{{Text: req.SystemPrompt}}
 	}
 
-	assetLimits := providertypes.NormalizeSessionAssetLimits(cfg.SessionAssetLimits)
+	assetLimits := providertypes.NormalizeSessionAssetLimits(req.SessionAssetLimits)
 	var usedSessionAssetBytes int64
 	for _, message := range req.Messages {
 		remainingSessionAssetBytes := assetLimits.MaxSessionAssetsTotalBytes - usedSessionAssetBytes

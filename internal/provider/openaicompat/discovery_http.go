@@ -37,6 +37,11 @@ type RequestConfig struct {
 
 // RequestConfigFromRuntime 基于运行时配置生成 discovery/http 请求参数。
 func RequestConfigFromRuntime(cfg provider.RuntimeConfig) (RequestConfig, error) {
+	apiKey, err := cfg.ResolveAPIKey()
+	if err != nil {
+		return RequestConfig{}, provider.NewDiscoveryConfigError(fmt.Sprintf("resolve api key: %v", err))
+	}
+
 	normalizedEndpointPath, err := provider.NormalizeProviderDiscoveryEndpointPath(cfg.DiscoveryEndpointPath)
 	if err != nil {
 		return RequestConfig{}, provider.NewDiscoveryConfigError(err.Error())
@@ -52,7 +57,7 @@ func RequestConfigFromRuntime(cfg provider.RuntimeConfig) (RequestConfig, error)
 		BaseURL:         cfg.BaseURL,
 		EndpointPath:    discoveryEndpointPath,
 		ResponseProfile: discoveryResponseProfileOpenAI,
-		APIKey:          cfg.APIKey,
+		APIKey:          apiKey,
 	}, nil
 }
 

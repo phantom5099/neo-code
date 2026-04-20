@@ -24,9 +24,6 @@ type Provider struct {
 
 // New 创建 Gemini native provider 实例，并初始化官方 SDK 客户端。
 func New(cfg provider.RuntimeConfig) (*Provider, error) {
-	if strings.TrimSpace(cfg.APIKey) == "" {
-		return nil, errors.New(errorPrefix + "api key is empty")
-	}
 	client, err := newSDKClient(context.Background(), cfg)
 	if err != nil {
 		return nil, err

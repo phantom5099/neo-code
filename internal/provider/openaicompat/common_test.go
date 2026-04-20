@@ -12,8 +12,8 @@ func TestValidateRuntimeConfig(t *testing.T) {
 	t.Run("empty base url", func(t *testing.T) {
 		t.Parallel()
 		err := validateRuntimeConfig(provider.RuntimeConfig{
-			BaseURL: "",
-			APIKey:  "test-key",
+			BaseURL:      "",
+			APIKeyEnvVar: "OPENAI_COMPAT_TEST_KEY",
 		})
 		if err == nil || err.Error() != errorPrefix+"base url is empty" {
 			t.Fatalf("expected base url error, got %v", err)
@@ -23,10 +23,10 @@ func TestValidateRuntimeConfig(t *testing.T) {
 	t.Run("empty api key", func(t *testing.T) {
 		t.Parallel()
 		err := validateRuntimeConfig(provider.RuntimeConfig{
-			BaseURL: "https://api.example.com/v1",
-			APIKey:  "   ",
+			BaseURL:      "https://api.example.com/v1",
+			APIKeyEnvVar: "   ",
 		})
-		if err == nil || err.Error() != errorPrefix+"api key is empty" {
+		if err == nil || err.Error() != errorPrefix+"api key env var is empty" {
 			t.Fatalf("expected api key error, got %v", err)
 		}
 	})
@@ -34,8 +34,8 @@ func TestValidateRuntimeConfig(t *testing.T) {
 	t.Run("valid config", func(t *testing.T) {
 		t.Parallel()
 		err := validateRuntimeConfig(provider.RuntimeConfig{
-			BaseURL: " https://api.example.com/v1 ",
-			APIKey:  " test-key ",
+			BaseURL:      " https://api.example.com/v1 ",
+			APIKeyEnvVar: "OPENAI_COMPAT_TEST_KEY",
 		})
 		if err != nil {
 			t.Fatalf("expected valid config, got %v", err)

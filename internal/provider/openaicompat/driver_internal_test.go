@@ -13,7 +13,7 @@ import (
 )
 
 func TestDriverClosuresAndSupportedProtocol(t *testing.T) {
-	t.Parallel()
+	t.Setenv("OPENAICOMPAT_DRIVER_TEST_KEY", "test-key")
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/models" {
@@ -31,7 +31,7 @@ func TestDriverClosuresAndSupportedProtocol(t *testing.T) {
 		Driver:                DriverName,
 		BaseURL:               server.URL,
 		DefaultModel:          "gpt-4.1",
-		APIKey:                "test-key",
+		APIKeyEnvVar:          "OPENAICOMPAT_DRIVER_TEST_KEY",
 		DiscoveryEndpointPath: "/models",
 	}
 	driver := Driver()
@@ -75,14 +75,14 @@ func TestDriverClosuresAndSupportedProtocol(t *testing.T) {
 }
 
 func TestFetchModelsAndGenerateExtraBranches(t *testing.T) {
-	t.Parallel()
+	t.Setenv("OPENAICOMPAT_DRIVER_TEST_KEY", "test-key")
 
 	p := &Provider{
 		cfg: provider.RuntimeConfig{
 			Name:                  DriverName,
 			Driver:                DriverName,
 			BaseURL:               "://bad",
-			APIKey:                "test-key",
+			APIKeyEnvVar:          "OPENAICOMPAT_DRIVER_TEST_KEY",
 			DiscoveryEndpointPath: "/models",
 		},
 		client: &http.Client{},
@@ -96,7 +96,7 @@ func TestFetchModelsAndGenerateExtraBranches(t *testing.T) {
 			Name:                  DriverName,
 			Driver:                DriverName,
 			BaseURL:               "https://api.example.com/v1",
-			APIKey:                "test-key",
+			APIKeyEnvVar:          "OPENAICOMPAT_DRIVER_TEST_KEY",
 			DiscoveryEndpointPath: "https://api.example.com/models",
 		},
 		client: &http.Client{},
@@ -105,29 +105,25 @@ func TestFetchModelsAndGenerateExtraBranches(t *testing.T) {
 		t.Fatalf("expected discovery config error, got %v", err)
 	}
 
-	var auth string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		auth = r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{}})
 	}))
 	defer server.Close()
+	t.Setenv("OPENAICOMPAT_DRIVER_EMPTY_TEST_KEY", "")
 
 	p = &Provider{
 		cfg: provider.RuntimeConfig{
 			Name:                  DriverName,
 			Driver:                DriverName,
 			BaseURL:               server.URL,
-			APIKey:                "   ",
+			APIKeyEnvVar:          "OPENAICOMPAT_DRIVER_EMPTY_TEST_KEY",
 			DiscoveryEndpointPath: "/models",
 		},
 		client: server.Client(),
 	}
-	if _, err := discoverRawModels(context.Background(), p); err != nil {
-		t.Fatalf("discoverRawModels() error = %v", err)
-	}
-	if auth != "" {
-		t.Fatalf("expected no authorization header, got %q", auth)
+	if _, err := discoverRawModels(context.Background(), p); err == nil || !provider.IsDiscoveryConfigError(err) {
+		t.Fatalf("expected discovery config error for empty api key env, got %v", err)
 	}
 
 	p, err := New(provider.RuntimeConfig{
@@ -135,7 +131,7 @@ func TestFetchModelsAndGenerateExtraBranches(t *testing.T) {
 		Driver:       provider.DriverAnthropic,
 		BaseURL:      "https://api.example.com/v1",
 		DefaultModel: "gpt-4.1",
-		APIKey:       "test-key",
+		APIKeyEnvVar: "OPENAICOMPAT_DRIVER_TEST_KEY",
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)

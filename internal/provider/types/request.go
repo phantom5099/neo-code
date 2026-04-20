@@ -16,6 +16,7 @@ type GenerateRequest struct {
 	SystemPrompt       string             `json:"system_prompt"`
 	Messages           []Message          `json:"messages"`
 	Tools              []ToolSpec         `json:"tools,omitempty"`
+	SessionAssetLimits SessionAssetLimits `json:"-"`
 	SessionAssetReader SessionAssetReader `json:"-"`
 }
 

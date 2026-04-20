@@ -62,7 +62,7 @@ func (g *compactSummaryGenerator) Generate(
 	}
 	if strings.TrimSpace(g.providerConfig.Driver) == "" ||
 		strings.TrimSpace(g.providerConfig.BaseURL) == "" ||
-		strings.TrimSpace(g.providerConfig.APIKey) == "" {
+		strings.TrimSpace(g.providerConfig.APIKeyEnvVar) == "" {
 		return contextcompact.SummaryOutput{}, errors.New("runtime: compact summary generator provider config is incomplete")
 	}
 

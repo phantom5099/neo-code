@@ -11,13 +11,13 @@ import (
 )
 
 func TestDriverBuild(t *testing.T) {
-	t.Parallel()
+	t.Setenv("ANTHROPIC_DRIVER_TEST_KEY", "test-key")
 
 	driver := Driver()
 	p, err := driver.Build(context.Background(), provider.RuntimeConfig{
-		Driver:  DriverName,
-		BaseURL: "https://api.anthropic.com/v1",
-		APIKey:  "test-key",
+		Driver:       DriverName,
+		BaseURL:      "https://api.anthropic.com/v1",
+		APIKeyEnvVar: "ANTHROPIC_DRIVER_TEST_KEY",
 	})
 	if err != nil {
 		t.Fatalf("Build() error = %v", err)
@@ -28,7 +28,7 @@ func TestDriverBuild(t *testing.T) {
 }
 
 func TestDriverDiscover(t *testing.T) {
-	t.Parallel()
+	t.Setenv("ANTHROPIC_DRIVER_DISCOVER_TEST_KEY", "test-key")
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/models" && r.URL.Path != "/v1/models" {
@@ -56,7 +56,7 @@ func TestDriverDiscover(t *testing.T) {
 	models, err := driver.Discover(context.Background(), provider.RuntimeConfig{
 		Driver:                DriverName,
 		BaseURL:               server.URL,
-		APIKey:                "test-key",
+		APIKeyEnvVar:          "ANTHROPIC_DRIVER_DISCOVER_TEST_KEY",
 		DiscoveryEndpointPath: "/models",
 	})
 	if err != nil {

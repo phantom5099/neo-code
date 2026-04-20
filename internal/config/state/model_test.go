@@ -57,7 +57,7 @@ func TestCatalogInputFromProviderBuiltinIncludesDefaultsAndLazyDiscovery(t *test
 	if err != nil {
 		t.Fatalf("ResolveDiscoveryConfig() error = %v", err)
 	}
-	if runtimeConfig.DefaultModel != "server-default" || runtimeConfig.APIKey != "secret-key" {
+	if runtimeConfig.DefaultModel != "server-default" || runtimeConfig.APIKeyEnvVar != "CATALOG_PROVIDER_API_KEY" {
 		t.Fatalf("expected runtime config to resolve model and api key, got %+v", runtimeConfig)
 	}
 }

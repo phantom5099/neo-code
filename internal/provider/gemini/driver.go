@@ -70,10 +70,15 @@ func newSDKClient(ctx context.Context, cfg provider.RuntimeConfig) (*genai.Clien
 		Timeout: 90 * time.Second,
 	}
 	clientConfig := &genai.ClientConfig{
-		APIKey:     strings.TrimSpace(cfg.APIKey),
+		APIKey:     "",
 		Backend:    genai.BackendGeminiAPI,
 		HTTPClient: httpClient,
 	}
+	apiKey, err := cfg.ResolveAPIKey()
+	if err != nil {
+		return nil, fmt.Errorf("%sresolve api key: %w", errorPrefix, err)
+	}
+	clientConfig.APIKey = apiKey
 	if strings.TrimSpace(cfg.BaseURL) != "" {
 		clientConfig.HTTPOptions = genai.HTTPOptions{
 			BaseURL:    strings.TrimSpace(cfg.BaseURL),

@@ -180,7 +180,7 @@ func TestCompactSummaryGeneratorErrorBranches(t *testing.T) {
 
 	g = &compactSummaryGenerator{
 		providerFactory: &scriptedProviderFactory{err: errors.New("build failed")},
-		providerConfig:  provider.RuntimeConfig{Name: "openai", Driver: "openai", BaseURL: "https://example.com", APIKey: "k"},
+		providerConfig:  provider.RuntimeConfig{Name: "openai", Driver: "openai", BaseURL: "https://example.com", APIKeyEnvVar: "TEST_KEY"},
 	}
 	if _, err := g.Generate(context.Background(), contextcompact.SummaryInput{}); err == nil {
 		t.Fatalf("expected provider build error")
@@ -188,7 +188,7 @@ func TestCompactSummaryGeneratorErrorBranches(t *testing.T) {
 
 	g = &compactSummaryGenerator{
 		providerFactory: &scriptedProviderFactory{provider: &scriptedProvider{streams: [][]providertypes.StreamEvent{{providertypes.NewTextDeltaStreamEvent("   ")}}}},
-		providerConfig:  provider.RuntimeConfig{Name: "openai", Driver: "openai", BaseURL: "https://example.com", APIKey: "k"},
+		providerConfig:  provider.RuntimeConfig{Name: "openai", Driver: "openai", BaseURL: "https://example.com", APIKeyEnvVar: "TEST_KEY"},
 	}
 	if _, err := g.Generate(context.Background(), contextcompact.SummaryInput{}); err == nil {
 		t.Fatalf("expected empty summary error")

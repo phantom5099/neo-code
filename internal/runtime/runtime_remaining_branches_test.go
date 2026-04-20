@@ -175,7 +175,7 @@ func TestResolveCompactProviderSelectionResolveErrorBranch(t *testing.T) {
 	}
 }
 
-func TestResolveCompactProviderSelectionSessionBranchInjectsRuntimeAssetLimits(t *testing.T) {
+func TestResolveCompactProviderSelectionSessionBranchSkipsRuntimeAssetLimitsInProviderConfig(t *testing.T) {
 	t.Parallel()
 
 	manager := newRuntimeConfigManager(t)
@@ -199,20 +199,12 @@ func TestResolveCompactProviderSelectionSessionBranchInjectsRuntimeAssetLimits(t
 		t.Fatalf("expected model=session-model, got %q", model)
 	}
 
-	expected := cfg.Runtime.ResolveSessionAssetLimits()
-	if resolved.SessionAssetLimits.MaxSessionAssetBytes != expected.MaxSessionAssetBytes {
-		t.Fatalf(
-			"expected MaxSessionAssetBytes=%d, got %d",
-			expected.MaxSessionAssetBytes,
-			resolved.SessionAssetLimits.MaxSessionAssetBytes,
-		)
+	selectedProvider, err := cfg.ProviderByName(cfg.SelectedProvider)
+	if err != nil {
+		t.Fatalf("ProviderByName() error = %v", err)
 	}
-	if resolved.SessionAssetLimits.MaxSessionAssetsTotalBytes != expected.MaxSessionAssetsTotalBytes {
-		t.Fatalf(
-			"expected MaxSessionAssetsTotalBytes=%d, got %d",
-			expected.MaxSessionAssetsTotalBytes,
-			resolved.SessionAssetLimits.MaxSessionAssetsTotalBytes,
-		)
+	if resolved.APIKeyEnv != selectedProvider.APIKeyEnv {
+		t.Fatalf("expected selected provider api_key_env=%q, got %q", selectedProvider.APIKeyEnv, resolved.APIKeyEnv)
 	}
 }
 

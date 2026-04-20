@@ -26,8 +26,8 @@ func validateRuntimeConfig(cfg provider.RuntimeConfig) error {
 	if strings.TrimSpace(cfg.BaseURL) == "" {
 		return errors.New(errorPrefix + "base url is empty")
 	}
-	if strings.TrimSpace(cfg.APIKey) == "" {
-		return errors.New(errorPrefix + "api key is empty")
+	if strings.TrimSpace(cfg.APIKeyEnvVar) == "" {
+		return errors.New(errorPrefix + "api key env var is empty")
 	}
 	return nil
 }
