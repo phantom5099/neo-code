@@ -46,6 +46,7 @@ var (
 	setConsoleOutputCodePage = platformSetConsoleOutputCodePage
 	setConsoleInputCodePage  = platformSetConsoleInputCodePage
 	buildToolManagerFunc     = buildToolManager
+	newRemoteRuntimeAdapter  = defaultNewRemoteRuntimeAdapter
 	newTUIWithMemo           = tui.NewWithMemo
 	cleanupExpiredSessions   = func(
 		ctx context.Context,
