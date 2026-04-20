@@ -3219,6 +3219,18 @@ func providerAddDefaultChatEndpointPath(driver string) string {
 	}
 }
 
+// providerAddDefaultOpenAICompatChatEndpointPath 根据 chat_api_mode 返回 openaicompat 的默认聊天端点路径。
+func providerAddDefaultOpenAICompatChatEndpointPath(chatAPIMode string) string {
+	mode, err := provider.NormalizeProviderChatAPIMode(chatAPIMode)
+	if err != nil || mode == "" {
+		mode = provider.DefaultProviderChatAPIMode()
+	}
+	if mode == provider.ChatAPIModeResponses {
+		return "/responses"
+	}
+	return "/chat/completions"
+}
+
 // providerAddDefaultBaseURL 返回 provider add 表单的驱动默认 base URL。
 func providerAddDefaultBaseURL(driver string) string {
 	switch provider.NormalizeProviderDriver(driver) {
@@ -3309,7 +3321,11 @@ func buildProviderAddRequest(form providerAddFormState) (providerAddRequest, str
 	}
 
 	if strings.TrimSpace(request.ChatEndpointPath) == "" {
-		request.ChatEndpointPath = providerAddDefaultChatEndpointPath(request.Driver)
+		if request.Driver == provider.DriverOpenAICompat {
+			request.ChatEndpointPath = providerAddDefaultOpenAICompatChatEndpointPath(request.ChatAPIMode)
+		} else {
+			request.ChatEndpointPath = providerAddDefaultChatEndpointPath(request.Driver)
+		}
 	}
 
 	switch request.Driver {
