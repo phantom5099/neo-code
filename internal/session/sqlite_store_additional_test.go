@@ -527,3 +527,127 @@ func TestDeleteSessionsByIDSetWithBatchSizeDeletesAllBatches(t *testing.T) {
 		}
 	}
 }
+
+func TestDeleteSessionsByIDSetHelpersCoverEmptyAndDefaultBatchSize(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := newTestStore(t)
+	expiredAt := time.Now().UTC().Add(-DefaultSessionMaxAge - time.Hour).Truncate(time.Millisecond)
+	session, err := store.CreateSession(ctx, CreateSessionInput{
+		ID:        "cleanup_batch_default",
+		Title:     "cleanup batch default",
+		CreatedAt: expiredAt,
+		UpdatedAt: expiredAt,
+	})
+	if err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+
+	db, err := store.ensureDB(ctx)
+	if err != nil {
+		t.Fatalf("ensureDB() error = %v", err)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx() error = %v", err)
+	}
+	defer rollbackTx(tx)
+
+	affected, err := deleteSessionsByIDSetWithBatchSize(ctx, tx, nil, 2)
+	if err != nil {
+		t.Fatalf("deleteSessionsByIDSetWithBatchSize(nil) error = %v", err)
+	}
+	if affected != 0 {
+		t.Fatalf("deleteSessionsByIDSetWithBatchSize(nil) affected = %d, want 0", affected)
+	}
+
+	affected, err = deleteSessionsByIDSet(ctx, tx, []string{session.ID})
+	if err != nil {
+		t.Fatalf("deleteSessionsByIDSet() error = %v", err)
+	}
+	if affected != 1 {
+		t.Fatalf("deleteSessionsByIDSet() affected = %d, want 1", affected)
+	}
+}
+
+func TestTrimMessagesToSessionLimitBranches(t *testing.T) {
+	t.Parallel()
+
+	within := []providertypes.Message{
+		{Role: providertypes.RoleUser, Parts: []providertypes.ContentPart{providertypes.NewTextPart("a")}},
+		{Role: providertypes.RoleAssistant, Parts: []providertypes.ContentPart{providertypes.NewTextPart("b")}},
+	}
+	if got := trimMessagesToSessionLimit(within); len(got) != len(within) {
+		t.Fatalf("trimMessagesToSessionLimit(within) len = %d, want %d", len(got), len(within))
+	}
+
+	overflow := make([]providertypes.Message, 0, MaxSessionMessages+1)
+	for i := 0; i < MaxSessionMessages+1; i++ {
+		overflow = append(overflow, providertypes.Message{
+			Role:  providertypes.RoleUser,
+			Parts: []providertypes.ContentPart{providertypes.NewTextPart(buildIndexedSuffix(i))},
+		})
+	}
+	got := trimMessagesToSessionLimit(overflow)
+	if len(got) != MaxSessionMessages {
+		t.Fatalf("trimMessagesToSessionLimit(overflow) len = %d, want %d", len(got), MaxSessionMessages)
+	}
+	if renderSessionMessageParts(got[0]) != buildIndexedSuffix(1) {
+		t.Fatalf("first kept trimmed message = %q, want %q", renderSessionMessageParts(got[0]), buildIndexedSuffix(1))
+	}
+}
+
+func TestRemoveSessionAssetsDirBranches(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := newTestStore(t)
+	if _, err := store.CreateSession(ctx, CreateSessionInput{ID: "remove_assets_ok", Title: "remove assets"}); err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+
+	assetDir := filepath.Join(store.assetsDir, "remove_assets_ok")
+	if err := os.MkdirAll(assetDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(assetDir) error = %v", err)
+	}
+	if err := store.removeSessionAssetsDir("remove_assets_ok"); err != nil {
+		t.Fatalf("removeSessionAssetsDir(valid) error = %v", err)
+	}
+	if _, err := os.Stat(assetDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected asset dir removed, got %v", err)
+	}
+
+	if err := store.removeSessionAssetsDir("../bad-id"); err == nil {
+		t.Fatalf("expected invalid session id error")
+	}
+}
+
+func TestCleanupExpiredSessionAssetsStopsOnCanceledContext(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	sessionIDs := []string{"cleanup_ctx_01", "cleanup_ctx_02"}
+	for _, id := range sessionIDs {
+		assetDir := filepath.Join(store.assetsDir, id)
+		if err := os.MkdirAll(assetDir, 0o755); err != nil {
+			t.Fatalf("MkdirAll(%q) error = %v", assetDir, err)
+		}
+		if err := os.WriteFile(filepath.Join(assetDir, "note.txt"), []byte("keep"), 0o644); err != nil {
+			t.Fatalf("WriteFile(%q) error = %v", assetDir, err)
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := store.cleanupExpiredSessionAssets(ctx, sessionIDs)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cleanupExpiredSessionAssets() error = %v, want context.Canceled", err)
+	}
+	for _, id := range sessionIDs {
+		if _, err := os.Stat(filepath.Join(store.assetsDir, id)); err != nil {
+			t.Fatalf("expected asset dir %q to remain after canceled cleanup, got %v", id, err)
+		}
+	}
+}

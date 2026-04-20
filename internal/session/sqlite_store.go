@@ -125,7 +125,9 @@ func (s *SQLiteStore) CleanupExpiredSessions(ctx context.Context, maxAge time.Du
 	}
 
 	// 清理附件目录
-	s.cleanupExpiredSessionAssets(expiredIDs)
+	if err := s.cleanupExpiredSessionAssets(ctx, expiredIDs); err != nil {
+		return int(affected), err
+	}
 
 	return int(affected), nil
 }
@@ -1223,13 +1225,17 @@ func (s *SQLiteStore) removeSessionAssetsDir(sessionID string) error {
 	return nil
 }
 
-// cleanupExpiredSessionAssets 清理过期会话的附件目录；若遇到非法路径则仅记录告警并继续。
-func (s *SQLiteStore) cleanupExpiredSessionAssets(sessionIDs []string) {
+// cleanupExpiredSessionAssets 清理过期会话的附件目录；若上下文已取消则尽快中止，其余路径错误仅记录告警并继续。
+func (s *SQLiteStore) cleanupExpiredSessionAssets(ctx context.Context, sessionIDs []string) error {
 	for _, id := range sessionIDs {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := s.removeSessionAssetsDir(id); err != nil {
 			log.Printf("session cleanup warning: skip asset cleanup for %q: %v", id, err)
 		}
 	}
+	return nil
 }
 
 // insertMessage 在事务内插入单条消息记录。

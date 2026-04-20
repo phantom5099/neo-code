@@ -456,6 +456,19 @@ func TestAutoExtractorFingerprintIncludesNonTextParts(t *testing.T) {
 	}
 }
 
+func TestStopTimerDrainsExpiredTimer(t *testing.T) {
+	timer := time.NewTimer(5 * time.Millisecond)
+	time.Sleep(20 * time.Millisecond)
+
+	stopTimer(timer)
+
+	select {
+	case <-timer.C:
+		t.Fatal("expected stopTimer to drain expired timer channel")
+	default:
+	}
+}
+
 func waitFor(t *testing.T, timeout time.Duration, fn func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)

@@ -414,6 +414,38 @@ func TestTrimIndexEntriesPrefersLowestPriorityEntries(t *testing.T) {
 	}
 }
 
+func TestTrimIndexEntriesByBytesPrefersLowestPriorityEntries(t *testing.T) {
+	index := &Index{
+		Entries: []Entry{
+			{Type: TypeUser, Title: "keep-user", Content: "u", Source: SourceUserManual},
+			{Type: TypeReference, Title: strings.Repeat("ref", 32), Content: strings.Repeat("payload", 64), Source: SourceAutoExtract},
+			{Type: TypeProject, Title: "keep-project", Content: "p", Source: SourceAutoExtract},
+		},
+	}
+
+	target := &Index{
+		Entries: []Entry{
+			index.Entries[0],
+			index.Entries[2],
+		},
+	}
+	maxIndexBytes := len(RenderIndex(target))
+	removed := trimIndexEntries(index, 10, maxIndexBytes)
+
+	if len(removed) != 1 || removed[0].Type != TypeReference {
+		t.Fatalf("removed = %#v, want only low-priority reference entry", removed)
+	}
+	if len(index.Entries) != 2 {
+		t.Fatalf("len(index.Entries) = %d, want 2", len(index.Entries))
+	}
+	if index.Entries[0].Title != "keep-user" || index.Entries[1].Title != "keep-project" {
+		t.Fatalf("remaining entries = %#v, want keep-user and keep-project", index.Entries)
+	}
+	if got := len(RenderIndex(index)); got > maxIndexBytes {
+		t.Fatalf("rendered index bytes = %d, want <= %d", got, maxIndexBytes)
+	}
+}
+
 func TestFindEvictionVictimBranches(t *testing.T) {
 	if got := findEvictionVictim(nil); got != -1 {
 		t.Fatalf("findEvictionVictim(nil) = %d, want -1", got)

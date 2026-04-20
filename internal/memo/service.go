@@ -523,7 +523,7 @@ func findEvictionVictim(entries []Entry) int {
 	return victimIdx
 }
 
-// trimIndexEntriesByBytes 在索引超过字节阈值时，通过二分定位最小移除数量并返回被删除条目。
+// trimIndexEntriesByBytes 在索引超过字节阈值时，按统一淘汰优先级循环移除条目直到回到字节阈值内。
 func trimIndexEntriesByBytes(index *Index, maxIndexBytes int) []Entry {
 	if index == nil || len(index.Entries) == 0 || maxIndexBytes <= 0 {
 		return nil
@@ -532,20 +532,15 @@ func trimIndexEntriesByBytes(index *Index, maxIndexBytes int) []Entry {
 		return nil
 	}
 
-	entries := index.Entries
-	lo, hi := 0, len(entries)
-	for lo < hi {
-		mid := lo + (hi-lo)/2
-		candidate := &Index{Entries: entries[mid:], UpdatedAt: index.UpdatedAt}
-		if len(RenderIndex(candidate)) > maxIndexBytes {
-			lo = mid + 1
-			continue
+	removed := make([]Entry, 0)
+	for len(index.Entries) > 0 && len(RenderIndex(index)) > maxIndexBytes {
+		victimIdx := findEvictionVictim(index.Entries)
+		if victimIdx < 0 {
+			break
 		}
-		hi = mid
+		removed = append(removed, index.Entries[victimIdx])
+		index.Entries = append(index.Entries[:victimIdx], index.Entries[victimIdx+1:]...)
 	}
-
-	removed := append([]Entry(nil), entries[:lo]...)
-	index.Entries = entries[lo:]
 	return removed
 }
 
