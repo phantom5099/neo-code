@@ -132,6 +132,7 @@ type appRuntimeState struct {
 	viewDirty               bool
 	logViewerVisible        bool
 	logViewerOffset         int
+	logViewerPrevStatus     string
 	logEntries              []logEntry
 	logPersistDirty         bool
 	logPersistVersion       int

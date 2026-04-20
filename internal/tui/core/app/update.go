@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -50,9 +49,13 @@ const providerAddManualModelsJSONTemplate = "[\n  {\n    \"id\": \"model-id\",\n
 
 const sessionSwitchBusyMessage = "cannot switch sessions while run or compact is active"
 const logViewerEntryLimit = 500
-const logViewerPersistDir = "log-viewer"
 const logViewerPersistDebounce = 300 * time.Millisecond
 const footerErrorFlashDuration = 4 * time.Second
+
+type sessionLogPersistenceRuntime interface {
+	LoadSessionLogEntries(ctx context.Context, sessionID string) ([]agentruntime.SessionLogEntry, error)
+	SaveSessionLogEntries(ctx context.Context, sessionID string, entries []agentruntime.SessionLogEntry) error
+}
 
 var panelOrder = []panel{panelTranscript, panelInput}
 var supportsUserEnvPersistence = config.SupportsUserEnvPersistence
@@ -323,6 +326,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.logViewerVisible = true
 			a.logViewerOffset = 0
 			a.viewDirty = true
+			a.logViewerPrevStatus = strings.TrimSpace(a.state.StatusText)
 			a.state.StatusText = "Log viewer"
 			a.applyComponentLayout(false)
 			return a, tea.Batch(cmds...)
@@ -1738,7 +1742,7 @@ func (a *App) handleLogViewerKey(msg tea.KeyMsg) bool {
 	switch {
 	case key.Matches(msg, a.keys.LogViewer), key.Matches(msg, a.keys.FocusInput):
 		a.logViewerVisible = false
-		a.state.StatusText = statusReady
+		a.restoreStatusAfterLogViewer()
 		a.applyComponentLayout(false)
 		a.viewDirty = true
 	case key.Matches(msg, a.keys.ScrollUp):
@@ -1800,7 +1804,7 @@ func (a *App) scrollLogViewer(delta int, height int) {
 func (a *App) handleTranscriptMouse(msg tea.MouseMsg) bool {
 	if a.transcriptScrollbarDrag {
 		switch {
-		case msg.Action == tea.MouseActionMotion:
+		case msg.Action == tea.MouseActionMotion || msg.Type == tea.MouseMotion:
 			a.setTranscriptOffsetFromScrollbarY(msg.Y)
 			return true
 		case msg.Action == tea.MouseActionRelease || msg.Type == tea.MouseRelease:
@@ -2629,19 +2633,20 @@ func (a *App) loadLogEntriesForSession(sessionID string) {
 }
 
 func (a *App) readLogEntriesForSession(sessionID string) []logEntry {
-	logPath := a.sessionLogEntriesPath(sessionID)
-	if logPath == "" {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
 		return nil
 	}
-	data, err := os.ReadFile(logPath)
+	runtimeWithPersistence := a.sessionLogRuntime()
+	if runtimeWithPersistence == nil {
+		return nil
+	}
+	entries, err := runtimeWithPersistence.LoadSessionLogEntries(context.Background(), sessionID)
 	if err != nil {
+		a.reportLogPersistenceError("load", err)
 		return nil
 	}
-	var entries []logEntry
-	if err := json.Unmarshal(data, &entries); err != nil {
-		return nil
-	}
-	return clampLogEntries(entries)
+	return clampLogEntries(fromRuntimeSessionLogEntries(entries))
 }
 
 func (a *App) persistLogEntriesForActiveSession() {
@@ -2651,42 +2656,95 @@ func (a *App) persistLogEntriesForActiveSession() {
 		return
 	}
 
-	logPath := a.sessionLogEntriesPath(sessionID)
-	if logPath == "" {
+	runtimeWithPersistence := a.sessionLogRuntime()
+	if runtimeWithPersistence == nil {
 		a.logPersistDirty = false
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+	if err := runtimeWithPersistence.SaveSessionLogEntries(
+		context.Background(),
+		sessionID,
+		toRuntimeSessionLogEntries(clampLogEntries(a.logEntries)),
+	); err != nil {
+		a.reportLogPersistenceError("save", err)
+		a.logPersistVersion++
+		a.deferredLogPersistCmd = scheduleLogPersistFlush(a.logPersistVersion)
 		return
 	}
-	payload, _ := json.Marshal(clampLogEntries(a.logEntries))
-	_ = os.WriteFile(logPath, payload, 0o600)
 	a.logPersistDirty = false
 }
 
-func (a App) sessionLogEntriesPath(sessionID string) string {
-	sessionID = strings.TrimSpace(sessionID)
-	baseDir := strings.TrimSpace(a.configManager.BaseDir())
-	if sessionID == "" || baseDir == "" {
-		return ""
+// sessionLogRuntime 返回支持会话日志读写的 runtime 适配能力。
+func (a *App) sessionLogRuntime() sessionLogPersistenceRuntime {
+	runtimeWithPersistence, ok := a.runtime.(sessionLogPersistenceRuntime)
+	if !ok {
+		return nil
 	}
-	name := sanitizeSessionIDForFilename(sessionID)
-	if name == "" {
-		return ""
-	}
-	return filepath.Join(baseDir, logViewerPersistDir, name+".json")
+	return runtimeWithPersistence
 }
 
-func sanitizeSessionIDForFilename(sessionID string) string {
-	var b strings.Builder
-	for _, r := range sessionID {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
-			b.WriteRune(r)
-			continue
-		}
-		b.WriteByte('_')
+// reportLogPersistenceError 统一处理日志持久化失败提示，避免错误静默吞掉。
+func (a *App) reportLogPersistenceError(action string, err error) {
+	if err == nil {
+		return
 	}
-	return strings.TrimSpace(strings.Trim(b.String(), "_"))
+	message := fmt.Sprintf("Failed to %s log entries: %v", strings.TrimSpace(action), err)
+	a.state.StatusText = message
+	a.showFooterError(message)
+}
+
+// restoreStatusAfterLogViewer 在关闭日志视图时恢复可读状态，避免覆盖真实运行态。
+func (a *App) restoreStatusAfterLogViewer() {
+	defer func() { a.logViewerPrevStatus = "" }()
+	if executionError := strings.TrimSpace(a.state.ExecutionError); executionError != "" {
+		a.state.StatusText = executionError
+		return
+	}
+	if a.state.IsCompacting {
+		a.state.StatusText = statusCompacting
+		return
+	}
+	if a.state.IsAgentRunning {
+		if strings.TrimSpace(a.state.CurrentTool) != "" {
+			a.state.StatusText = statusRunningTool
+		} else {
+			a.state.StatusText = statusThinking
+		}
+		return
+	}
+	if prev := strings.TrimSpace(a.logViewerPrevStatus); prev != "" {
+		a.state.StatusText = prev
+		return
+	}
+	a.state.StatusText = statusReady
+}
+
+// toRuntimeSessionLogEntries 转换日志条目到 runtime 持久化模型。
+func toRuntimeSessionLogEntries(entries []logEntry) []agentruntime.SessionLogEntry {
+	converted := make([]agentruntime.SessionLogEntry, 0, len(entries))
+	for _, entry := range entries {
+		converted = append(converted, agentruntime.SessionLogEntry{
+			Timestamp: entry.Timestamp,
+			Level:     entry.Level,
+			Source:    entry.Source,
+			Message:   entry.Message,
+		})
+	}
+	return converted
+}
+
+// fromRuntimeSessionLogEntries 将 runtime 持久化模型恢复为 TUI 展示模型。
+func fromRuntimeSessionLogEntries(entries []agentruntime.SessionLogEntry) []logEntry {
+	converted := make([]logEntry, 0, len(entries))
+	for _, entry := range entries {
+		converted = append(converted, logEntry{
+			Timestamp: entry.Timestamp,
+			Level:     entry.Level,
+			Source:    entry.Source,
+			Message:   entry.Message,
+		})
+	}
+	return converted
 }
 
 func clampLogEntries(entries []logEntry) []logEntry {

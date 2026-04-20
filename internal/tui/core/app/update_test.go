@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -123,6 +122,9 @@ type stubRuntime struct {
 	listSessionsErr error
 	loadSessions    map[string]agentsession.Session
 	loadSessionErr  error
+	logEntriesBySID map[string][]agentruntime.SessionLogEntry
+	loadLogErr      error
+	saveLogErr      error
 }
 
 type snapshotRuntime struct {
@@ -133,7 +135,10 @@ type snapshotRuntime struct {
 }
 
 func newStubRuntime() *stubRuntime {
-	return &stubRuntime{events: make(chan agentruntime.RuntimeEvent)}
+	return &stubRuntime{
+		events:          make(chan agentruntime.RuntimeEvent),
+		logEntriesBySID: make(map[string][]agentruntime.SessionLogEntry),
+	}
 }
 
 func (s *stubRuntime) PrepareUserInput(ctx context.Context, input agentruntime.PrepareInput) (agentruntime.UserInput, error) {
@@ -228,6 +233,26 @@ func (s *stubRuntime) DeactivateSessionSkill(ctx context.Context, sessionID stri
 
 func (s *stubRuntime) ListSessionSkills(ctx context.Context, sessionID string) ([]agentruntime.SessionSkillState, error) {
 	return nil, nil
+}
+
+func (s *stubRuntime) LoadSessionLogEntries(ctx context.Context, sessionID string) ([]agentruntime.SessionLogEntry, error) {
+	if s.loadLogErr != nil {
+		return nil, s.loadLogErr
+	}
+	entries := s.logEntriesBySID[strings.TrimSpace(sessionID)]
+	return append([]agentruntime.SessionLogEntry(nil), entries...), nil
+}
+
+func (s *stubRuntime) SaveSessionLogEntries(
+	ctx context.Context,
+	sessionID string,
+	entries []agentruntime.SessionLogEntry,
+) error {
+	if s.saveLogErr != nil {
+		return s.saveLogErr
+	}
+	s.logEntriesBySID[strings.TrimSpace(sessionID)] = append([]agentruntime.SessionLogEntry(nil), entries...)
+	return nil
 }
 
 func (s *stubRuntime) SetSessionWorkdir(ctx context.Context, sessionID string, workdir string) (agentsession.Session, error) {
@@ -3519,7 +3544,7 @@ func TestTranscriptManualScrollPersistsWhileBusy(t *testing.T) {
 }
 
 func TestSessionLogViewerPersistenceAndCap(t *testing.T) {
-	app, _ := newTestApp(t)
+	app, runtime := newTestApp(t)
 
 	app.setActiveSessionID("session-one")
 	for i := 0; i < 520; i++ {
@@ -3536,8 +3561,8 @@ func TestSessionLogViewerPersistenceAndCap(t *testing.T) {
 	}
 	model, _ := app.Update(logPersistFlushMsg{Version: app.logPersistVersion})
 	app = model.(App)
-	if _, err := os.Stat(app.sessionLogEntriesPath("session-one")); err != nil {
-		t.Fatalf("expected persisted log file for session-one, got err=%v", err)
+	if got := runtime.logEntriesBySID["session-one"]; len(got) != logViewerEntryLimit {
+		t.Fatalf("expected runtime persisted %d entries, got %d", logViewerEntryLimit, len(got))
 	}
 
 	app.setActiveSessionID("session-two")
@@ -3639,6 +3664,34 @@ func TestHandleLogViewerKeyAndScrollBranches(t *testing.T) {
 	}
 }
 
+func TestRestoreStatusAfterLogViewerUsesRuntimeState(t *testing.T) {
+	app, _ := newTestApp(t)
+
+	app.logViewerPrevStatus = "Manual status"
+	app.state.ExecutionError = "runtime failed"
+	app.restoreStatusAfterLogViewer()
+	if app.state.StatusText != "runtime failed" {
+		t.Fatalf("expected execution error to win, got %q", app.state.StatusText)
+	}
+
+	app.logViewerPrevStatus = "Manual status"
+	app.state.ExecutionError = ""
+	app.state.IsCompacting = true
+	app.restoreStatusAfterLogViewer()
+	if app.state.StatusText != statusCompacting {
+		t.Fatalf("expected compacting status, got %q", app.state.StatusText)
+	}
+
+	app.logViewerPrevStatus = "Manual status"
+	app.state.IsCompacting = false
+	app.state.IsAgentRunning = true
+	app.state.CurrentTool = "bash"
+	app.restoreStatusAfterLogViewer()
+	if app.state.StatusText != statusRunningTool {
+		t.Fatalf("expected running tool status, got %q", app.state.StatusText)
+	}
+}
+
 func TestHandleLogViewerMouseAndClampOffset(t *testing.T) {
 	app, _ := newTestApp(t)
 	app.width = 100
@@ -3695,26 +3748,33 @@ func TestSetTranscriptOffsetFromScrollbarY(t *testing.T) {
 	}
 }
 
+func TestHandleTranscriptMouseDragSupportsMotionType(t *testing.T) {
+	app, _ := newTestApp(t)
+	app.width = 100
+	app.height = 28
+	app.applyComponentLayout(true)
+	app.setTranscriptContent(strings.Repeat("line\n", 200))
+
+	_, y, _, h := app.transcriptScrollbarBounds()
+	app.transcriptScrollbarDrag = true
+	before := app.transcript.YOffset
+	handled := app.handleTranscriptMouse(tea.MouseMsg{Y: y + h - 1, Type: tea.MouseMotion})
+	if !handled {
+		t.Fatal("expected mouse motion type during drag to be handled")
+	}
+	if app.transcript.YOffset == before {
+		t.Fatalf("expected drag motion to update offset, still %d", app.transcript.YOffset)
+	}
+}
+
 func TestSessionLogHelpersAndSwitchBootstrap(t *testing.T) {
 	app, _ := newTestApp(t)
-	baseDir := app.configManager.BaseDir()
-	path := app.sessionLogEntriesPath("session-A")
-	if !strings.HasPrefix(path, baseDir) || !strings.Contains(path, "log-viewer") {
-		t.Fatalf("expected session log path under config dir, got %q", path)
-	}
-	if got := sanitizeSessionIDForFilename(" /a:b?c* "); got != "a_b_c" {
-		t.Fatalf("unexpected sanitized session id: %q", got)
-	}
 
 	now := time.Unix(1_700_001_000, 0)
 	app.logEntries = []logEntry{{Timestamp: now, Level: "info", Source: "bootstrap", Message: "in-memory"}}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatalf("mkdir failed: %v", err)
-	}
-	fileEntries := []logEntry{{Timestamp: now, Level: "info", Source: "file", Message: "persisted"}}
-	payload, _ := json.Marshal(fileEntries)
-	if err := os.WriteFile(path, payload, 0o600); err != nil {
-		t.Fatalf("write failed: %v", err)
+	runtime := app.runtime.(*stubRuntime)
+	runtime.logEntriesBySID["session-A"] = []agentruntime.SessionLogEntry{
+		{Timestamp: now, Level: "info", Source: "file", Message: "persisted"},
 	}
 
 	app.setActiveSessionID("session-A")
@@ -3727,12 +3787,9 @@ func TestSessionLogHelpersAndSwitchBootstrap(t *testing.T) {
 		t.Fatalf("expected clearing active session to reset log state")
 	}
 
-	invalidPath := app.sessionLogEntriesPath("session-invalid")
-	if err := os.WriteFile(invalidPath, []byte("{invalid json"), 0o600); err != nil {
-		t.Fatalf("write invalid json failed: %v", err)
-	}
+	runtime.loadLogErr = errors.New("decode failed")
 	if got := app.readLogEntriesForSession("session-invalid"); got != nil {
-		t.Fatalf("expected invalid json log file to return nil entries, got %+v", got)
+		t.Fatalf("expected load error branch to return nil entries, got %+v", got)
 	}
 }
 
@@ -3834,9 +3891,22 @@ func TestReadAndPersistLogEntriesGuardBranches(t *testing.T) {
 
 	app.state.ActiveSessionID = ""
 	app.persistLogEntriesForActiveSession()
+}
 
-	if got := app.sessionLogEntriesPath("___"); got != "" {
-		t.Fatalf("expected sanitized empty session id to yield empty path, got %q", got)
+func TestPersistLogEntriesRetryOnSaveFailure(t *testing.T) {
+	app, runtime := newTestApp(t)
+	app.state.ActiveSessionID = "session-save-error"
+	app.logEntries = []logEntry{{Timestamp: time.Now(), Level: "info", Source: "test", Message: "m"}}
+	app.logPersistDirty = true
+	app.logPersistVersion = 1
+	runtime.saveLogErr = errors.New("disk full")
+
+	app.persistLogEntriesForActiveSession()
+	if !app.logPersistDirty {
+		t.Fatal("expected dirty flag to remain true after save failure")
+	}
+	if app.deferredLogPersistCmd == nil {
+		t.Fatal("expected deferred persist command to be rescheduled on save failure")
 	}
 }
 
