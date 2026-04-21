@@ -8,11 +8,6 @@ import (
 func TestCoreSections(t *testing.T) {
 	t.Parallel()
 
-	sections := CoreSections()
-	if len(sections) != 6 {
-		t.Fatalf("expected 6 core sections, got %d", len(sections))
-	}
-
 	wantTitles := []string{
 		"Agent Identity",
 		"Tool Usage",
@@ -21,6 +16,12 @@ func TestCoreSections(t *testing.T) {
 		"Security Boundaries",
 		"Context Management",
 	}
+
+	sections := CoreSections()
+	if len(sections) != len(wantTitles) {
+		t.Fatalf("expected %d core sections, got %d", len(wantTitles), len(sections))
+	}
+
 	for index, want := range wantTitles {
 		if sections[index].Title != want {
 			t.Fatalf("section %d title = %q, want %q", index, sections[index].Title, want)
