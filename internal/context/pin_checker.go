@@ -67,11 +67,6 @@ func toolSupportsPinnedRetention(toolName string) bool {
 	return ok
 }
 
-// noopPinChecker 不钉住任何结果，用于测试和禁用场景。
-type noopPinChecker struct{}
-
-func (noopPinChecker) ShouldPin(string, map[string]string) bool { return false }
-
 // isPinnedToolMessage 检查工具消息是否被 pin checker 钉住，被钉住的消息不参与微压缩。
 func isPinnedToolMessage(toolName string, metadata map[string]string, checker MicroCompactPinChecker) bool {
 	if checker == nil || len(metadata) == 0 {

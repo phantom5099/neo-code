@@ -392,6 +392,10 @@ func TestDefaultBuilderBuildRespectsExplicitPinCheckerOverride(t *testing.T) {
 	}
 }
 
+type noopPinChecker struct{}
+
+func (noopPinChecker) ShouldPin(string, map[string]string) bool { return false }
+
 func TestNewBuilderWithToolPoliciesAndSummarizers(t *testing.T) {
 	t.Parallel()
 

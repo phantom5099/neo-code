@@ -3,6 +3,7 @@ package context
 import (
 	"strings"
 
+	"neo-code/internal/config"
 	"neo-code/internal/context/internalcompact"
 	providertypes "neo-code/internal/provider/types"
 	"neo-code/internal/tools"
@@ -11,8 +12,6 @@ import (
 const (
 	// microCompactClearedMessage 是旧工具结果被读时微压缩后的占位符文本。
 	microCompactClearedMessage = "[Old tool result content cleared]"
-	// defaultMicroCompactRetainedToolSpans 定义 micro compact 默认保留原始内容的最近可压缩工具块数量。
-	defaultMicroCompactRetainedToolSpans = 6
 	// microCompactSummaryMaxRunes 是摘要回灌到上下文前允许的最大 rune 数量。
 	microCompactSummaryMaxRunes = 200
 )
@@ -26,7 +25,7 @@ func microCompactMessages(messages []providertypes.Message) []providertypes.Mess
 // 仅对需要压缩的工具消息做深拷贝，其余消息共享原始引用以减少内存分配。
 func microCompactMessagesWithPolicies(messages []providertypes.Message, policies MicroCompactPolicySource, retainedToolSpans int, summarizers MicroCompactSummarizerSource, pinChecker MicroCompactPinChecker) []providertypes.Message {
 	if retainedToolSpans <= 0 {
-		retainedToolSpans = defaultMicroCompactRetainedToolSpans
+		retainedToolSpans = config.DefaultMicroCompactRetainedToolSpans
 	}
 
 	if len(messages) == 0 {
