@@ -47,7 +47,7 @@ func emitRequestLog(ctx context.Context, logger *log.Logger, entry RequestLogEnt
 	entry.RequestID = strings.TrimSpace(entry.RequestID)
 	entry.SessionID = strings.TrimSpace(entry.SessionID)
 	entry.Method = strings.TrimSpace(entry.Method)
-	if shouldMuteRequestLog(entry.Method) {
+	if shouldMuteRequestLog(entry) {
 		return
 	}
 
@@ -59,9 +59,10 @@ func emitRequestLog(ctx context.Context, logger *log.Logger, entry RequestLogEnt
 	logger.Print(string(raw))
 }
 
-// shouldMuteRequestLog 判断是否应静音该请求日志，避免高频保活心跳造成日志风暴。
-func shouldMuteRequestLog(method string) bool {
-	return strings.EqualFold(strings.TrimSpace(method), protocol.MethodGatewayPing)
+// shouldMuteRequestLog 判断是否应静音该请求日志，当前仅静音成功的心跳请求。
+func shouldMuteRequestLog(entry RequestLogEntry) bool {
+	return strings.EqualFold(strings.TrimSpace(entry.Method), protocol.MethodGatewayPing) &&
+		strings.EqualFold(strings.TrimSpace(entry.Status), "ok")
 }
 
 // requestStartTime 返回用于统计请求耗时的起始时间。

@@ -806,6 +806,59 @@ func TestGatewayRPCClientCloseStopsSpawnedGatewayProcess(t *testing.T) {
 	t.Fatalf("auto-spawned process should exit after client close")
 }
 
+func TestGatewayRPCClientWatchSpawnedGatewayProcessResetsAutoSpawnAttempt(t *testing.T) {
+	spawnedCmd := startLongRunningProcessForGatewayRPCTest(t)
+	done := make(chan struct{})
+
+	client := &GatewayRPCClient{
+		closed:            make(chan struct{}),
+		pending:           make(map[string]chan gatewayRPCResponse),
+		notifications:     make(chan gatewayRPCNotification, 1),
+		notificationQueue: make(chan gatewayRPCNotification, 1),
+		autoSpawnAttempt:  true,
+		spawnedCmd:        spawnedCmd,
+		spawnedCmdDone:    done,
+	}
+
+	go client.watchSpawnedGatewayProcess(spawnedCmd, done)
+	if err := spawnedCmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		t.Fatalf("Kill() error = %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected spawned process monitor to finish")
+	}
+
+	if client.autoSpawnAttempt {
+		t.Fatal("expected autoSpawnAttempt to be reset after spawned process exit")
+	}
+	if client.spawnedCmd != nil {
+		t.Fatal("expected spawnedCmd to be cleared after spawned process exit")
+	}
+	if client.spawnedCmdDone != nil {
+		t.Fatal("expected spawnedCmdDone to be cleared after spawned process exit")
+	}
+}
+
+func TestGatewayRPCClientResetConnectionClearsAutoSpawnAttempt(t *testing.T) {
+	t.Parallel()
+
+	client := &GatewayRPCClient{
+		closed:            make(chan struct{}),
+		pending:           make(map[string]chan gatewayRPCResponse),
+		notifications:     make(chan gatewayRPCNotification, 1),
+		notificationQueue: make(chan gatewayRPCNotification, 1),
+		autoSpawnAttempt:  true,
+	}
+
+	client.resetConnection()
+	if client.autoSpawnAttempt {
+		t.Fatal("expected resetConnection to clear autoSpawnAttempt")
+	}
+}
+
 func startLongRunningProcessForGatewayRPCTest(t *testing.T) *exec.Cmd {
 	t.Helper()
 

@@ -129,6 +129,7 @@ type GatewayRPCClient struct {
 	autoSpawnFn       gatewayAutoSpawnFunc
 	autoSpawnAttempt  bool
 	spawnedCmd        *exec.Cmd
+	spawnedCmdDone    chan struct{}
 
 	closeOnce sync.Once
 	closed    chan struct{}
@@ -290,8 +291,8 @@ func (c *GatewayRPCClient) Close() error {
 	c.closeOnce.Do(func() {
 		close(c.closed)
 		firstErr = c.forceCloseWithError(errors.New("gateway rpc client closed"))
-		spawnedCmd := c.detachSpawnedCmd()
-		if stopErr := stopSpawnedGatewayProcess(spawnedCmd); stopErr != nil && firstErr == nil {
+		spawnedCmd, spawnedCmdDone := c.detachSpawnedCmd()
+		if stopErr := stopSpawnedGatewayProcess(spawnedCmd, spawnedCmdDone); stopErr != nil && firstErr == nil {
 			firstErr = stopErr
 		}
 		c.heartbeatWG.Wait()
@@ -433,20 +434,36 @@ func (c *GatewayRPCClient) ensureConnected(ctx context.Context) (net.Conn, error
 			c.stateMu.Unlock()
 			spawnedCmd, spawnErr := autoSpawnFn(ctx, listenAddress, dialFn)
 			if spawnErr != nil {
+				c.stateMu.Lock()
+				c.autoSpawnAttempt = false
+				c.stateMu.Unlock()
 				return nil, fmt.Errorf("dial gateway %s: %w; auto-spawn gateway failed: %w", listenAddress, err, spawnErr)
 			}
 			c.stateMu.Lock()
 			select {
 			case <-c.closed:
+				c.autoSpawnAttempt = false
 				c.stateMu.Unlock()
-				_ = stopSpawnedGatewayProcess(spawnedCmd)
+				_ = stopSpawnedGatewayProcess(spawnedCmd, nil)
 				return nil, errors.New("gateway rpc client is closed")
 			default:
 			}
-			if c.spawnedCmd == nil && spawnedCmd != nil {
+			if spawnedCmd != nil {
+				previousCmd := c.spawnedCmd
+				previousDone := c.spawnedCmdDone
+				done := make(chan struct{})
 				c.spawnedCmd = spawnedCmd
+				c.spawnedCmdDone = done
+				c.autoSpawnAttempt = true
+				go c.watchSpawnedGatewayProcess(spawnedCmd, done)
+				c.stateMu.Unlock()
+				if previousCmd != nil && previousCmd != spawnedCmd {
+					_ = stopSpawnedGatewayProcess(previousCmd, previousDone)
+				}
+			} else {
+				c.autoSpawnAttempt = false
+				c.stateMu.Unlock()
 			}
-			c.stateMu.Unlock()
 			autoSpawnTriggered = true
 			continue
 		}
@@ -459,12 +476,33 @@ func (c *GatewayRPCClient) ensureConnected(ctx context.Context) (net.Conn, error
 	}
 }
 
-func (c *GatewayRPCClient) detachSpawnedCmd() *exec.Cmd {
+func (c *GatewayRPCClient) detachSpawnedCmd() (*exec.Cmd, <-chan struct{}) {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	spawnedCmd := c.spawnedCmd
+	spawnedCmdDone := c.spawnedCmdDone
 	c.spawnedCmd = nil
-	return spawnedCmd
+	c.spawnedCmdDone = nil
+	c.autoSpawnAttempt = false
+	return spawnedCmd, spawnedCmdDone
+}
+
+// watchSpawnedGatewayProcess 监听自动拉起的网关子进程退出，并在退出后复位自动拉起状态。
+func (c *GatewayRPCClient) watchSpawnedGatewayProcess(cmd *exec.Cmd, done chan struct{}) {
+	if cmd == nil {
+		close(done)
+		return
+	}
+	_ = cmd.Wait()
+
+	c.stateMu.Lock()
+	if c.spawnedCmd == cmd {
+		c.spawnedCmd = nil
+		c.spawnedCmdDone = nil
+		c.autoSpawnAttempt = false
+	}
+	c.stateMu.Unlock()
+	close(done)
 }
 
 func (c *GatewayRPCClient) readLoop(conn net.Conn) {
@@ -589,6 +627,7 @@ func (c *GatewayRPCClient) resetConnection() {
 	c.conn = nil
 	heartbeatCancel := c.heartbeatCancel
 	c.heartbeatCancel = nil
+	c.autoSpawnAttempt = false
 	c.stateMu.Unlock()
 	if heartbeatCancel != nil {
 		heartbeatCancel()
@@ -604,6 +643,7 @@ func (c *GatewayRPCClient) forceCloseWithError(cause error) error {
 	c.conn = nil
 	heartbeatCancel := c.heartbeatCancel
 	c.heartbeatCancel = nil
+	c.autoSpawnAttempt = false
 	pending := c.pending
 	c.pending = make(map[string]chan gatewayRPCResponse)
 	c.stateMu.Unlock()
@@ -789,7 +829,7 @@ func defaultAutoSpawnGateway(
 	}
 
 	if waitErr := waitGatewayReadyAfterAutoSpawn(ctx, listenAddress, dialFn); waitErr != nil {
-		_ = stopSpawnedGatewayProcess(cmd)
+		_ = stopSpawnedGatewayProcess(cmd, nil)
 		return nil, waitErr
 	}
 	return cmd, nil
@@ -908,15 +948,13 @@ func resolveGatewayAutoSpawnLogPath() (string, error) {
 }
 
 // stopSpawnedGatewayProcess 结束 Auto-Spawn 产生的后台网关进程，并异步 Wait 回收系统资源。
-func stopSpawnedGatewayProcess(cmd *exec.Cmd) error {
+func stopSpawnedGatewayProcess(cmd *exec.Cmd, done <-chan struct{}) error {
 	if cmd == nil || cmd.Process == nil {
 		return nil
 	}
 
 	if state := cmd.ProcessState; state != nil && state.Exited() {
-		go func() {
-			_ = cmd.Wait()
-		}()
+		waitSpawnedGatewayProcess(done, cmd)
 		return nil
 	}
 
@@ -925,10 +963,19 @@ func stopSpawnedGatewayProcess(cmd *exec.Cmd) error {
 		return fmt.Errorf("kill auto-spawned gateway process: %w", killErr)
 	}
 
+	waitSpawnedGatewayProcess(done, cmd)
+	return nil
+}
+
+// waitSpawnedGatewayProcess 在后台等待子进程回收，若已有专用等待协程则改为等待其完成信号。
+func waitSpawnedGatewayProcess(done <-chan struct{}, cmd *exec.Cmd) {
 	go func() {
+		if done != nil {
+			<-done
+			return
+		}
 		_ = cmd.Wait()
 	}()
-	return nil
 }
 
 // isGatewayUnavailableDialError 判定拨号失败是否属于“网关未启动/不可达”的可自动拉起场景。

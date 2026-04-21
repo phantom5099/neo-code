@@ -90,6 +90,29 @@ func TestEmitRequestLogMutesGatewayPing(t *testing.T) {
 	}
 }
 
+func TestEmitRequestLogKeepsFailedGatewayPing(t *testing.T) {
+	buffer := &bytes.Buffer{}
+	logger := log.New(buffer, "", 0)
+
+	emitRequestLog(context.Background(), logger, RequestLogEntry{
+		RequestID:   "req-ping-failed",
+		Method:      protocol.MethodGatewayPing,
+		Source:      string(RequestSourceIPC),
+		Status:      "error",
+		GatewayCode: protocol.GatewayCodeInternalError,
+	})
+	output := buffer.String()
+	if output == "" {
+		t.Fatal("failed gateway.ping should not be muted")
+	}
+	if !strings.Contains(output, `"method":"gateway.ping"`) {
+		t.Fatalf("output = %q, want method field", output)
+	}
+	if !strings.Contains(output, `"status":"error"`) {
+		t.Fatalf("output = %q, want error status", output)
+	}
+}
+
 func TestRequestLatencyMS(t *testing.T) {
 	if requestLatencyMS(time.Time{}) != 0 {
 		t.Fatal("zero start time should return 0 latency")

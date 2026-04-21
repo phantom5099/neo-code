@@ -255,9 +255,10 @@ go run ./cmd/neocode --runtime-mode gateway
 - `--workdir` 只影响本次进程
 - 不会回写到 `config.yaml`
 - 工具根目录与 session 隔离都会使用该工作区
-- `--runtime-mode` 默认为 `local`，可切换为 `gateway`
+- `--runtime-mode` 默认为 `gateway`，可切换为 `local`
 - `gateway` 模式会通过本地 Gateway（优先 IPC）转发 runtime 请求
-- 连接或握手失败会直接退出（Fail Fast），不会自动回退到 `local`
+- `gateway` 模式启动时会先探测本地网关；若未运行会自动后台拉起并等待就绪
+- 若自动拉起后仍连接或握手失败会直接退出（Fail Fast），不会自动回退到 `local`
 
 ## 常见错误
 
@@ -287,3 +288,4 @@ config: environment variable OPENAI_API_KEY is empty
 - [添加 Provider](./adding-providers.md)
 - [配置管理详细设计](../config-management-detail-design.md)
 - [Context Compact](../context-compact.md)
+
