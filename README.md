@@ -181,6 +181,33 @@ go run ./cmd/neocode --runtime-mode gateway
 - 不提交明文密钥、个人配置或会话数据
 - 不提交无关改动与临时文件
 
+## 在仓库内直接创建 Issue（自动化）
+
+仓库已提供脚本：`scripts/create_issue.sh`，支持按三类模板快速发起 issue：
+
+- `proposal`（提案）
+- `architecture`（架构）
+- `implementation`（实现）
+
+前置要求：
+
+- 已安装并登录 GitHub CLI：`gh auth login`
+- 在仓库根目录执行命令
+
+示例：
+
+```bash
+./scripts/create_issue.sh --type proposal --title "统一会话中断恢复语义"
+./scripts/create_issue.sh --type architecture --title "Runtime 与 Session 账本边界梳理"
+./scripts/create_issue.sh --type implementation --title "补齐流式中断持久化" --labels "bug,priority-high"
+```
+
+可选参数：
+
+- `--repo <owner/repo>`：指定目标仓库（默认自动识别当前仓库）
+- `--body-file <path>`：自定义 issue 正文文件（不传则使用内置模板）
+- `--labels <a,b,c>`：追加标签（逗号分隔）
+
 ## 网关运维与安全（GW-06）
 
 - 静默认证（Silent Auth）：
