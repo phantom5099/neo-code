@@ -246,19 +246,23 @@ func TestGatewayRPCClientHeartbeatSendsPingAndStopsAfterClose(t *testing.T) {
 		t.Fatalf("Call() error = %v", err)
 	}
 
-	time.Sleep(90 * time.Millisecond)
-	if got := atomic.LoadInt32(&pingCount); got < 2 {
-		t.Fatalf("ping count = %d, want at least 2 (manual + heartbeat)", got)
-	}
+	waitForCondition(
+		t,
+		500*time.Millisecond,
+		func() bool { return atomic.LoadInt32(&pingCount) >= 2 },
+		"ping count should include manual ping and at least one heartbeat ping",
+	)
 
 	if err := client.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
 	afterClose := atomic.LoadInt32(&pingCount)
-	time.Sleep(80 * time.Millisecond)
-	if got := atomic.LoadInt32(&pingCount); got != afterClose {
-		t.Fatalf("ping count changed after close: before=%d after=%d", afterClose, got)
-	}
+	assertConditionStaysTrue(
+		t,
+		200*time.Millisecond,
+		func() bool { return atomic.LoadInt32(&pingCount) == afterClose },
+		"ping count changed after close",
+	)
 }
 
 func TestGatewayRPCClientHeartbeatDoesNotRedialAfterConnectionDrops(t *testing.T) {
@@ -306,10 +310,12 @@ func TestGatewayRPCClientHeartbeatDoesNotRedialAfterConnectionDrops(t *testing.T
 		t.Fatalf("Call() error = %v", err)
 	}
 
-	time.Sleep(100 * time.Millisecond)
-	if got := atomic.LoadInt32(&dialCount); got != 1 {
-		t.Fatalf("dial count = %d, want %d (heartbeat should not redial after drop)", got, 1)
-	}
+	assertConditionStaysTrue(
+		t,
+		300*time.Millisecond,
+		func() bool { return atomic.LoadInt32(&dialCount) == 1 },
+		"heartbeat should not trigger re-dial after connection drop",
+	)
 }
 
 func TestGatewayRPCClientCallWithEmptyMethodReturnsError(t *testing.T) {
@@ -422,5 +428,30 @@ func writeRPCNotificationOrFail(t *testing.T, encoder *json.Encoder, method stri
 	notification := protocol.NewJSONRPCNotification(method, params)
 	if err := encoder.Encode(notification); err != nil {
 		t.Fatalf("encode notification: %v", err)
+	}
+}
+
+func waitForCondition(t *testing.T, timeout time.Duration, condition func() bool, message string) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !condition() {
+		t.Fatalf("condition not met within %s: %s", timeout, message)
+	}
+}
+
+func assertConditionStaysTrue(t *testing.T, duration time.Duration, condition func() bool, message string) {
+	t.Helper()
+	deadline := time.Now().Add(duration)
+	for time.Now().Before(deadline) {
+		if !condition() {
+			t.Fatalf("%s", message)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }

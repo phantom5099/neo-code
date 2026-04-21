@@ -575,7 +575,7 @@ func (c *GatewayRPCClient) startHeartbeat(ctx context.Context, conn net.Conn) {
 				return
 			}
 
-			pingCtx, cancel := context.WithTimeout(context.Background(), timeout)
+			pingCtx, cancel := context.WithTimeout(ctx, timeout)
 			err := c.CallWithOptions(
 				pingCtx,
 				protocol.MethodGatewayPing,
