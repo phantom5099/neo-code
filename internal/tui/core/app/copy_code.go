@@ -1,9 +1,7 @@
 package tui
 
 import (
-	"fmt"
 	"regexp"
-	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -32,9 +30,8 @@ type markdownSegment struct {
 }
 
 var (
-	copyCodeButtonPattern = regexp.MustCompile(`\[Copy code #([0-9]+)\]`)
-	copyCodeANSIPattern   = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
-	clipboardWriteAll     = tuiinfra.CopyText
+	copyCodeANSIPattern = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+	clipboardWriteAll   = tuiinfra.CopyText
 )
 
 func splitMarkdownSegments(content string) []markdownSegment {
@@ -229,88 +226,6 @@ func trimCodeIndent(line string) string {
 		return line[4:]
 	}
 	return line
-}
-
-func (a *App) setCodeCopyBlocks(bindings []copyCodeButtonBinding) {
-	a.codeCopyBlocks = make(map[int]string, len(bindings))
-	for _, binding := range bindings {
-		a.codeCopyBlocks[binding.ID] = binding.Code
-	}
-}
-
-func parseCopyCodeButton(line string) (id int, startCol int, endCol int, ok bool) {
-	clean := copyCodeANSIPattern.ReplaceAllString(line, "")
-	matches := copyCodeButtonPattern.FindStringSubmatchIndex(clean)
-	if len(matches) < 4 {
-		return 0, 0, 0, false
-	}
-
-	buttonText := clean[matches[0]:matches[1]]
-	idText := clean[matches[2]:matches[3]]
-	id, err := strconv.Atoi(idText)
-	if err != nil {
-		return 0, 0, 0, false
-	}
-
-	startCol = lipgloss.Width(clean[:matches[0]])
-	endCol = startCol + lipgloss.Width(buttonText)
-	return id, startCol, endCol, true
-}
-
-func (a *App) copyButtonIDAtMouse(msg tea.MouseMsg) (int, bool) {
-	line, relativeX, ok := a.transcriptLineAtMouse(msg)
-	if !ok {
-		return 0, false
-	}
-
-	buttonID, startCol, endCol, ok := parseCopyCodeButton(line)
-	if !ok {
-		return 0, false
-	}
-	if relativeX < startCol || relativeX >= endCol {
-		return 0, false
-	}
-	return buttonID, true
-}
-
-func (a *App) copyCodeBlockByID(buttonID int) bool {
-	code, ok := a.codeCopyBlocks[buttonID]
-	if !ok {
-		a.state.ExecutionError = statusCodeCopyError
-		a.state.StatusText = statusCodeCopyError
-		a.appendActivity("clipboard", statusCodeCopyError, fmt.Sprintf("button #%d", buttonID), true)
-		return true
-	}
-
-	if err := clipboardWriteAll(code); err != nil {
-		a.state.ExecutionError = err.Error()
-		a.state.StatusText = statusCodeCopyError
-		a.appendActivity("clipboard", statusCodeCopyError, err.Error(), true)
-		return true
-	}
-
-	a.state.ExecutionError = ""
-	a.state.StatusText = fmt.Sprintf(statusCodeCopied, buttonID)
-	a.appendActivity("clipboard", "Copied code block", fmt.Sprintf("#%d", buttonID), false)
-	return true
-}
-
-func (a App) transcriptLineAtMouse(msg tea.MouseMsg) (line string, relativeX int, ok bool) {
-	if !a.isMouseWithinTranscript(msg) {
-		return "", 0, false
-	}
-
-	x, y, _, _ := a.transcriptBounds()
-	lineIndex := msg.Y - y
-	if lineIndex < 0 {
-		return "", 0, false
-	}
-
-	lines := strings.Split(a.transcript.View(), "\n")
-	if lineIndex >= len(lines) {
-		return "", 0, false
-	}
-	return lines[lineIndex], msg.X - x, true
 }
 
 func (a App) selectionLines() []string {

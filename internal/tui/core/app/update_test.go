@@ -958,71 +958,6 @@ func TestExtractFencedCodeBlocks(t *testing.T) {
 	}
 }
 
-func TestParseCopyCodeButton(t *testing.T) {
-	id, start, end, ok := parseCopyCodeButton("[Copy code #12]")
-	if !ok || id != 12 || start >= end {
-		t.Fatalf("unexpected parse result: id=%d start=%d end=%d ok=%v", id, start, end, ok)
-	}
-	if _, _, _, ok := parseCopyCodeButton("no button"); ok {
-		t.Fatalf("expected no button parse")
-	}
-}
-
-func TestCopyCodeBlockByIDSuccess(t *testing.T) {
-	app, _ := newTestApp(t)
-
-	var got string
-	originalClipboard := clipboardWriteAll
-	clipboardWriteAll = func(text string) error {
-		got = text
-		return nil
-	}
-	defer func() { clipboardWriteAll = originalClipboard }()
-
-	app.setCodeCopyBlocks([]copyCodeButtonBinding{{ID: 1, Code: "code"}})
-	ok := app.copyCodeBlockByID(1)
-	if !ok {
-		t.Fatalf("expected handled copy")
-	}
-	if got != "code" {
-		t.Fatalf("expected clipboard content, got %q", got)
-	}
-	if app.state.StatusText == "" {
-		t.Fatalf("expected status text to be set")
-	}
-}
-
-func TestCopyCodeBlockByIDMissing(t *testing.T) {
-	app, _ := newTestApp(t)
-
-	ok := app.copyCodeBlockByID(99)
-	if !ok {
-		t.Fatalf("expected handled copy")
-	}
-	if app.state.StatusText != statusCodeCopyError {
-		t.Fatalf("expected error status, got %s", app.state.StatusText)
-	}
-}
-
-func TestCopyCodeBlockByIDClipboardError(t *testing.T) {
-	app, _ := newTestApp(t)
-
-	originalClipboard := clipboardWriteAll
-	clipboardWriteAll = func(text string) error {
-		return errors.New("fail")
-	}
-	defer func() { clipboardWriteAll = originalClipboard }()
-
-	app.setCodeCopyBlocks([]copyCodeButtonBinding{{ID: 2, Code: "code"}})
-	ok := app.copyCodeBlockByID(2)
-	if !ok {
-		t.Fatalf("expected handled copy")
-	}
-	if app.state.StatusText != statusCodeCopyError {
-		t.Fatalf("expected error status, got %s", app.state.StatusText)
-	}
-}
-
 func TestIsWorkspaceCommandInput(t *testing.T) {
 	if !isWorkspaceCommandInput("& ls -la") {
 		t.Fatalf("expected workspace command prefix to be detected")
@@ -4068,7 +4003,6 @@ func TestHandleTranscriptMouseWheelAndClickFallback(t *testing.T) {
 		t.Fatalf("expected transcript wheel down to be handled")
 	}
 
-	app.pendingCopyID = 9
 	if !app.handleTranscriptMouse(tea.MouseMsg{
 		X:      x + 1,
 		Y:      y + 1,
@@ -4076,9 +4010,6 @@ func TestHandleTranscriptMouseWheelAndClickFallback(t *testing.T) {
 		Action: tea.MouseActionPress,
 	}) {
 		t.Fatalf("expected left click in transcript to begin selection")
-	}
-	if app.pendingCopyID != 0 {
-		t.Fatalf("expected pendingCopyID reset when click does not hit copy button, got %d", app.pendingCopyID)
 	}
 	if !app.textSelection.dragging {
 		t.Fatalf("expected left click to enter selection dragging mode")

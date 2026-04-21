@@ -1847,12 +1847,10 @@ func (a *App) handleTranscriptMouse(msg tea.MouseMsg) bool {
 
 	switch {
 	case msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress:
-		a.pendingCopyID = 0
 		return a.beginTextSelection(msg)
 	case msg.Button == tea.MouseButtonLeft && (msg.Action == tea.MouseActionMotion || msg.Type == tea.MouseMotion):
 		return a.updateTextSelection(msg)
 	case msg.Action == tea.MouseActionRelease || msg.Type == tea.MouseRelease:
-		a.pendingCopyID = 0
 		return a.finishTextSelection()
 	case msg.Button == tea.MouseButtonRight && msg.Action == tea.MouseActionPress:
 		if a.hasTextSelection() {
@@ -2304,7 +2302,6 @@ func (a *App) normalizeComposerHeight() {
 
 func (a *App) rebuildTranscript() {
 	width := max(24, a.transcript.Width)
-	a.setCodeCopyBlocks(nil)
 	if len(a.activeMessages) == 0 {
 		a.setTranscriptContent(a.styles.empty.Width(width).Render(emptyConversationText))
 		a.transcript.GotoTop()
