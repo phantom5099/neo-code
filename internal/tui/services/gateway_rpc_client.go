@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,10 +25,24 @@ const (
 	defaultGatewayRPCRetryCount              = 1
 	defaultGatewayRPCHeartbeatInterval       = 10 * time.Second
 	defaultGatewayRPCHeartbeatTimeout        = 5 * time.Second
+	defaultGatewayAutoSpawnProbeInterval     = 200 * time.Millisecond
+	defaultGatewayAutoSpawnProbeAttempts     = 15
+	defaultGatewayAutoSpawnLogRelativePath   = ".neocode/logs/gateway_auto.log"
 	defaultGatewayNotificationBuffer         = 64
 	defaultGatewayNotificationQueue          = 256
 	defaultGatewayNotificationEnqueueTimeout = 3 * time.Second
 )
+
+const (
+	gatewayAutoSpawnLogDirPerm  = 0o700
+	gatewayAutoSpawnLogFilePerm = 0o600
+)
+
+type gatewayAutoSpawnFunc func(
+	ctx context.Context,
+	listenAddress string,
+	dialFn func(address string) (net.Conn, error),
+) error
 
 // GatewayRPCClientOptions 描述网关 JSON-RPC 客户端的初始化参数。
 type GatewayRPCClientOptions struct {
@@ -35,6 +52,8 @@ type GatewayRPCClientOptions struct {
 	RetryCount           int
 	HeartbeatInterval    time.Duration
 	HeartbeatTimeout     time.Duration
+	DisableAutoSpawn     bool
+	AutoSpawnGateway     gatewayAutoSpawnFunc
 	Dial                 func(address string) (net.Conn, error)
 	ResolveListenAddress func(override string) (string, error)
 }
@@ -106,6 +125,9 @@ type GatewayRPCClient struct {
 	heartbeatInterval time.Duration
 	heartbeatTimeout  time.Duration
 	dialFn            func(address string) (net.Conn, error)
+	disableAutoSpawn  bool
+	autoSpawnFn       gatewayAutoSpawnFunc
+	autoSpawnAttempt  bool
 
 	closeOnce sync.Once
 	closed    chan struct{}
@@ -170,6 +192,11 @@ func NewGatewayRPCClient(options GatewayRPCClientOptions) (*GatewayRPCClient, er
 		dialFn = transport.Dial
 	}
 
+	autoSpawnFn := options.AutoSpawnGateway
+	if autoSpawnFn == nil {
+		autoSpawnFn = defaultAutoSpawnGateway
+	}
+
 	return &GatewayRPCClient{
 		listenAddress:              listenAddress,
 		token:                      token,
@@ -177,6 +204,8 @@ func NewGatewayRPCClient(options GatewayRPCClientOptions) (*GatewayRPCClient, er
 		retryCount:                 retryCount,
 		heartbeatInterval:          heartbeatInterval,
 		heartbeatTimeout:           heartbeatTimeout,
+		disableAutoSpawn:           options.DisableAutoSpawn,
+		autoSpawnFn:                autoSpawnFn,
 		dialFn:                     dialFn,
 		closed:                     make(chan struct{}),
 		pending:                    make(map[string]chan gatewayRPCResponse),
@@ -286,7 +315,7 @@ func (c *GatewayRPCClient) callOnce(
 		return err
 	}
 
-	conn, err := c.ensureConnected()
+	conn, err := c.ensureConnected(callCtx)
 	if err != nil {
 		return &gatewayRPCTransportError{Method: method, Err: err}
 	}
@@ -357,34 +386,59 @@ func (c *GatewayRPCClient) writeRequest(conn net.Conn, request protocol.JSONRPCR
 	return nil
 }
 
-func (c *GatewayRPCClient) ensureConnected() (net.Conn, error) {
-	c.stateMu.Lock()
-	if c.conn != nil {
-		conn := c.conn
-		c.stateMu.Unlock()
-		return conn, nil
-	}
-	select {
-	case <-c.closed:
-		c.stateMu.Unlock()
-		return nil, errors.New("gateway rpc client is closed")
-	default:
-	}
+func (c *GatewayRPCClient) ensureConnected(ctx context.Context) (net.Conn, error) {
+	autoSpawnTriggered := false
+	for {
+		c.stateMu.Lock()
+		if c.conn != nil {
+			conn := c.conn
+			c.stateMu.Unlock()
+			return conn, nil
+		}
+		select {
+		case <-c.closed:
+			c.stateMu.Unlock()
+			return nil, errors.New("gateway rpc client is closed")
+		default:
+		}
 
-	conn, err := c.dialFn(c.listenAddress)
-	if err != nil {
+		conn, err := c.dialFn(c.listenAddress)
+		if err == nil {
+			heartbeatCtx, heartbeatCancel := context.WithCancel(context.Background())
+			c.conn = conn
+			c.heartbeatCancel = heartbeatCancel
+			c.heartbeatWG.Add(1)
+			c.startNotificationDispatcher()
+			c.stateMu.Unlock()
+			go c.readLoop(conn)
+			c.startHeartbeat(heartbeatCtx, conn)
+			return conn, nil
+		}
+
+		canAutoSpawn := !autoSpawnTriggered &&
+			!c.disableAutoSpawn &&
+			!c.autoSpawnAttempt &&
+			c.autoSpawnFn != nil &&
+			isGatewayUnavailableDialError(err)
+		if canAutoSpawn {
+			c.autoSpawnAttempt = true
+			autoSpawnFn := c.autoSpawnFn
+			listenAddress := c.listenAddress
+			dialFn := c.dialFn
+			c.stateMu.Unlock()
+			if spawnErr := autoSpawnFn(ctx, listenAddress, dialFn); spawnErr != nil {
+				return nil, fmt.Errorf("dial gateway %s: %w; auto-spawn gateway failed: %w", listenAddress, err, spawnErr)
+			}
+			autoSpawnTriggered = true
+			continue
+		}
+
 		c.stateMu.Unlock()
+		if autoSpawnTriggered {
+			return nil, fmt.Errorf("dial gateway %s after auto-spawn: %w", c.listenAddress, err)
+		}
 		return nil, fmt.Errorf("dial gateway %s: %w", c.listenAddress, err)
 	}
-	heartbeatCtx, heartbeatCancel := context.WithCancel(context.Background())
-	c.conn = conn
-	c.heartbeatCancel = heartbeatCancel
-	c.heartbeatWG.Add(1)
-	c.startNotificationDispatcher()
-	c.stateMu.Unlock()
-	go c.readLoop(conn)
-	c.startHeartbeat(heartbeatCtx, conn)
-	return conn, nil
 }
 
 func (c *GatewayRPCClient) readLoop(conn net.Conn) {
@@ -680,6 +734,134 @@ func cloneJSONRawMessage(raw json.RawMessage) json.RawMessage {
 	cloned := make([]byte, len(raw))
 	copy(cloned, raw)
 	return json.RawMessage(cloned)
+}
+
+// defaultAutoSpawnGateway 在首轮拨号失败且判定网关未启动时，静默拉起后台 gateway 进程并等待就绪。
+func defaultAutoSpawnGateway(
+	ctx context.Context,
+	listenAddress string,
+	dialFn func(address string) (net.Conn, error),
+) error {
+	executablePath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve current executable: %w", err)
+	}
+
+	logSink, err := openGatewayAutoSpawnOutput()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = logSink.Close()
+	}()
+
+	cmd := exec.Command(executablePath, "gateway")
+	cmd.Stdout = logSink
+	cmd.Stderr = logSink
+	if startErr := cmd.Start(); startErr != nil {
+		return fmt.Errorf("start gateway process: %w", startErr)
+	}
+
+	if waitErr := waitGatewayReadyAfterAutoSpawn(ctx, listenAddress, dialFn); waitErr != nil {
+		return waitErr
+	}
+	return nil
+}
+
+// waitGatewayReadyAfterAutoSpawn 轮询探测网关连通性，直到连接可用或超时。
+func waitGatewayReadyAfterAutoSpawn(
+	ctx context.Context,
+	listenAddress string,
+	dialFn func(address string) (net.Conn, error),
+) error {
+	if strings.TrimSpace(listenAddress) == "" {
+		return errors.New("gateway listen address is empty")
+	}
+
+	totalWindow := time.Duration(defaultGatewayAutoSpawnProbeAttempts) * defaultGatewayAutoSpawnProbeInterval
+	var lastErr error
+	for attempt := 0; attempt < defaultGatewayAutoSpawnProbeAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		conn, err := dialFn(listenAddress)
+		if err == nil {
+			_ = conn.Close()
+			return nil
+		}
+		lastErr = err
+		if !isGatewayUnavailableDialError(err) {
+			return fmt.Errorf("probe gateway readiness: %w", err)
+		}
+
+		if attempt == defaultGatewayAutoSpawnProbeAttempts-1 {
+			break
+		}
+		timer := time.NewTimer(defaultGatewayAutoSpawnProbeInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+
+	if lastErr == nil {
+		lastErr = errors.New("gateway is unavailable")
+	}
+	return fmt.Errorf("gateway not ready within %s: %w", totalWindow, lastErr)
+}
+
+// openGatewayAutoSpawnOutput 打开后台网关日志输出目标，优先写入 ~/.neocode/logs/gateway_auto.log，失败时回退到 DevNull。
+func openGatewayAutoSpawnOutput() (*os.File, error) {
+	logPath, pathErr := resolveGatewayAutoSpawnLogPath()
+	if pathErr == nil {
+		logDir := filepath.Dir(logPath)
+		if mkdirErr := os.MkdirAll(logDir, gatewayAutoSpawnLogDirPerm); mkdirErr == nil {
+			logFile, openErr := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, gatewayAutoSpawnLogFilePerm)
+			if openErr == nil {
+				return logFile, nil
+			}
+		}
+	}
+
+	devNullFile, devNullErr := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if devNullErr != nil {
+		if pathErr != nil {
+			return nil, fmt.Errorf("resolve gateway auto-spawn log path: %w; open devnull: %v", pathErr, devNullErr)
+		}
+		return nil, fmt.Errorf("open gateway auto-spawn fallback output: %w", devNullErr)
+	}
+	return devNullFile, nil
+}
+
+// resolveGatewayAutoSpawnLogPath 解析自动拉起网关日志文件路径。
+func resolveGatewayAutoSpawnLogPath() (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve user home dir: %w", err)
+	}
+	return filepath.Join(homeDir, defaultGatewayAutoSpawnLogRelativePath), nil
+}
+
+// isGatewayUnavailableDialError 判定拨号失败是否属于“网关未启动/不可达”的可自动拉起场景。
+func isGatewayUnavailableDialError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return true
+	}
+
+	message := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(message, "connection refused") ||
+		strings.Contains(message, "actively refused") ||
+		strings.Contains(message, "no such file") ||
+		strings.Contains(message, "does not exist") ||
+		strings.Contains(message, "cannot find the file") ||
+		strings.Contains(message, "pipe not found") ||
+		strings.Contains(message, "no such pipe")
 }
 
 func isRetryableGatewayCallError(err error) bool {

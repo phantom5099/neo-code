@@ -12,9 +12,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"neo-code/internal/gateway"
 	"neo-code/internal/gateway/protocol"
 )
 
@@ -613,5 +615,126 @@ func TestGatewayRPCClientDecodeResponseSuccessAndRetryableNetError(t *testing.T)
 	netErr := &net.DNSError{IsTimeout: true}
 	if !isRetryableGatewayCallError(netErr) {
 		t.Fatalf("net timeout error should be retryable")
+	}
+}
+
+func TestGatewayRPCClientAutoSpawnWhenGatewayUnavailable(t *testing.T) {
+	t.Parallel()
+
+	tokenFile, _ := createTestAuthTokenFile(t)
+
+	var dialCount int32
+	var autoSpawnCount int32
+	client, err := NewGatewayRPCClient(GatewayRPCClientOptions{
+		ListenAddress: "test://gateway",
+		TokenFile:     tokenFile,
+		AutoSpawnGateway: func(
+			_ context.Context,
+			listenAddress string,
+			_ func(address string) (net.Conn, error),
+		) error {
+			if listenAddress != "test://gateway" {
+				t.Fatalf("auto spawn listen address = %q", listenAddress)
+			}
+			atomic.AddInt32(&autoSpawnCount, 1)
+			return nil
+		},
+		Dial: func(_ string) (net.Conn, error) {
+			attempt := atomic.AddInt32(&dialCount, 1)
+			if attempt == 1 {
+				return nil, errors.New("connect failed: no such file or directory")
+			}
+			clientConn, serverConn := net.Pipe()
+			go func() {
+				defer serverConn.Close()
+				decoder := json.NewDecoder(serverConn)
+				encoder := json.NewEncoder(serverConn)
+				request := readRPCRequestOrFail(t, decoder)
+				writeRPCResultOrFail(t, encoder, request.ID, gateway.MessageFrame{
+					Type:   gateway.FrameTypeAck,
+					Action: gateway.FrameActionPing,
+				})
+			}()
+			return clientConn, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewGatewayRPCClient() error = %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	var frame gateway.MessageFrame
+	if err := client.CallWithOptions(
+		context.Background(),
+		protocol.MethodGatewayPing,
+		map[string]any{},
+		&frame,
+		GatewayRPCCallOptions{Timeout: time.Second, Retries: 0},
+	); err != nil {
+		t.Fatalf("CallWithOptions() error = %v", err)
+	}
+	if atomic.LoadInt32(&autoSpawnCount) != 1 {
+		t.Fatalf("auto spawn count = %d, want 1", atomic.LoadInt32(&autoSpawnCount))
+	}
+	if atomic.LoadInt32(&dialCount) != 2 {
+		t.Fatalf("dial count = %d, want 2", atomic.LoadInt32(&dialCount))
+	}
+}
+
+func TestGatewayRPCClientDoesNotAutoSpawnOnNonUnavailableDialError(t *testing.T) {
+	t.Parallel()
+
+	tokenFile, _ := createTestAuthTokenFile(t)
+	var autoSpawnCount int32
+
+	client, err := NewGatewayRPCClient(GatewayRPCClientOptions{
+		ListenAddress: "test://gateway",
+		TokenFile:     tokenFile,
+		AutoSpawnGateway: func(
+			_ context.Context,
+			_ string,
+			_ func(address string) (net.Conn, error),
+		) error {
+			atomic.AddInt32(&autoSpawnCount, 1)
+			return nil
+		},
+		Dial: func(_ string) (net.Conn, error) {
+			return nil, errors.New("permission denied")
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewGatewayRPCClient() error = %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	callErr := client.CallWithOptions(
+		context.Background(),
+		protocol.MethodGatewayPing,
+		map[string]any{},
+		nil,
+		GatewayRPCCallOptions{Timeout: time.Second, Retries: 0},
+	)
+	if callErr == nil {
+		t.Fatalf("expected call error")
+	}
+	if atomic.LoadInt32(&autoSpawnCount) != 0 {
+		t.Fatalf("auto spawn count = %d, want 0", atomic.LoadInt32(&autoSpawnCount))
+	}
+}
+
+func TestIsGatewayUnavailableDialError(t *testing.T) {
+	t.Parallel()
+
+	if !isGatewayUnavailableDialError(os.ErrNotExist) {
+		t.Fatalf("os.ErrNotExist should be treated as gateway unavailable")
+	}
+	if !isGatewayUnavailableDialError(errors.New("connect: connection refused")) {
+		t.Fatalf("connection refused should be treated as gateway unavailable")
+	}
+	if !isGatewayUnavailableDialError(errors.New("The system cannot find the file specified")) {
+		t.Fatalf("windows pipe not found text should be treated as gateway unavailable")
+	}
+	if isGatewayUnavailableDialError(errors.New("permission denied")) {
+		t.Fatalf("permission denied should not be treated as gateway unavailable")
 	}
 }
