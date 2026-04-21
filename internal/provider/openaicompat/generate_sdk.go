@@ -2,6 +2,7 @@ package openaicompat
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -30,9 +31,19 @@ func (p *Provider) generateSDKChatCompletions(
 	params := convertToChatCompletionParams(payload)
 
 	stream := client.Chat.Completions.NewStreaming(ctx, params)
-	return chatcompletions.EmitFromSDKStream(ctx, stream, events)
+	if err := chatcompletions.EmitFromSDKStream(ctx, stream, events); err != nil {
+		if mapped, ok := mapOpenAIError(err); ok {
+			return mapped
+		}
+		if !shouldFallbackToCompatibleChatStream(err) {
+			return err
+		}
+		return p.generateChatCompletionsWithCompatibleStream(ctx, payload, events)
+	}
+	return nil
 }
 
+// convertToChatCompletionParams 将内部 chat/completions 请求映射为 OpenAI SDK 参数对象。
 func convertToChatCompletionParams(req chatcompletions.Request) openai.ChatCompletionNewParams {
 	params := openai.ChatCompletionNewParams{
 		Model: openai.ChatModel(req.Model),
@@ -64,21 +75,179 @@ func convertToChatCompletionParams(req chatcompletions.Request) openai.ChatCompl
 	return params
 }
 
+// convertToSDKMessage 将内部消息转换为 SDK ChatCompletion 消息参数，并保留 tool 调用语义。
 func convertToSDKMessage(msg chatcompletions.Message) openai.ChatCompletionMessageParamUnion {
+	contentText := normalizeMessageTextContent(msg.Content)
+
 	switch msg.Role {
 	case "system":
-		return openai.SystemMessage(msg.Content.(string))
+		return openai.SystemMessage(contentText)
 	case "user":
-		if content, ok := msg.Content.(string); ok {
-			return openai.UserMessage(content)
+		if contentParts, ok := toSDKUserContentParts(msg.Content); ok {
+			return openai.UserMessage(contentParts)
 		}
-		// Handle multi-part content if needed
-		return openai.UserMessage(fmt.Sprintf("%v", msg.Content))
+		return openai.UserMessage(contentText)
 	case "assistant":
-		return openai.AssistantMessage(msg.Content.(string))
+		var assistant openai.ChatCompletionAssistantMessageParam
+		if contentText != "" {
+			assistantMessage := openai.AssistantMessage(contentText)
+			if assistantMessage.OfAssistant != nil {
+				assistant = *assistantMessage.OfAssistant
+			}
+		}
+		if toolCalls := toSDKAssistantToolCalls(msg.ToolCalls); len(toolCalls) > 0 {
+			assistant.ToolCalls = toolCalls
+		}
+		return openai.ChatCompletionMessageParamUnion{OfAssistant: &assistant}
+	case "tool":
+		return openai.ToolMessage(contentText, strings.TrimSpace(msg.ToolCallID))
 	default:
-		return openai.UserMessage(fmt.Sprintf("%v", msg.Content))
+		return openai.UserMessage(contentText)
 	}
+}
+
+// normalizeMessageTextContent 将任意消息内容归一化为文本，保证角色降级时语义可读。
+func normalizeMessageTextContent(content any) string {
+	switch value := content.(type) {
+	case nil:
+		return ""
+	case string:
+		return value
+	case []chatcompletions.MessageContentPart:
+		var textBuilder strings.Builder
+		for _, part := range value {
+			if part.Type == "text" {
+				textBuilder.WriteString(part.Text)
+			}
+		}
+		if textBuilder.Len() > 0 {
+			return textBuilder.String()
+		}
+		return fmt.Sprintf("%v", value)
+	default:
+		return fmt.Sprintf("%v", value)
+	}
+}
+
+// toSDKUserContentParts 将多模态消息转换为 SDK user content parts，无法转换时返回 false。
+func toSDKUserContentParts(content any) ([]openai.ChatCompletionContentPartUnionParam, bool) {
+	value, ok := content.([]chatcompletions.MessageContentPart)
+	if !ok {
+		return nil, false
+	}
+
+	parts := make([]openai.ChatCompletionContentPartUnionParam, 0, len(value))
+	for _, part := range value {
+		switch part.Type {
+		case "text":
+			parts = append(parts, openai.TextContentPart(part.Text))
+		case "image_url":
+			if part.ImageURL == nil || strings.TrimSpace(part.ImageURL.URL) == "" {
+				continue
+			}
+			parts = append(parts, openai.ImageContentPart(openai.ChatCompletionContentPartImageImageURLParam{
+				URL: part.ImageURL.URL,
+			}))
+		}
+	}
+	return parts, len(parts) > 0
+}
+
+// toSDKAssistantToolCalls 将内部 assistant tool_calls 映射到 SDK 所需结构。
+func toSDKAssistantToolCalls(calls []chatcompletions.ToolCall) []openai.ChatCompletionMessageToolCallUnionParam {
+	if len(calls) == 0 {
+		return nil
+	}
+
+	toolCalls := make([]openai.ChatCompletionMessageToolCallUnionParam, 0, len(calls))
+	for _, call := range calls {
+		toolCalls = append(toolCalls, openai.ChatCompletionMessageToolCallUnionParam{
+			OfFunction: &openai.ChatCompletionMessageFunctionToolCallParam{
+				ID: strings.TrimSpace(call.ID),
+				Function: openai.ChatCompletionMessageFunctionToolCallFunctionParam{
+					Name:      strings.TrimSpace(call.Function.Name),
+					Arguments: call.Function.Arguments,
+				},
+			},
+		})
+	}
+	return toolCalls
+}
+
+// shouldFallbackToCompatibleChatStream 判断是否需要从 SDK typed stream 降级到兼容流解析。
+func shouldFallbackToCompatibleChatStream(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(strings.TrimSpace(safeErrorMessage(err)))
+	return strings.Contains(message, "after top-level value") ||
+		strings.Contains(message, "invalid character") && strings.Contains(message, "[done]")
+}
+
+// mapOpenAIError 将 SDK 错误映射为统一的 ProviderError，便于 runtime 做分级处理。
+func mapOpenAIError(err error) (error, bool) {
+	var sdkErr *openai.Error
+	if !errors.As(err, &sdkErr) || sdkErr == nil || sdkErr.StatusCode <= 0 {
+		return nil, false
+	}
+
+	message := strings.TrimSpace(sdkErr.Message)
+	if message == "" {
+		message = strings.TrimSpace(safeErrorMessage(err))
+	}
+	return provider.NewProviderErrorFromStatus(sdkErr.StatusCode, message), true
+}
+
+// safeErrorMessage 安全获取错误文本，避免第三方错误类型在 Error() 中触发 panic。
+func safeErrorMessage(err error) (message string) {
+	if err == nil {
+		return ""
+	}
+	defer func() {
+		if recover() != nil {
+			message = ""
+		}
+	}()
+	return err.Error()
+}
+
+// generateChatCompletionsWithCompatibleStream 在弱 SSE 网关下回退到兼容解析逻辑，保证请求可继续。
+func (p *Provider) generateChatCompletionsWithCompatibleStream(
+	ctx context.Context,
+	payload chatcompletions.Request,
+	events chan<- providertypes.StreamEvent,
+) error {
+	endpoint, err := provider.ResolveChatEndpointURL(
+		p.cfg.BaseURL,
+		resolveChatEndpointPathByMode(p.cfg.ChatEndpointPath, provider.ChatAPIModeChatCompletions),
+	)
+	if err != nil {
+		return fmt.Errorf("%sinvalid chat endpoint configuration: %w", errorPrefix, err)
+	}
+
+	client := p.newSDKClient()
+	var resp *http.Response
+	err = client.Post(
+		ctx,
+		strings.TrimSpace(endpoint),
+		payload,
+		nil,
+		option.WithResponseInto(&resp),
+		option.WithHeader("Accept", "text/event-stream"),
+	)
+	if err != nil {
+		if mapped, ok := mapOpenAIError(err); ok {
+			return mapped
+		}
+		return fmt.Errorf("%ssend request: %w", errorPrefix, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		return ParseError(resp)
+	}
+
+	return chatcompletions.ConsumeStream(ctx, resp.Body, events)
 }
 
 // generateSDKResponses 走 SDK responses 发送请求，复用本地流事件映射。

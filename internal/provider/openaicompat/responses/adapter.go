@@ -26,32 +26,94 @@ func EmitFromStream(
 		toolCalls        = make(map[int]*providertypes.ToolCall)
 		itemToolCallMap  = make(map[string]int)
 		nextToolCallSlot int
+		done             bool
+		dataLines        []string
 	)
 
-	scanner := bufio.NewScanner(body)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data:") {
-			continue
+	reader := newBoundedLineReader(body, maxSSELineSize, maxSSEStreamTotalSize)
+	processPayload := func(payload string) error {
+		if strings.TrimSpace(payload) == "[DONE]" {
+			done = true
+			return nil
 		}
-
-		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if payload == "[DONE]" {
-			break
-		}
-
 		var event streamEvent
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {
 			return fmt.Errorf("%sdecode stream chunk: %w", errorPrefix, err)
 		}
-
 		if err := processEvent(ctx, events, &event, &usage, &finishReason, toolCalls, itemToolCallMap, &nextToolCallSlot); err != nil {
 			return err
 		}
+		return nil
+	}
+	flushDataLines := func() error {
+		if len(dataLines) == 0 {
+			return nil
+		}
+		lines := append([]string(nil), dataLines...)
+		defer func() {
+			dataLines = dataLines[:0]
+		}()
+		joined := strings.Join(lines, "\n")
+		if err := processPayload(joined); err != nil {
+			if len(lines) <= 1 {
+				return err
+			}
+			for _, line := range lines {
+				if itemErr := processPayload(line); itemErr != nil {
+					return err
+				}
+			}
+		}
+		return nil
 	}
 
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("%sstream read error: %w", errorPrefix, err)
+	for {
+		if !done {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+		}
+
+		line, err := reader.ReadLine()
+		if err != nil && !errors.Is(err, io.EOF) {
+			if flushErr := flushDataLines(); flushErr != nil {
+				return flushErr
+			}
+			if done {
+				break
+			}
+			return fmt.Errorf("%sstream read error: %w", errorPrefix, err)
+		}
+
+		switch {
+		case strings.HasPrefix(line, "data:"):
+			data := strings.TrimPrefix(line, "data:")
+			if strings.HasPrefix(data, " ") {
+				data = data[1:]
+			}
+			data = strings.TrimRight(data, "\r")
+			if strings.TrimSpace(data) == "[DONE]" {
+				if flushErr := flushDataLines(); flushErr != nil {
+					return flushErr
+				}
+				done = true
+			} else {
+				dataLines = append(dataLines, data)
+			}
+		case line == "":
+			if flushErr := flushDataLines(); flushErr != nil {
+				return flushErr
+			}
+		}
+
+		if errors.Is(err, io.EOF) {
+			if flushErr := flushDataLines(); flushErr != nil {
+				return flushErr
+			}
+			break
+		}
 	}
 
 	reason := strings.TrimSpace(finishReason)
@@ -59,6 +121,66 @@ func EmitFromStream(
 		reason = "stop"
 	}
 	return provider.EmitMessageDone(ctx, events, reason, &usage)
+}
+
+const (
+	maxSSELineSize        = 256 * 1024
+	maxSSEStreamTotalSize = 10 << 20
+)
+
+type boundedLineReader struct {
+	reader             *bufio.Reader
+	totalRead          int64
+	maxLineSize        int
+	maxStreamTotalSize int64
+}
+
+// newBoundedLineReader 创建带有单行/总量限制的 SSE 读取器。
+func newBoundedLineReader(r io.Reader, maxLineSize int, maxStreamTotalSize int64) *boundedLineReader {
+	if maxLineSize <= 0 {
+		maxLineSize = maxSSELineSize
+	}
+	if maxStreamTotalSize <= 0 {
+		maxStreamTotalSize = maxSSEStreamTotalSize
+	}
+	return &boundedLineReader{
+		reader:             bufio.NewReaderSize(r, maxLineSize+1),
+		maxLineSize:        maxLineSize,
+		maxStreamTotalSize: maxStreamTotalSize,
+	}
+}
+
+// ReadLine 读取单行并执行长度限制，返回值不包含行尾换行符。
+func (r *boundedLineReader) ReadLine() (string, error) {
+	line, err := r.reader.ReadSlice('\n')
+	if errors.Is(err, bufio.ErrBufferFull) {
+		return "", provider.ErrLineTooLong
+	}
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+
+	rawLen := len(line)
+	if rawLen > 0 && line[rawLen-1] == '\n' {
+		rawLen--
+	}
+	if rawLen > r.maxLineSize {
+		return "", provider.ErrLineTooLong
+	}
+
+	r.totalRead += int64(len(line))
+	if r.totalRead > r.maxStreamTotalSize {
+		return "", provider.ErrStreamTooLarge
+	}
+	return trimLineEnding(string(line)), err
+}
+
+// trimLineEnding 去除行尾连续的 CR/LF 字符。
+func trimLineEnding(line string) string {
+	for len(line) > 0 && (line[len(line)-1] == '\n' || line[len(line)-1] == '\r') {
+		line = line[:len(line)-1]
+	}
+	return line
 }
 
 func processEvent(
