@@ -16,26 +16,11 @@ func TestEvaluateCompletionBlockedByPendingTodo(t *testing.T) {
 	}
 }
 
-func TestEvaluateCompletionRequiresVerify(t *testing.T) {
-	t.Parallel()
-
-	state, completed := EvaluateCompletion(CompletionState{
-		RequiresVerification: true,
-	}, false)
-	if completed {
-		t.Fatalf("expected completion to be blocked")
-	}
-	if state.CompletionBlockedReason != CompletionBlockedReasonVerifyNotRun {
-		t.Fatalf("blocked reason = %q, want %q", state.CompletionBlockedReason, CompletionBlockedReasonVerifyNotRun)
-	}
-}
-
 func TestEvaluateCompletionBlockedByUnverifiedWrite(t *testing.T) {
 	t.Parallel()
 
 	state, completed := EvaluateCompletion(CompletionState{
-		RequiresVerification: true,
-		HasUnverifiedWrites:  true,
+		HasUnverifiedWrites: true,
 	}, false)
 	if completed {
 		t.Fatalf("expected completion to be blocked")
@@ -60,10 +45,7 @@ func TestEvaluateCompletionBlockedAfterToolCalls(t *testing.T) {
 func TestEvaluateCompletionAllowsSatisfiedClosure(t *testing.T) {
 	t.Parallel()
 
-	state, completed := EvaluateCompletion(CompletionState{
-		LastTurnVerifyPassed: true,
-		RequiresVerification: true,
-	}, false)
+	state, completed := EvaluateCompletion(CompletionState{}, false)
 	if !completed {
 		t.Fatalf("expected completion to succeed")
 	}

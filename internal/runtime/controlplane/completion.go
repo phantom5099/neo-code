@@ -10,8 +10,6 @@ const (
 	CompletionBlockedReasonPendingTodo CompletionBlockedReason = "pending_todo"
 	// CompletionBlockedReasonUnverifiedWrite 表示仍存在未验证写入。
 	CompletionBlockedReasonUnverifiedWrite CompletionBlockedReason = "unverified_write"
-	// CompletionBlockedReasonVerifyNotRun 表示需要验证但尚未验证通过。
-	CompletionBlockedReasonVerifyNotRun CompletionBlockedReason = "verify_not_run"
 	// CompletionBlockedReasonPostExecuteClosureRequired 表示刚完成执行后仍需闭环。
 	CompletionBlockedReasonPostExecuteClosureRequired CompletionBlockedReason = "post_execute_closure_required"
 )
@@ -20,8 +18,6 @@ const (
 type CompletionState struct {
 	HasPendingAgentTodos    bool                    `json:"has_pending_agent_todos"`
 	HasUnverifiedWrites     bool                    `json:"has_unverified_writes"`
-	LastTurnVerifyPassed    bool                    `json:"last_turn_verify_passed"`
-	RequiresVerification    bool                    `json:"requires_verification"`
 	CompletionBlockedReason CompletionBlockedReason `json:"completion_blocked_reason,omitempty"`
 }
 
@@ -39,10 +35,6 @@ func EvaluateCompletion(state CompletionState, assistantHasToolCalls bool) (Comp
 	}
 	if state.HasUnverifiedWrites {
 		state.CompletionBlockedReason = CompletionBlockedReasonUnverifiedWrite
-		return state, false
-	}
-	if state.RequiresVerification && !state.LastTurnVerifyPassed {
-		state.CompletionBlockedReason = CompletionBlockedReasonVerifyNotRun
 		return state, false
 	}
 	return state, true

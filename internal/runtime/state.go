@@ -28,7 +28,10 @@ type runState struct {
 	agentID                 string
 	capabilityToken         *security.CapabilityToken
 	turn                    int
+	baseLifecycle           controlplane.RunState
 	lifecycle               controlplane.RunState
+	waitingPermissionCount  int
+	compactingCount         int
 	stopEmitted             bool
 	completion              controlplane.CompletionState
 	progress                controlplane.ProgressState

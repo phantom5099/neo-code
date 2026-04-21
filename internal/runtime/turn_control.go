@@ -23,27 +23,20 @@ type toolExecutionSummary struct {
 func collectCompletionState(
 	state *runState,
 	_ providertypes.Message,
-	assistantHasToolCalls bool,
+	_ bool,
 ) controlplane.CompletionState {
 	current := state.completion
 	current.HasPendingAgentTodos = hasPendingAgentTodos(state.session.Todos)
-	if assistantHasToolCalls {
-		current.LastTurnVerifyPassed = false
-		return current
-	}
 	return current
 }
 
 // applyToolExecutionCompletion 更新一轮工具执行后的 completion 事实。
 func applyToolExecutionCompletion(current controlplane.CompletionState, summary toolExecutionSummary) controlplane.CompletionState {
-	current.LastTurnVerifyPassed = false
 	if summary.HasSuccessfulWorkspaceWrite {
-		current.RequiresVerification = true
 		current.HasUnverifiedWrites = true
 	}
-	if current.RequiresVerification && summary.HasSuccessfulVerification {
+	if summary.HasSuccessfulVerification {
 		current.HasUnverifiedWrites = false
-		current.LastTurnVerifyPassed = true
 	}
 	return current
 }
@@ -56,11 +49,10 @@ func collectProgressInput(
 	beforeTodos []agentsession.TodoItem,
 	afterTodos []agentsession.TodoItem,
 	summary toolExecutionSummary,
-	verifyPassed bool,
 	noProgressLimit int,
 	repeatLimit int,
 ) controlplane.ProgressInput {
-	evidence := deriveProgressEvidence(beforeTask, afterTask, beforeTodos, afterTodos, summary, verifyPassed)
+	evidence := deriveProgressEvidence(beforeTask, afterTask, beforeTodos, afterTodos, summary)
 	return controlplane.ProgressInput{
 		RunState:             runState,
 		Evidence:             evidence,
@@ -79,7 +71,6 @@ func deriveProgressEvidence(
 	beforeTodos []agentsession.TodoItem,
 	afterTodos []agentsession.TodoItem,
 	summary toolExecutionSummary,
-	verifyPassed bool,
 ) []controlplane.ProgressEvidenceRecord {
 	var evidence []controlplane.ProgressEvidenceRecord
 
@@ -92,7 +83,7 @@ func deriveProgressEvidence(
 	if summary.HasSuccessfulWorkspaceWrite {
 		evidence = append(evidence, controlplane.ProgressEvidenceRecord{Kind: controlplane.EvidenceWriteApplied})
 	}
-	if verifyPassed {
+	if summary.HasSuccessfulVerification {
 		evidence = append(evidence, controlplane.ProgressEvidenceRecord{Kind: controlplane.EvidenceVerifyPassed})
 	}
 	if hasSuccessfulInformationalResult(summary.Results) {
@@ -208,78 +199,18 @@ func hasSuccessfulInformationalResult(results []tools.ToolResult) bool {
 	return false
 }
 
-// hasSuccessfulVerificationResult 判断本轮是否执行了显式验证动作且获得成功结果。
-func hasSuccessfulVerificationResult(calls []providertypes.ToolCall, results []tools.ToolResult) bool {
-	if len(calls) == 0 || len(results) == 0 {
+// hasSuccessfulVerificationResult 判断本轮是否存在显式验证成功的结构化事实。
+func hasSuccessfulVerificationResult(results []tools.ToolResult) bool {
+	if len(results) == 0 {
 		return false
 	}
-
-	successful := make(map[string]tools.ToolResult, len(results))
 	for _, result := range results {
-		if result.IsError {
+		if result.IsError || !result.Facts.VerificationPerformed || !result.Facts.VerificationPassed {
 			continue
 		}
-		toolCallID := strings.TrimSpace(result.ToolCallID)
-		if toolCallID == "" {
-			continue
-		}
-		successful[toolCallID] = result
-	}
-
-	for _, call := range calls {
-		if !isExplicitVerificationCall(call) {
-			continue
-		}
-		callID := strings.TrimSpace(call.ID)
-		if callID == "" {
-			continue
-		}
-		if _, ok := successful[callID]; ok {
-			return true
-		}
+		return true
 	}
 	return false
-}
-
-// isExplicitVerificationCall 判断工具调用是否明确承担验证职责，避免把任意成功读取都算成 verify passed。
-func isExplicitVerificationCall(call providertypes.ToolCall) bool {
-	if !strings.EqualFold(strings.TrimSpace(call.Name), tools.ToolNameBash) {
-		return false
-	}
-
-	command, ok := parseBashVerificationCommand(call.Arguments)
-	if !ok {
-		return false
-	}
-	command = strings.ToLower(strings.TrimSpace(command))
-	if command == "" {
-		return false
-	}
-
-	for _, keyword := range verificationCommandKeywords {
-		if strings.Contains(command, keyword) {
-			return true
-		}
-	}
-	return false
-}
-
-// parseBashVerificationCommand 解析 bash 工具参数中的 command 字段，为验证分类提供稳定输入。
-func parseBashVerificationCommand(raw string) (string, bool) {
-	if strings.TrimSpace(raw) == "" {
-		return "", false
-	}
-	var payload struct {
-		Command string `json:"command"`
-	}
-	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
-		return "", false
-	}
-	command := strings.TrimSpace(payload.Command)
-	if command == "" {
-		return "", false
-	}
-	return command, true
 }
 
 // normalizeToolResultContent 对工具结果文本做稳定化裁剪，避免无关差异放大指纹抖动。
@@ -304,33 +235,4 @@ func classifyToolError(result tools.ToolResult) string {
 	default:
 		return "generic_error"
 	}
-}
-
-var verificationCommandKeywords = []string{
-	"go test",
-	"go vet",
-	"go build",
-	"golangci-lint",
-	"pytest",
-	"ruff check",
-	"mypy",
-	"cargo test",
-	"cargo check",
-	"cargo clippy",
-	"npm test",
-	"npm run test",
-	"npm run lint",
-	"npm run build",
-	"pnpm test",
-	"pnpm run test",
-	"pnpm run lint",
-	"pnpm run build",
-	"yarn test",
-	"yarn lint",
-	"yarn build",
-	"make test",
-	"make check",
-	"ctest",
-	"gradle test",
-	"mvn test",
 }

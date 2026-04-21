@@ -334,7 +334,9 @@ func (m *DefaultManager) Execute(ctx context.Context, input ToolCallInput) (Tool
 		input.WorkspacePlan = plan
 	}
 
-	return m.executor.Execute(ctx, input)
+	result, execErr := m.executor.Execute(ctx, input)
+	result = EnrichToolResultFacts(action, result)
+	return result, execErr
 }
 
 // verifyCapabilityToken 校验 capability token 的签名、绑定关系与时效性。

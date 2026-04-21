@@ -12,18 +12,81 @@ import (
 	"neo-code/internal/runtime/controlplane"
 )
 
-// transitionRunState 在生命周期变化时校验迁移并发出 phase_changed 事件。
-func (s *Service) transitionRunState(ctx context.Context, state *runState, next controlplane.RunState) error {
-	if state == nil || state.lifecycle == next {
+// setBaseRunState 更新主链生命周期状态，并触发有效运行态重计算。
+func (s *Service) setBaseRunState(ctx context.Context, state *runState, next controlplane.RunState) error {
+	if state == nil {
 		return nil
 	}
+	if !isBaseLifecycleState(next) {
+		return errors.New("runtime: invalid base lifecycle state")
+	}
+	state.mu.Lock()
+	state.baseLifecycle = next
+	state.mu.Unlock()
+	return s.refreshEffectiveRunState(ctx, state)
+}
 
+// enterTemporaryRunState 增加临时治理态计数，并触发有效运行态重计算。
+func (s *Service) enterTemporaryRunState(ctx context.Context, state *runState, temporary controlplane.RunState) error {
+	if state == nil {
+		return nil
+	}
+	state.mu.Lock()
+	switch temporary {
+	case controlplane.RunStateWaitingPermission:
+		state.waitingPermissionCount++
+	case controlplane.RunStateCompacting:
+		state.compactingCount++
+	default:
+		state.mu.Unlock()
+		return errors.New("runtime: unsupported temporary lifecycle state")
+	}
+	state.mu.Unlock()
+	return s.refreshEffectiveRunState(ctx, state)
+}
+
+// leaveTemporaryRunState 释放临时治理态计数，并触发有效运行态重计算。
+func (s *Service) leaveTemporaryRunState(ctx context.Context, state *runState, temporary controlplane.RunState) error {
+	if state == nil {
+		return nil
+	}
+	state.mu.Lock()
+	switch temporary {
+	case controlplane.RunStateWaitingPermission:
+		if state.waitingPermissionCount > 0 {
+			state.waitingPermissionCount--
+		}
+	case controlplane.RunStateCompacting:
+		if state.compactingCount > 0 {
+			state.compactingCount--
+		}
+	default:
+		state.mu.Unlock()
+		return errors.New("runtime: unsupported temporary lifecycle state")
+	}
+	state.mu.Unlock()
+	return s.refreshEffectiveRunState(ctx, state)
+}
+
+// refreshEffectiveRunState 根据 base + 临时态覆盖层计算并发出统一 phase_changed 事件。
+func (s *Service) refreshEffectiveRunState(ctx context.Context, state *runState) error {
+	if state == nil {
+		return nil
+	}
+	state.mu.Lock()
+	next := deriveEffectiveRunState(state)
 	from := state.lifecycle
+	if next == from {
+		state.mu.Unlock()
+		return nil
+	}
 	if err := controlplane.ValidateRunStateTransition(from, next); err != nil {
+		state.mu.Unlock()
 		return err
 	}
-
 	state.lifecycle = next
+	state.mu.Unlock()
+
 	_ = s.emitRunScoped(ctx, EventPhaseChanged, state, PhaseChangedPayload{
 		From: string(from),
 		To:   string(next),
@@ -31,33 +94,36 @@ func (s *Service) transitionRunState(ctx context.Context, state *runState, next 
 	return nil
 }
 
-// withTemporaryRunState 在短生命周期治理态内执行回调，随后恢复到进入前的运行态。
-func (s *Service) withTemporaryRunState(
-	ctx context.Context,
-	state *runState,
-	temporary controlplane.RunState,
-	fn func() error,
-) error {
+// deriveEffectiveRunState 统一推导当前有效运行态，临时治理态优先级高于 base 主链态。
+func deriveEffectiveRunState(state *runState) controlplane.RunState {
 	if state == nil {
-		return fn()
+		return ""
 	}
+	if state.waitingPermissionCount > 0 {
+		return controlplane.RunStateWaitingPermission
+	}
+	if state.compactingCount > 0 {
+		return controlplane.RunStateCompacting
+	}
+	if state.baseLifecycle != "" {
+		return state.baseLifecycle
+	}
+	return state.lifecycle
+}
 
-	previous := state.lifecycle
-	if err := s.transitionRunState(ctx, state, temporary); err != nil {
-		return err
+// isBaseLifecycleState 判断状态是否属于主链 base lifecycle 集合。
+func isBaseLifecycleState(state controlplane.RunState) bool {
+	switch state {
+	case controlplane.RunStatePlan, controlplane.RunStateExecute, controlplane.RunStateVerify, controlplane.RunStateStopped:
+		return true
+	default:
+		return false
 	}
+}
 
-	runErr := fn()
-	restoreState := previous
-	if runErr != nil && restoreState == "" {
-		restoreState = temporary
-	}
-	if restoreState != "" && restoreState != state.lifecycle {
-		if err := s.transitionRunState(ctx, state, restoreState); err != nil && runErr == nil {
-			runErr = err
-		}
-	}
-	return runErr
+// transitionRunState 兼容旧调用入口，内部统一转为 base lifecycle 更新。
+func (s *Service) transitionRunState(ctx context.Context, state *runState, next controlplane.RunState) error {
+	return s.setBaseRunState(ctx, state, next)
 }
 
 // emitRunTermination 在 Run 退出时决议并发出唯一的 stop_reason_decided 事件。
@@ -75,9 +141,10 @@ func (s *Service) emitRunTermination(ctx context.Context, input UserInput, state
 			return
 		}
 		state.stopEmitted = true
-		if state.lifecycle != "" && state.lifecycle != controlplane.RunStateStopped {
-			state.lifecycle = controlplane.RunStateStopped
-		}
+		state.baseLifecycle = controlplane.RunStateStopped
+		state.lifecycle = controlplane.RunStateStopped
+		state.waitingPermissionCount = 0
+		state.compactingCount = 0
 	}
 
 	in := controlplane.StopInput{}

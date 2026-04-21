@@ -10,42 +10,17 @@ import (
 	"neo-code/internal/tools"
 )
 
-func TestCollectCompletionStateDoesNotAutoVerifyWithoutClosureResponse(t *testing.T) {
+func TestCollectCompletionStateKeepsUnverifiedWrites(t *testing.T) {
 	t.Parallel()
 
 	state := newRunState("run-verify-silent", newRuntimeSession("session-verify-silent"))
 	state.completion = controlplane.CompletionState{
-		RequiresVerification: true,
-		HasUnverifiedWrites:  true,
+		HasUnverifiedWrites: true,
 	}
 
 	got := collectCompletionState(&state, providertypes.Message{Role: providertypes.RoleAssistant}, false)
 	if got.HasUnverifiedWrites != true {
 		t.Fatalf("expected unverified writes to remain blocked, got %+v", got)
-	}
-	if got.LastTurnVerifyPassed {
-		t.Fatalf("expected silent turn to not count as verify passed")
-	}
-}
-
-func TestCollectCompletionStateKeepsExplicitVerifyPassedState(t *testing.T) {
-	t.Parallel()
-
-	state := newRunState("run-verify-closure", newRuntimeSession("session-verify-closure"))
-	state.completion = controlplane.CompletionState{
-		RequiresVerification: true,
-		LastTurnVerifyPassed: true,
-	}
-
-	got := collectCompletionState(&state, providertypes.Message{
-		Role:  providertypes.RoleAssistant,
-		Parts: []providertypes.ContentPart{providertypes.NewTextPart("done")},
-	}, false)
-	if got.HasUnverifiedWrites {
-		t.Fatalf("expected explicit verify state to remain cleared, got %+v", got)
-	}
-	if !got.LastTurnVerifyPassed {
-		t.Fatalf("expected explicit verify passed state to be preserved")
 	}
 }
 
@@ -55,11 +30,8 @@ func TestApplyToolExecutionCompletionTracksWriteAndVerification(t *testing.T) {
 	written := applyToolExecutionCompletion(controlplane.CompletionState{}, toolExecutionSummary{
 		HasSuccessfulWorkspaceWrite: true,
 	})
-	if !written.RequiresVerification || !written.HasUnverifiedWrites {
+	if !written.HasUnverifiedWrites {
 		t.Fatalf("expected successful write to require verification, got %+v", written)
-	}
-	if written.LastTurnVerifyPassed {
-		t.Fatalf("expected write-only turn to keep verify pending")
 	}
 
 	verified := applyToolExecutionCompletion(written, toolExecutionSummary{
@@ -67,9 +39,6 @@ func TestApplyToolExecutionCompletionTracksWriteAndVerification(t *testing.T) {
 	})
 	if verified.HasUnverifiedWrites {
 		t.Fatalf("expected explicit verification to clear pending write, got %+v", verified)
-	}
-	if !verified.LastTurnVerifyPassed {
-		t.Fatalf("expected explicit verification to mark verify passed")
 	}
 }
 
@@ -120,49 +89,18 @@ func TestTransitionRunPhaseInvalidTransitionReturnsError(t *testing.T) {
 	}
 }
 
-func TestHasSuccessfulVerificationResultRequiresExplicitVerificationCall(t *testing.T) {
+func TestHasSuccessfulVerificationResultRequiresStructuredFacts(t *testing.T) {
 	t.Parallel()
 
-	bashVerifyCall := providertypes.ToolCall{
-		ID:        "verify-1",
-		Name:      tools.ToolNameBash,
-		Arguments: `{"command":"go test ./..."}`,
+	if !hasSuccessfulVerificationResult([]tools.ToolResult{
+		{Facts: tools.ToolExecutionFacts{VerificationPerformed: true, VerificationPassed: true}},
+	}) {
+		t.Fatalf("expected verification facts to count as verify passed")
 	}
-	successfulResults := []tools.ToolResult{
-		{ToolCallID: "verify-1", Name: tools.ToolNameBash, Content: "ok"},
-	}
-	if !hasSuccessfulVerificationResult([]providertypes.ToolCall{bashVerifyCall}, successfulResults) {
-		t.Fatalf("expected explicit verification bash command to count as verify passed")
-	}
-
-	readCall := providertypes.ToolCall{
-		ID:        "read-1",
-		Name:      tools.ToolNameFilesystemReadFile,
-		Arguments: `{"path":"README.md"}`,
-	}
-	readResults := []tools.ToolResult{
-		{ToolCallID: "read-1", Name: tools.ToolNameFilesystemReadFile, Content: "docs"},
-	}
-	if hasSuccessfulVerificationResult([]providertypes.ToolCall{readCall}, readResults) {
-		t.Fatalf("expected successful read to not count as verify passed")
-	}
-
-	bashNonVerifyCall := providertypes.ToolCall{
-		ID:        "bash-1",
-		Name:      tools.ToolNameBash,
-		Arguments: `{"command":"pwd"}`,
-	}
-	bashResults := []tools.ToolResult{
-		{ToolCallID: "bash-1", Name: tools.ToolNameBash, Content: "C:/repo"},
-	}
-	if hasSuccessfulVerificationResult([]providertypes.ToolCall{bashNonVerifyCall}, bashResults) {
-		t.Fatalf("expected non-verification bash command to not count as verify passed")
-	}
-
-	missingCallIDResults := []tools.ToolResult{
-		{Name: tools.ToolNameBash, Content: "ok"},
-	}
-	if hasSuccessfulVerificationResult([]providertypes.ToolCall{bashVerifyCall}, missingCallIDResults) {
-		t.Fatalf("expected missing tool call id result to not count as verify passed")
+	if hasSuccessfulVerificationResult([]tools.ToolResult{
+		{Facts: tools.ToolExecutionFacts{VerificationPerformed: true, VerificationPassed: false}},
+		{Facts: tools.ToolExecutionFacts{VerificationPerformed: false, VerificationPassed: true}},
+	}) {
+		t.Fatalf("expected incomplete verification facts to be ignored")
 	}
 }

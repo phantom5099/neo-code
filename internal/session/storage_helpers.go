@@ -41,7 +41,7 @@ func resolvePathForContainment(path string) (string, error) {
 		return resolved, nil
 	}
 	if errors.Is(err, os.ErrPermission) {
-		return absPath, nil
+		return "", fmt.Errorf("eval symlinks: %w", err)
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		return "", fmt.Errorf("eval symlinks: %w", err)
@@ -52,7 +52,7 @@ func resolvePathForContainment(path string) (string, error) {
 		return filepath.Join(resolvedParent, filepath.Base(absPath)), nil
 	}
 	if errors.Is(parentErr, os.ErrPermission) {
-		return filepath.Join(parent, filepath.Base(absPath)), nil
+		return "", fmt.Errorf("eval parent symlinks: %w", parentErr)
 	}
 	return "", fmt.Errorf("eval parent symlinks: %w", parentErr)
 }

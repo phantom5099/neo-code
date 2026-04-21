@@ -131,17 +131,18 @@ func (s *Service) executeToolCallWithPermission(ctx context.Context, input permi
 	// 否则用户未及时响应会被误判为工具失败并进入调度重试/失败链路。
 	var decision approvalflow.Decision
 	var requestID string
-	if err := s.withTemporaryRunState(ctx, input.State, controlplane.RunStateWaitingPermission, func() error {
-		resolvedDecision, resolvedRequestID, waitErr := s.awaitPermissionDecision(ctx, input, permissionErr)
-		if waitErr != nil {
-			return waitErr
-		}
-		decision = resolvedDecision
-		requestID = resolvedRequestID
-		return nil
-	}); err != nil {
+	if err := s.enterTemporaryRunState(ctx, input.State, controlplane.RunStateWaitingPermission); err != nil {
 		return result, err
 	}
+	defer func() {
+		_ = s.leaveTemporaryRunState(ctx, input.State, controlplane.RunStateWaitingPermission)
+	}()
+	resolvedDecision, resolvedRequestID, waitErr := s.awaitPermissionDecision(ctx, input, permissionErr)
+	if waitErr != nil {
+		return result, waitErr
+	}
+	decision = resolvedDecision
+	requestID = resolvedRequestID
 
 	scope, err := rememberScopeFromDecision(decision)
 	if err != nil {

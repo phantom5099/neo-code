@@ -122,7 +122,7 @@ func (s *Service) Run(ctx context.Context, input UserInput) (err error) {
 
 	for turn := 0; ; turn++ {
 		state.turn = turn
-		if err := s.transitionRunState(ctx, &state, controlplane.RunStatePlan); err != nil {
+		if err := s.setBaseRunState(ctx, &state, controlplane.RunStatePlan); err != nil {
 			return s.handleRunError(ctx, state.runID, state.session.ID, err)
 		}
 
@@ -196,7 +196,6 @@ func (s *Service) Run(ctx context.Context, input UserInput) (err error) {
 					cloneTodosForPersistence(state.session.Todos),
 					cloneTodosForPersistence(state.session.Todos),
 					toolExecutionSummary{},
-					false,
 					snapshot.noProgressStreakLimit,
 					snapshot.repeatCycleStreakLimit,
 				)
@@ -210,7 +209,7 @@ func (s *Service) Run(ctx context.Context, input UserInput) (err error) {
 
 			beforeTask := state.session.TaskState.Clone()
 			beforeTodos := cloneTodosForPersistence(state.session.Todos)
-			if err := s.transitionRunState(ctx, &state, controlplane.RunStateExecute); err != nil {
+			if err := s.setBaseRunState(ctx, &state, controlplane.RunStateExecute); err != nil {
 				return s.handleRunError(ctx, state.runID, state.session.ID, err)
 			}
 			summary, err := s.executeAssistantToolCalls(ctx, &state, snapshot, turnResult.assistant)
@@ -229,7 +228,6 @@ func (s *Service) Run(ctx context.Context, input UserInput) (err error) {
 				beforeTodos,
 				afterTodos,
 				summary,
-				state.completion.LastTurnVerifyPassed,
 				snapshot.noProgressStreakLimit,
 				snapshot.repeatCycleStreakLimit,
 			)
@@ -238,7 +236,7 @@ func (s *Service) Run(ctx context.Context, input UserInput) (err error) {
 			state.mu.Unlock()
 
 			s.emitRunScoped(ctx, EventProgressEvaluated, &state, ProgressEvaluatedPayload{Score: currentScore})
-			if err := s.transitionRunState(ctx, &state, controlplane.RunStateVerify); err != nil {
+			if err := s.setBaseRunState(ctx, &state, controlplane.RunStateVerify); err != nil {
 				return s.handleRunError(ctx, state.runID, state.session.ID, err)
 			}
 			break
@@ -432,7 +430,14 @@ func (s *Service) applyCompactForState(
 	errorPolicy compactErrorPolicy,
 ) (bool, error) {
 	applied := false
-	err := s.withTemporaryRunState(ctx, state, controlplane.RunStateCompacting, func() error {
+	if err := s.enterTemporaryRunState(ctx, state, controlplane.RunStateCompacting); err != nil {
+		return false, err
+	}
+	defer func() {
+		_ = s.leaveTemporaryRunState(ctx, state, controlplane.RunStateCompacting)
+	}()
+
+	err := func() error {
 		session, result, compactErr := s.runCompactForSession(ctx, state.runID, state.session, cfg, mode, errorPolicy)
 		if compactErr != nil {
 			return compactErr
@@ -444,7 +449,7 @@ func (s *Service) applyCompactForState(
 			applied = true
 		}
 		return nil
-	})
+	}()
 	if err != nil {
 		return false, err
 	}

@@ -90,7 +90,7 @@ func (s *Service) executeAssistantToolCalls(
 			summary.HasSuccessfulWorkspaceWrite = true
 		}
 	}
-	summary.HasSuccessfulVerification = hasSuccessfulVerificationResult(summary.Calls, summary.Results)
+	summary.HasSuccessfulVerification = hasSuccessfulVerificationResult(summary.Results)
 	return summary, firstErr
 }
 
@@ -148,12 +148,12 @@ func (s *Service) executeOneToolCall(
 	}
 
 	if checkContext() {
-		return result, isSuccessfulWorkspaceWrite(result, execErr), ctx.Err()
+		return result, hasSuccessfulWorkspaceWriteFact(result, execErr), ctx.Err()
 	}
 	if execErr != nil {
 		return result, false, nil
 	}
-	return result, isSuccessfulWorkspaceWrite(result, execErr), nil
+	return result, hasSuccessfulWorkspaceWriteFact(result, execErr), nil
 }
 
 // resolveToolParallelism 计算本轮工具执行的并发上限，避免无界 goroutine 扩散。
@@ -239,15 +239,10 @@ func (s *Service) emitTodoToolEvent(
 	}
 }
 
-// isSuccessfulWorkspaceWrite 判断工具结果是否代表一次需要后续验证的工作区写入。
-func isSuccessfulWorkspaceWrite(result tools.ToolResult, execErr error) bool {
+// hasSuccessfulWorkspaceWriteFact 判断工具结果是否产出了成功写入事实。
+func hasSuccessfulWorkspaceWriteFact(result tools.ToolResult, execErr error) bool {
 	if execErr != nil || result.IsError {
 		return false
 	}
-	switch strings.TrimSpace(result.Name) {
-	case tools.ToolNameFilesystemWriteFile, tools.ToolNameFilesystemEdit:
-		return true
-	default:
-		return false
-	}
+	return result.Facts.WorkspaceWrite
 }

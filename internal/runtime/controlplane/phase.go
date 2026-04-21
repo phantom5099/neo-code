@@ -46,9 +46,10 @@ var allowedRunStateTransitions = map[RunState]map[RunState]struct{}{
 		RunStateStopped:           {},
 	},
 	RunStateCompacting: {
-		RunStateCompacting: {},
-		RunStatePlan:       {},
-		RunStateStopped:    {},
+		RunStateCompacting:        {},
+		RunStatePlan:              {},
+		RunStateWaitingPermission: {},
+		RunStateStopped:           {},
 	},
 	RunStateWaitingPermission: {
 		RunStateWaitingPermission: {},
