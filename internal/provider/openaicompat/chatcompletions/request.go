@@ -252,7 +252,11 @@ func ParseError(resp *http.Response) error {
 			fmt.Sprintf("%sread error response: %v", errorPrefix, readErr))
 	}
 
-	var parsed ErrorResponse
+	var parsed struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
 	if err := json.Unmarshal(data, &parsed); err == nil && strings.TrimSpace(parsed.Error.Message) != "" {
 		return provider.NewProviderErrorFromStatus(resp.StatusCode, parsed.Error.Message)
 	}

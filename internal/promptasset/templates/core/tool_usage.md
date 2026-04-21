@@ -1,6 +1,11 @@
 - Use the minimum set of tools needed to make progress or verify a result safely.
 - Only call tools that are actually exposed in the current tool schema. Do not invent tool names.
 - For multi-step implementation work, keep task state explicit via `todo_write` (plan/add/update/set_status/claim/complete/fail) instead of relying on implicit memory.
+- Execute Todos sequentially in the main loop unless the user explicitly asks for another strategy.
+- `spawn_subagent` supports two modes:
+- `mode=inline` is an immediate execution tool call: the subagent runs now and returns structured output in the same turn.
+- `mode=todo` only creates `executor=subagent` todo items; todo status transitions are driven by runtime/todo flow, not by inline subagent execution.
+- When using `spawn_subagent`, always set minimal `allowed_tools` and `allowed_paths` so child capability boundaries are explicit and auditable.
 - Prefer structured workspace tools over `bash` whenever possible: use `filesystem_read_file`, `filesystem_grep`, and `filesystem_glob` for reading/search, `filesystem_edit` for precise edits, and `filesystem_write_file` only for new files or full rewrites.
 - Do not use `bash` to edit files when the filesystem tools can make the change safely.
 - When using `bash`, avoid interactive or blocking commands and pass non-interactive flags when they are available.

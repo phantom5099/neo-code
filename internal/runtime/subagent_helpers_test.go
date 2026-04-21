@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -81,6 +82,9 @@ func TestBuildSubAgentInitialMessagesAndOutputParserEdges(t *testing.T) {
 	t.Parallel()
 
 	messages := buildSubAgentInitialMessages(subagent.StepInput{
+		Policy: subagent.RolePolicy{
+			AllowedTools: []string{"filesystem_read_file", "filesystem_grep"},
+		},
 		Task: subagent.Task{
 			ID:             "task-init",
 			Goal:           "goal",
@@ -92,12 +96,60 @@ func TestBuildSubAgentInitialMessagesAndOutputParserEdges(t *testing.T) {
 		},
 		Workdir: "/tmp/workdir",
 		Trace:   []string{"  one ", "", "two"},
+		Capability: subagent.Capability{
+			AllowedPaths: []string{"/tmp/workdir", "/tmp/workdir", " "},
+		},
 	})
 	if len(messages) != 1 {
 		t.Fatalf("len(messages) = %d, want 1", len(messages))
 	}
-	if text := messages[0].Parts[0].Text; text == "" {
+	text := messages[0].Parts[0].Text
+	if text == "" {
 		t.Fatalf("expected non-empty initial message")
+	}
+	if !strings.Contains(text, "allowed_tools: filesystem_read_file, filesystem_grep") {
+		t.Fatalf("expected allowed_tools in initial message, got %q", text)
+	}
+	if !strings.Contains(text, "allowed_paths:") || !strings.Contains(text, "- /tmp/workdir") {
+		t.Fatalf("expected allowed_paths in initial message, got %q", text)
+	}
+
+	prompt := buildSubAgentSystemPrompt(
+		subagent.RolePolicy{
+			SystemPrompt:        "role prompt",
+			ToolUseMode:         subagent.ToolUseModeAuto,
+			MaxToolCallsPerStep: 2,
+		},
+		[]string{"filesystem_read_file"},
+		[]string{"/tmp/workdir"},
+	)
+	if !strings.Contains(prompt, "allowed_tools: filesystem_read_file") {
+		t.Fatalf("expected allowed_tools in system prompt, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "allowed_paths:") || !strings.Contains(prompt, "- /tmp/workdir") {
+		t.Fatalf("expected allowed_paths in system prompt, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "spawn_subagent(mode=todo)") {
+		t.Fatalf("expected mode=todo responsibility guidance, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "只返回单个 JSON 对象") {
+		t.Fatalf("expected strict json output guidance, got %q", prompt)
+	}
+
+	emptyPrompt := buildSubAgentSystemPrompt(
+		subagent.RolePolicy{
+			SystemPrompt:        "role prompt",
+			ToolUseMode:         subagent.ToolUseModeAuto,
+			MaxToolCallsPerStep: 1,
+		},
+		nil,
+		nil,
+	)
+	if !strings.Contains(emptyPrompt, "allowed_tools: (none)") {
+		t.Fatalf("expected explicit empty allowed_tools marker, got %q", emptyPrompt)
+	}
+	if !strings.Contains(emptyPrompt, "allowed_paths: (none)") {
+		t.Fatalf("expected explicit empty allowed_paths marker, got %q", emptyPrompt)
 	}
 
 	if _, err := extractSubAgentJSONObject("{\"summary\":"); err == nil {

@@ -68,10 +68,6 @@ func (m *stubMutator) SetTodoStatus(id string, status agentsession.TodoStatus, e
 	return m.session.SetTodoStatus(id, status, expectedRevision)
 }
 
-func (m *stubMutator) RetryTodo(id string, expectedRevision int64) error {
-	return m.session.RetryTodo(id, expectedRevision)
-}
-
 func (m *stubMutator) DeleteTodo(id string, expectedRevision int64) error {
 	return m.session.DeleteTodo(id, expectedRevision)
 }

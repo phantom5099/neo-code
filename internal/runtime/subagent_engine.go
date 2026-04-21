@@ -94,6 +94,7 @@ func (e runtimeSubAgentEngine) RunStep(ctx context.Context, input subagent.StepI
 	}
 
 	allowedTools := resolveAllowedTools(input)
+	allowedPaths := resolveAllowedPaths(input)
 	toolSpecs, err := input.Executor.ListToolSpecs(ctx, subagent.ToolSpecListInput{
 		SessionID:    input.SessionID,
 		Role:         input.Role,
@@ -106,7 +107,7 @@ func (e runtimeSubAgentEngine) RunStep(ctx context.Context, input subagent.StepI
 		toolSpecs = nil
 	}
 
-	systemPrompt := buildSubAgentSystemPrompt(input.Policy, allowedTools)
+	systemPrompt := buildSubAgentSystemPrompt(input.Policy, allowedTools, allowedPaths)
 	messages := buildSubAgentInitialMessages(input)
 	totalToolCalls := 0
 	maxTurns := resolveSubAgentMaxTurns(input.Policy.DefaultBudget.MaxSteps)
@@ -302,6 +303,15 @@ func buildSubAgentInitialMessages(input subagent.StepInput) []providertypes.Mess
 	if workdir := strings.TrimSpace(input.Workdir); workdir != "" {
 		lines = append(lines, "workdir: "+workdir)
 	}
+	if allowedTools := resolveAllowedTools(input); len(allowedTools) > 0 {
+		lines = append(lines, "allowed_tools: "+strings.Join(allowedTools, ", "))
+	}
+	if allowedPaths := resolveAllowedPaths(input); len(allowedPaths) > 0 {
+		lines = append(lines, "allowed_paths:")
+		for _, allowedPath := range allowedPaths {
+			lines = append(lines, "- "+allowedPath)
+		}
+	}
 	if renderedSlice := strings.TrimSpace(input.Task.ContextSlice.Render()); renderedSlice != "" {
 		lines = append(lines, "", "context_slice:", renderedSlice)
 	}
@@ -322,20 +332,36 @@ func buildSubAgentInitialMessages(input subagent.StepInput) []providertypes.Mess
 	}}
 }
 
-// buildSubAgentSystemPrompt 构建子代理策略提示词，约束工具决策和输出契约。
-func buildSubAgentSystemPrompt(policy subagent.RolePolicy, allowedTools []string) string {
+// buildSubAgentSystemPrompt 构建子代理策略提示词，约束工具决策、能力边界与输出契约。
+func buildSubAgentSystemPrompt(policy subagent.RolePolicy, allowedTools []string, allowedPaths []string) string {
 	maxToolCallsPerStep := effectiveMaxToolCallsPerStep(policy.MaxToolCallsPerStep)
 	lines := []string{strings.TrimSpace(policy.SystemPrompt)}
 	lines = append(lines,
 		"你是子代理执行引擎的一部分，必须根据任务目标自主决定是否调用工具。",
 		"当需要外部事实、文件状态或命令执行结果时必须调用工具；纯推理可直接完成。",
+		"工具能力边界由 runtime 安全层强制执行，越权调用会收到 denied/tool error 结果，不允许绕过。",
+		"如需文件访问，只能访问 allowed_paths 范围内路径；如需工具调用，只能使用 allowed_tools 列表。",
+		"若父代理通过 spawn_subagent(mode=todo) 创建任务，你只处理当前 task，不直接驱动 todo 状态机。",
 		"工具失败后优先换参数或换工具，若仍失败则在输出中明确风险与后续动作。",
 		"最终输出必须是 JSON 对象，且必须包含键：summary, findings, patches, risks, next_actions, artifacts。",
+		"字段类型约束：summary(string)、findings/patches/risks/next_actions/artifacts(string数组)。",
+		"输出时只返回单个 JSON 对象，不要附加 Markdown 代码块、解释性前后缀或额外文本。",
+		"该 JSON 将被 runtime 直接解析并回传父代理，任何非 JSON 噪声都可能导致任务失败。",
 		fmt.Sprintf("tool_use_mode: %s", policy.ToolUseMode),
 		fmt.Sprintf("max_tool_calls_per_step: %d", maxToolCallsPerStep),
 	)
 	if len(allowedTools) > 0 {
 		lines = append(lines, "allowed_tools: "+strings.Join(allowedTools, ", "))
+	} else {
+		lines = append(lines, "allowed_tools: (none)")
+	}
+	if len(allowedPaths) > 0 {
+		lines = append(lines, "allowed_paths:")
+		for _, allowedPath := range allowedPaths {
+			lines = append(lines, "- "+allowedPath)
+		}
+	} else {
+		lines = append(lines, "allowed_paths: (none)")
 	}
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
@@ -346,6 +372,30 @@ func resolveAllowedTools(input subagent.StepInput) []string {
 		return append([]string(nil), input.Capability.AllowedTools...)
 	}
 	return append([]string(nil), input.Policy.AllowedTools...)
+}
+
+// resolveAllowedPaths 返回子代理当前步可访问的路径边界列表。
+func resolveAllowedPaths(input subagent.StepInput) []string {
+	if len(input.Capability.AllowedPaths) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(input.Capability.AllowedPaths))
+	paths := make([]string, 0, len(input.Capability.AllowedPaths))
+	for _, item := range input.Capability.AllowedPaths {
+		trimmed := strings.TrimSpace(item)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		paths = append(paths, trimmed)
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+	return paths
 }
 
 // resolveSubAgentMaxTurns 统一解析子代理单步内部最多可迭代的模型轮次。
