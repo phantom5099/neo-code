@@ -17,6 +17,8 @@ type toolExecutionSummary struct {
 	Results                     []tools.ToolResult
 	HasSuccessfulWorkspaceWrite bool
 	HasSuccessfulVerification   bool
+	LastSuccessfulWriteIndex    int
+	LastSuccessfulVerifyIndex   int
 }
 
 // collectCompletionState 基于当前运行态与本轮 assistant 行为生成 completion 输入。
@@ -32,10 +34,12 @@ func collectCompletionState(
 
 // applyToolExecutionCompletion 更新一轮工具执行后的 completion 事实。
 func applyToolExecutionCompletion(current controlplane.CompletionState, summary toolExecutionSummary) controlplane.CompletionState {
+	shouldClearUnverifiedWrites := summary.HasSuccessfulVerification &&
+		(!summary.HasSuccessfulWorkspaceWrite || summary.LastSuccessfulVerifyIndex > summary.LastSuccessfulWriteIndex)
 	if summary.HasSuccessfulWorkspaceWrite {
 		current.HasUnverifiedWrites = true
 	}
-	if summary.HasSuccessfulVerification {
+	if shouldClearUnverifiedWrites {
 		current.HasUnverifiedWrites = false
 	}
 	return current
@@ -205,12 +209,17 @@ func hasSuccessfulVerificationResult(results []tools.ToolResult) bool {
 		return false
 	}
 	for _, result := range results {
-		if result.IsError || !result.Facts.VerificationPerformed || !result.Facts.VerificationPassed {
+		if !isSuccessfulVerificationFact(result) {
 			continue
 		}
 		return true
 	}
 	return false
+}
+
+// isSuccessfulVerificationFact 判断单个工具结果是否包含可用的验证成功事实。
+func isSuccessfulVerificationFact(result tools.ToolResult) bool {
+	return !result.IsError && result.Facts.VerificationPerformed && result.Facts.VerificationPassed
 }
 
 // normalizeToolResultContent 对工具结果文本做稳定化裁剪，避免无关差异放大指纹抖动。

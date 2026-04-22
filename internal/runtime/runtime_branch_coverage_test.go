@@ -56,6 +56,42 @@ func TestResolveToolParallelismBounds(t *testing.T) {
 	}
 }
 
+func TestBuildFairToolExecutionQueueRoundRobin(t *testing.T) {
+	t.Parallel()
+
+	calls := []providertypes.ToolCall{
+		{ID: "1", Name: "bash"},
+		{ID: "2", Name: "bash"},
+		{ID: "3", Name: "filesystem_read_file"},
+		{ID: "4", Name: "bash"},
+		{ID: "5", Name: "filesystem_read_file"},
+	}
+
+	queue := buildFairToolExecutionQueue(calls)
+	if len(queue) != len(calls) {
+		t.Fatalf("queue length = %d, want %d", len(queue), len(calls))
+	}
+
+	gotIndexes := make([]int, 0, len(queue))
+	for _, item := range queue {
+		gotIndexes = append(gotIndexes, item.index)
+	}
+	wantIndexes := []int{0, 2, 1, 4, 3}
+	for i := range wantIndexes {
+		if gotIndexes[i] != wantIndexes[i] {
+			t.Fatalf("queue[%d] index = %d, want %d (full=%v)", i, gotIndexes[i], wantIndexes[i], gotIndexes)
+		}
+	}
+}
+
+func TestBuildFairToolExecutionQueueEmpty(t *testing.T) {
+	t.Parallel()
+
+	if queue := buildFairToolExecutionQueue(nil); queue != nil {
+		t.Fatalf("expected nil queue for empty input, got %#v", queue)
+	}
+}
+
 func TestRememberFirstErrorBranches(t *testing.T) {
 	t.Parallel()
 

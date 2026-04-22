@@ -31,10 +31,12 @@ func (s *Service) executeAssistantToolCalls(
 
 	parallelism := resolveToolParallelism(len(assistant.ToolCalls))
 	toolLocks := buildToolExecutionLocks(assistant.ToolCalls)
+	taskQueue := buildFairToolExecutionQueue(assistant.ToolCalls)
 	taskCh := make(chan indexedToolCall)
 	results := make([]tools.ToolResult, len(assistant.ToolCalls))
 	completed := make([]bool, len(assistant.ToolCalls))
 	writes := make([]bool, len(assistant.ToolCalls))
+	verifications := make([]bool, len(assistant.ToolCalls))
 	var mu sync.Mutex
 	var firstErr error
 	var workerWG sync.WaitGroup
@@ -60,6 +62,7 @@ func (s *Service) executeAssistantToolCalls(
 				results[task.index] = result
 				completed[task.index] = true
 				writes[task.index] = wrote
+				verifications[task.index] = isSuccessfulVerificationFact(result)
 				mu.Unlock()
 				if err != nil {
 					recordAndCancelOnFirstError(&mu, &firstErr, err, cancelExec)
@@ -68,18 +71,20 @@ func (s *Service) executeAssistantToolCalls(
 		}()
 	}
 
-	for index, call := range assistant.ToolCalls {
+	for _, task := range taskQueue {
 		if checkContext() {
 			break
 		}
-		taskCh <- indexedToolCall{index: index, call: call}
+		taskCh <- task
 	}
 
 	close(taskCh)
 	workerWG.Wait()
 
 	summary := toolExecutionSummary{
-		Calls: append([]providertypes.ToolCall(nil), assistant.ToolCalls...),
+		Calls:                     append([]providertypes.ToolCall(nil), assistant.ToolCalls...),
+		LastSuccessfulWriteIndex:  -1,
+		LastSuccessfulVerifyIndex: -1,
 	}
 	for index, ok := range completed {
 		if !ok {
@@ -88,9 +93,13 @@ func (s *Service) executeAssistantToolCalls(
 		summary.Results = append(summary.Results, results[index])
 		if writes[index] {
 			summary.HasSuccessfulWorkspaceWrite = true
+			summary.LastSuccessfulWriteIndex = index
+		}
+		if verifications[index] {
+			summary.HasSuccessfulVerification = true
+			summary.LastSuccessfulVerifyIndex = index
 		}
 	}
-	summary.HasSuccessfulVerification = hasSuccessfulVerificationResult(summary.Results)
 	return summary, firstErr
 }
 
@@ -177,6 +186,41 @@ func buildToolExecutionLocks(calls []providertypes.ToolCall) map[string]*sync.Mu
 		}
 	}
 	return locks
+}
+
+// buildFairToolExecutionQueue 以工具名轮转方式构建执行队列，降低同名调用造成的队首阻塞。
+func buildFairToolExecutionQueue(calls []providertypes.ToolCall) []indexedToolCall {
+	if len(calls) == 0 {
+		return nil
+	}
+
+	orderedKeys := make([]string, 0, len(calls))
+	queuedByKey := make(map[string][]indexedToolCall, len(calls))
+	for index, call := range calls {
+		key := normalizeToolLockKey(call.Name)
+		if _, exists := queuedByKey[key]; !exists {
+			orderedKeys = append(orderedKeys, key)
+		}
+		queuedByKey[key] = append(queuedByKey[key], indexedToolCall{index: index, call: call})
+	}
+
+	queue := make([]indexedToolCall, 0, len(calls))
+	for {
+		progressed := false
+		for _, key := range orderedKeys {
+			items := queuedByKey[key]
+			if len(items) == 0 {
+				continue
+			}
+			queue = append(queue, items[0])
+			queuedByKey[key] = items[1:]
+			progressed = true
+		}
+		if !progressed {
+			break
+		}
+	}
+	return queue
 }
 
 // normalizeToolLockKey 将工具名规范化为锁键，防止大小写差异导致重复并发执行。

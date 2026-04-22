@@ -42,6 +42,36 @@ func TestApplyToolExecutionCompletionTracksWriteAndVerification(t *testing.T) {
 	}
 }
 
+func TestApplyToolExecutionCompletionDoesNotClearWhenVerifyPrecedesLatestWrite(t *testing.T) {
+	t.Parallel()
+
+	current := controlplane.CompletionState{HasUnverifiedWrites: true}
+	next := applyToolExecutionCompletion(current, toolExecutionSummary{
+		HasSuccessfulWorkspaceWrite: true,
+		HasSuccessfulVerification:   true,
+		LastSuccessfulWriteIndex:    1,
+		LastSuccessfulVerifyIndex:   0,
+	})
+	if !next.HasUnverifiedWrites {
+		t.Fatalf("expected unverified writes to remain when verify precedes latest write, got %+v", next)
+	}
+}
+
+func TestApplyToolExecutionCompletionClearsWhenVerifyAfterLatestWrite(t *testing.T) {
+	t.Parallel()
+
+	current := controlplane.CompletionState{HasUnverifiedWrites: true}
+	next := applyToolExecutionCompletion(current, toolExecutionSummary{
+		HasSuccessfulWorkspaceWrite: true,
+		HasSuccessfulVerification:   true,
+		LastSuccessfulWriteIndex:    0,
+		LastSuccessfulVerifyIndex:   1,
+	})
+	if next.HasUnverifiedWrites {
+		t.Fatalf("expected verify after write to clear unverified writes, got %+v", next)
+	}
+}
+
 func TestHasPendingAgentTodosBlocksOnAnyNonTerminalTodo(t *testing.T) {
 	t.Parallel()
 
