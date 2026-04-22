@@ -27,6 +27,8 @@
 - `compact_applied`
 - `compact_error`
 
+当前事件 envelope 的唯一有效 `payload_version` 为 `3`。
+
 ## ReAct 主循环
 
 单次 run 的主链路为：
@@ -61,12 +63,14 @@ runtime 不再消费旧的 builder 压缩建议，而是使用冻结快照上的
 - `estimated_input_tokens`
 - `prompt_budget`
 - `estimate_source`
+- `estimate_accurate`
 
 语义：
 
 - `allow`：本轮请求在预算内
 - `compact`：首次超预算，需要先压缩
-- `stop`：压缩后仍超预算，停止当前 run
+- `stop`：压缩后仍超预算且估算高置信，停止当前 run
+- `allow` + `reason=exceeds_budget_inaccurate_after_compact_allow`：压缩后仍超预算但估算低置信，继续放行
 
 ## Context Builder 职责
 

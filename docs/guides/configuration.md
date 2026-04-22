@@ -101,10 +101,12 @@ prompt_budget = context_window - reserve_tokens
 
 ## 配置结构升级
 
-启动时会在严格解析 `config.yaml` 前执行一次结构升级：
+启动装配阶段会在严格解析 `config.yaml` 前执行一次 preflight 结构升级：
 
 - 仅当检测到 `context.auto_compact` 时，自动迁移为 `context.budget`。
 - 迁移前会写入 `config.yaml.bak`，原配置内容保留在备份中。
+- 如果旧配置显式 `context.auto_compact.enabled: false`，迁移仍会执行，并记录说明：
+  `旧 context.auto_compact.enabled 已废弃，新预算门禁不可关闭`。
 - 如果 `context.auto_compact` 与 `context.budget` 同时存在，程序会直接报错，避免猜测覆盖用户配置。
 - 主解析器仍只接受当前结构；迁移完成后不会在运行时兼容旧字段。
 
@@ -123,7 +125,8 @@ BuildRequest -> FreezeSnapshot -> EstimateInput -> DecideBudget -> (allow | comp
 - provider 发送前一定先做输入 token estimate。
 - 如果 estimate 没超过 `prompt_budget`，本轮允许发送。
 - 如果 estimate 首次超预算，先执行一次 `proactive` compact，然后重建请求并重新估算。
-- 如果 compact 后仍超预算，直接停止当前 run，并产出 `STOP_BUDGET_EXCEEDED`。
+- 如果 compact 后仍超预算且估算为高置信（`accurate=true`），停止当前 run，并产出 `STOP_BUDGET_EXCEEDED`。
+- 如果 compact 后仍超预算但估算为低置信（`accurate=false`），不直接硬停，继续发送请求。
 - 如果 provider 返回 `context_too_long`，runtime 会进入 `reactive` compact 恢复链路，并重新进入同一预算闭环。
 
 ## provider 策略
@@ -228,7 +231,7 @@ go run ./cmd/neocode --workdir /path/to/workspace
 
 当前版本会直接报未知字段或结构不匹配错误。处理方式是手动删除旧字段，而不是等待程序自动兼容。
 
-`context.auto_compact` 是例外：如果配置中只存在旧预算块，启动时会自动迁移为 `context.budget`；如果新旧预算块同时存在，则需要手动合并后再启动。
+`context.auto_compact` 是例外：如果配置中只存在旧预算块，启动 preflight 会自动迁移为 `context.budget`；如果新旧预算块同时存在，则需要手动合并后再启动。
 
 ### API Key 未设置
 

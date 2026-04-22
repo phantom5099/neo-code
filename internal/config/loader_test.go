@@ -117,7 +117,7 @@ shell: powershell
 	}
 }
 
-func TestLoaderUpgradesContextBudgetBeforeStrictParse(t *testing.T) {
+func TestLoaderDoesNotMigrateLegacyContextBudgetOnLoad(t *testing.T) {
 	t.Parallel()
 
 	loader := NewLoader(t.TempDir(), testDefaultConfig())
@@ -133,42 +133,23 @@ context:
 `
 	writeLoaderConfig(t, loader, raw)
 
-	cfg, err := loader.Load(context.Background())
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
+	_, err := loader.Load(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "field auto_compact not found") {
+		t.Fatalf("expected legacy auto_compact parse error, got %v", err)
 	}
-	if cfg.Context.Budget.PromptBudget != 120000 {
-		t.Fatalf("expected prompt_budget migrated, got %d", cfg.Context.Budget.PromptBudget)
+	if _, statErr := os.Stat(loader.ConfigPath() + ".bak"); !os.IsNotExist(statErr) {
+		t.Fatalf("expected no backup file written by loader, got %v", statErr)
 	}
-	if cfg.Context.Budget.ReserveTokens != 13000 {
-		t.Fatalf("expected reserve_tokens migrated, got %d", cfg.Context.Budget.ReserveTokens)
+	data, readErr := os.ReadFile(loader.ConfigPath())
+	if readErr != nil {
+		t.Fatalf("read config: %v", readErr)
 	}
-	if cfg.Context.Budget.FallbackPromptBudget != 100000 {
-		t.Fatalf("expected fallback_prompt_budget migrated, got %d", cfg.Context.Budget.FallbackPromptBudget)
-	}
-
-	data, err := os.ReadFile(loader.ConfigPath())
-	if err != nil {
-		t.Fatalf("read migrated config: %v", err)
-	}
-	text := string(data)
-	if strings.Contains(text, "auto_compact:") {
-		t.Fatalf("expected loader migration to remove auto_compact, got:\n%s", text)
-	}
-	if !strings.Contains(text, "budget:") {
-		t.Fatalf("expected loader migration to persist budget block, got:\n%s", text)
-	}
-
-	backup, err := os.ReadFile(loader.ConfigPath() + ".bak")
-	if err != nil {
-		t.Fatalf("read migration backup: %v", err)
-	}
-	if !strings.Contains(string(backup), "auto_compact:") {
-		t.Fatalf("expected backup to preserve original config, got:\n%s", backup)
+	if string(data) != strings.TrimSpace(raw)+"\n" {
+		t.Fatalf("loader should not rewrite config, got:\n%s", data)
 	}
 }
 
-func TestLoaderRejectsAmbiguousContextBudgetMigration(t *testing.T) {
+func TestLoaderRejectsLegacyAndCurrentContextBudgetMixWithoutPreflight(t *testing.T) {
 	t.Parallel()
 
 	loader := NewLoader(t.TempDir(), testDefaultConfig())
@@ -185,8 +166,8 @@ context:
 	writeLoaderConfig(t, loader, raw)
 
 	_, err := loader.Load(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "context.auto_compact and context.budget cannot both exist") {
-		t.Fatalf("expected ambiguous migration error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "field auto_compact not found") {
+		t.Fatalf("expected legacy auto_compact parse error, got %v", err)
 	}
 }
 

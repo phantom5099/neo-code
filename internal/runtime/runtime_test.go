@@ -4476,7 +4476,7 @@ func TestResolvePromptBudgetFallsBackWhenResolverErrors(t *testing.T) {
 	}
 }
 
-func TestServiceRunStopsWhenBudgetStillExceededAfterProactiveCompact(t *testing.T) {
+func TestServiceRunAllowsAfterProactiveCompactWhenEstimateInaccurate(t *testing.T) {
 	t.Parallel()
 
 	manager := newRuntimeConfigManager(t)
@@ -4500,9 +4500,14 @@ func TestServiceRunStopsWhenBudgetStillExceededAfterProactiveCompact(t *testing.
 				Accurate:             false,
 			}, nil
 		},
-		chatFn: func(ctx context.Context, req providertypes.GenerateRequest, events chan<- providertypes.StreamEvent) error {
-			t.Fatalf("Generate should not be called when budget decision stops before send")
-			return nil
+		responses: []scriptedResponse{
+			{
+				Message: providertypes.Message{
+					Role:  providertypes.RoleAssistant,
+					Parts: []providertypes.ContentPart{providertypes.NewTextPart("继续执行")},
+				},
+				FinishReason: "stop",
+			},
 		},
 	}
 
@@ -4527,7 +4532,7 @@ func TestServiceRunStopsWhenBudgetStillExceededAfterProactiveCompact(t *testing.
 	}
 
 	if err := service.Run(context.Background(), UserInput{
-		RunID: "run-budget-stop",
+		RunID: "run-budget-inaccurate-allow",
 		Parts: []providertypes.ContentPart{providertypes.NewTextPart("continue")},
 	}); err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -4540,12 +4545,14 @@ func TestServiceRunStopsWhenBudgetStillExceededAfterProactiveCompact(t *testing.
 	if compactRunner.calls[0].Mode != contextcompact.ModeProactive {
 		t.Fatalf("expected compact mode %q, got %q", contextcompact.ModeProactive, compactRunner.calls[0].Mode)
 	}
-	if scripted.callCount != 0 {
-		t.Fatalf("expected provider Generate to be skipped, got %d calls", scripted.callCount)
+	if scripted.callCount != 1 {
+		t.Fatalf("expected provider Generate to be called once, got %d calls", scripted.callCount)
 	}
 
 	events := collectRuntimeEvents(service.Events())
 	var budgetActions []string
+	var budgetReasons []string
+	var budgetAccuracies []bool
 	var stopPayload StopReasonDecidedPayload
 	for _, event := range events {
 		switch event.Type {
@@ -4555,6 +4562,8 @@ func TestServiceRunStopsWhenBudgetStillExceededAfterProactiveCompact(t *testing.
 				t.Fatalf("expected BudgetCheckedPayload, got %T", event.Payload)
 			}
 			budgetActions = append(budgetActions, payload.Action)
+			budgetReasons = append(budgetReasons, payload.Reason)
+			budgetAccuracies = append(budgetAccuracies, payload.EstimateAccurate)
 		case EventStopReasonDecided:
 			payload, ok := event.Payload.(StopReasonDecidedPayload)
 			if !ok {
@@ -4564,11 +4573,19 @@ func TestServiceRunStopsWhenBudgetStillExceededAfterProactiveCompact(t *testing.
 		}
 	}
 
-	if len(budgetActions) != 2 || budgetActions[0] != "compact" || budgetActions[1] != "stop" {
-		t.Fatalf("expected budget actions [compact stop], got %v", budgetActions)
+	if len(budgetActions) != 2 || budgetActions[0] != "compact" || budgetActions[1] != "allow" {
+		t.Fatalf("expected budget actions [compact allow], got %v", budgetActions)
 	}
-	if stopPayload.Reason != controlplane.StopReasonBudgetExceeded {
-		t.Fatalf("expected stop reason %q, got %q", controlplane.StopReasonBudgetExceeded, stopPayload.Reason)
+	if len(budgetReasons) != 2 ||
+		budgetReasons[0] != controlplane.BudgetDecisionReasonExceedsBudgetInaccurateFirstTime ||
+		budgetReasons[1] != controlplane.BudgetDecisionReasonExceedsBudgetInaccurateAfterCompactAllow {
+		t.Fatalf("unexpected budget reasons %v", budgetReasons)
+	}
+	if len(budgetAccuracies) != 2 || budgetAccuracies[0] || budgetAccuracies[1] {
+		t.Fatalf("expected inaccurate estimates, got %v", budgetAccuracies)
+	}
+	if stopPayload.Reason != controlplane.StopReasonCompleted {
+		t.Fatalf("expected stop reason %q, got %q", controlplane.StopReasonCompleted, stopPayload.Reason)
 	}
 }
 

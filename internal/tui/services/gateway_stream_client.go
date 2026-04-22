@@ -14,6 +14,8 @@ import (
 	"neo-code/internal/tools"
 )
 
+const runtimeEventPayloadVersion = 3
+
 // GatewayStreamClient 负责消费 gateway.event 并恢复为 TUI 事件。
 type GatewayStreamClient struct {
 	source <-chan gatewayRPCNotification
@@ -121,6 +123,13 @@ func decodeRuntimeEventFromGatewayNotification(notification gatewayRPCNotificati
 	}
 	if event.Timestamp.IsZero() {
 		event.Timestamp = time.Now().UTC()
+	}
+	if event.PayloadVersion != runtimeEventPayloadVersion {
+		return RuntimeEvent{}, fmt.Errorf(
+			"unsupported runtime payload_version: got %d want %d",
+			event.PayloadVersion,
+			runtimeEventPayloadVersion,
+		)
 	}
 
 	rawPayload, _ := streamReadMapValue(envelope, "payload")

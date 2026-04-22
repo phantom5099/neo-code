@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -16,17 +17,22 @@ type ContextBudgetMigrationResult struct {
 	Changed bool
 	Backup  string
 	Reason  string
+	Notes   []string
 }
+
+const (
+	// ContextBudgetMigrationNoteEnabledDeprecated 标记旧开关被废弃且预算门禁不可关闭。
+	ContextBudgetMigrationNoteEnabledDeprecated = "旧 context.auto_compact.enabled 已废弃，新预算门禁不可关闭"
+)
 
 // DefaultConfigPath 返回当前用户环境下的默认主配置文件路径。
 func DefaultConfigPath() string {
 	return filepath.Join(defaultBaseDir(), configName)
 }
 
-// UpgradeConfigSchemaBeforeLoad 在严格解析配置前执行一次磁盘结构升级。
-func UpgradeConfigSchemaBeforeLoad(path string) error {
-	_, err := MigrateContextBudgetConfigFile(path, false)
-	return err
+// UpgradeConfigSchema 执行配置 schema 升级并返回迁移结果。
+func UpgradeConfigSchema(path string) (ContextBudgetMigrationResult, error) {
+	return MigrateContextBudgetConfigFile(path, false)
 }
 
 // MigrateContextBudgetConfigFile 将 config.yaml 中的 context.auto_compact 迁移到 context.budget。
@@ -44,10 +50,11 @@ func MigrateContextBudgetConfigFile(path string, dryRun bool) (ContextBudgetMigr
 		return result, fmt.Errorf("config: read migration target %s: %w", path, err)
 	}
 
-	migrated, changed, err := MigrateContextBudgetConfigContent(raw)
+	migrated, changed, notes, err := MigrateContextBudgetConfigContent(raw)
 	if err != nil {
 		return result, fmt.Errorf("config: migrate %s: %w", path, err)
 	}
+	result.Notes = append(result.Notes, notes...)
 	if !changed {
 		result.Reason = "未检测到 context.auto_compact"
 		return result, nil
@@ -69,44 +76,45 @@ func MigrateContextBudgetConfigFile(path string, dryRun bool) (ContextBudgetMigr
 	return result, nil
 }
 
-// MigrateContextBudgetConfigContent 将旧预算 YAML 块替换为当前预算 YAML 块。
-func MigrateContextBudgetConfigContent(raw []byte) ([]byte, bool, error) {
+// MigrateContextBudgetConfigContent 将旧预算 YAML 块替换为当前预算 YAML 块，并返回迁移说明。
+func MigrateContextBudgetConfigContent(raw []byte) ([]byte, bool, []string, error) {
 	if len(bytes.TrimSpace(raw)) == 0 {
-		return raw, false, nil
+		return raw, false, nil, nil
 	}
 	if !bytes.Contains(raw, []byte("auto_compact")) {
-		return raw, false, nil
+		return raw, false, nil, nil
 	}
 
 	var doc map[string]any
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
-		return nil, false, err
+		return nil, false, nil, err
 	}
 	contextValue, ok := doc["context"]
 	if !ok {
-		return raw, false, nil
+		return raw, false, nil, nil
 	}
 	contextMap, ok := migrationStringMap(contextValue)
 	if !ok {
-		return nil, false, errors.New("context must be a mapping")
+		return nil, false, nil, errors.New("context must be a mapping")
 	}
 
 	autoValue, hasAutoCompact := contextMap["auto_compact"]
 	if !hasAutoCompact {
-		return raw, false, nil
+		return raw, false, nil, nil
 	}
 	if _, hasBudget := contextMap["budget"]; hasBudget {
-		return nil, false, errors.New("context.auto_compact and context.budget cannot both exist")
+		return nil, false, nil, errors.New("context.auto_compact and context.budget cannot both exist")
 	}
 
 	autoMap, ok := migrationStringMap(autoValue)
 	if !ok {
-		return nil, false, errors.New("context.auto_compact must be a mapping")
+		return nil, false, nil, errors.New("context.auto_compact must be a mapping")
 	}
 	budgetMap := make(map[string]any)
 	migrationMoveField(autoMap, budgetMap, "input_token_threshold", "prompt_budget")
 	migrationMoveField(autoMap, budgetMap, "reserve_tokens", "reserve_tokens")
 	migrationMoveField(autoMap, budgetMap, "fallback_input_token_threshold", "fallback_prompt_budget")
+	notes := collectContextBudgetMigrationNotes(autoMap)
 
 	delete(contextMap, "auto_compact")
 	contextMap["budget"] = budgetMap
@@ -114,9 +122,29 @@ func MigrateContextBudgetConfigContent(raw []byte) ([]byte, bool, error) {
 
 	out, err := yaml.Marshal(doc)
 	if err != nil {
-		return nil, false, err
+		return nil, false, nil, err
 	}
-	return out, true, nil
+	return out, true, notes, nil
+}
+
+// collectContextBudgetMigrationNotes 汇总迁移过程中需要提示给用户的行为变化说明。
+func collectContextBudgetMigrationNotes(autoCompact map[string]any) []string {
+	if value, ok := autoCompact["enabled"]; ok && migrationExplicitFalse(value) {
+		return []string{ContextBudgetMigrationNoteEnabledDeprecated}
+	}
+	return nil
+}
+
+// migrationExplicitFalse 判断迁移字段是否显式配置为 false。
+func migrationExplicitFalse(value any) bool {
+	switch typed := value.(type) {
+	case bool:
+		return !typed
+	case string:
+		return strings.EqualFold(strings.TrimSpace(typed), "false")
+	default:
+		return false
+	}
 }
 
 // migrationMoveField 在两个 YAML map 之间迁移字段名，不修改字段值。

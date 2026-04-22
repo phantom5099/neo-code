@@ -60,6 +60,82 @@ func TestNewProgram(t *testing.T) {
 	}
 }
 
+func TestBuildSharedConfigDepsRunsConfigMigrationPreflight(t *testing.T) {
+	disableBuiltinProviderAPIKeys(t)
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("OPENAI_API_KEY", "test-key")
+
+	configDir := filepath.Join(home, ".neocode")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	configPath := filepath.Join(configDir, "config.yaml")
+	raw := strings.TrimSpace(`
+selected_provider: openai
+current_model: gpt-5.4
+shell: powershell
+context:
+  auto_compact:
+    enabled: false
+    reserve_tokens: 14000
+`) + "\n"
+	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	originalLogf := bootstrapLogf
+	t.Cleanup(func() { bootstrapLogf = originalLogf })
+	var logs []string
+	bootstrapLogf = func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	}
+
+	shared, _, _, err := BuildSharedConfigDeps(context.Background(), BootstrapOptions{})
+	if err != nil {
+		t.Fatalf("BuildSharedConfigDeps() error = %v", err)
+	}
+	if shared.Config.Context.Budget.ReserveTokens != 14000 {
+		t.Fatalf("expected migrated reserve_tokens=14000, got %d", shared.Config.Context.Budget.ReserveTokens)
+	}
+
+	migrated, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read migrated config: %v", err)
+	}
+	text := string(migrated)
+	if strings.Contains(text, "auto_compact:") || !strings.Contains(text, "budget:") {
+		t.Fatalf("expected migrated budget block, got:\n%s", text)
+	}
+	if _, err := os.Stat(configPath + ".bak"); err != nil {
+		t.Fatalf("expected migration backup file: %v", err)
+	}
+	if len(logs) == 0 {
+		t.Fatalf("expected preflight migration logs")
+	}
+	joined := strings.Join(logs, "\n")
+	if !strings.Contains(joined, config.ContextBudgetMigrationNoteEnabledDeprecated) {
+		t.Fatalf("expected migration note log, got:\n%s", joined)
+	}
+}
+
+func TestBuildSharedConfigDepsReturnsPreflightError(t *testing.T) {
+	disableBuiltinProviderAPIKeys(t)
+
+	originalPreflight := runConfigMigrationPreflight
+	t.Cleanup(func() { runConfigMigrationPreflight = originalPreflight })
+	runConfigMigrationPreflight = func(context.Context, string) error {
+		return errors.New("preflight failed")
+	}
+
+	_, _, _, err := BuildSharedConfigDeps(context.Background(), BootstrapOptions{})
+	if err == nil || !strings.Contains(err.Error(), "preflight failed") {
+		t.Fatalf("expected preflight error, got %v", err)
+	}
+}
+
 func TestNewProgramNormalizesInvalidCurrentModelOnStartup(t *testing.T) {
 	disableBuiltinProviderAPIKeys(t)
 	originalFactory := newRemoteRuntimeAdapter

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"log"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -36,12 +37,14 @@ import (
 const utf8CodePage = 65001
 
 var (
-	setConsoleOutputCodePage = platformSetConsoleOutputCodePage
-	setConsoleInputCodePage  = platformSetConsoleInputCodePage
-	buildToolManagerFunc     = buildToolManager
-	newRemoteRuntimeAdapter  = defaultNewRemoteRuntimeAdapter
-	newTUIWithMemo           = tuiapp.NewWithMemo
-	cleanupExpiredSessions   = func(
+	setConsoleOutputCodePage    = platformSetConsoleOutputCodePage
+	setConsoleInputCodePage     = platformSetConsoleInputCodePage
+	buildToolManagerFunc        = buildToolManager
+	newRemoteRuntimeAdapter     = defaultNewRemoteRuntimeAdapter
+	newTUIWithMemo              = tuiapp.NewWithMemo
+	runConfigMigrationPreflight = defaultRunConfigMigrationPreflight
+	bootstrapLogf               = log.Printf
+	cleanupExpiredSessions      = func(
 		ctx context.Context,
 		store agentsession.Store,
 		maxAge time.Duration,
@@ -274,6 +277,9 @@ func BuildSharedConfigDeps(
 
 	loader := config.NewLoader("", defaultCfg)
 	manager := config.NewManager(loader)
+	if err := runConfigMigrationPreflight(ctx, manager.ConfigPath()); err != nil {
+		return bootstrapSharedBundle{}, nil, nil, err
+	}
 	if _, err := manager.Load(ctx); err != nil {
 		return bootstrapSharedBundle{}, nil, nil, err
 	}
@@ -293,6 +299,37 @@ func BuildSharedConfigDeps(
 		ConfigManager:     manager,
 		ProviderSelection: providerSelection,
 	}, providerRegistry, modelCatalogs, nil
+}
+
+// defaultRunConfigMigrationPreflight 在启动装配阶段执行 schema 迁移，并记录一次迁移结果。
+func defaultRunConfigMigrationPreflight(ctx context.Context, configPath string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, err := os.Stat(configPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	result, err := config.UpgradeConfigSchema(configPath)
+	if err != nil {
+		return err
+	}
+	if !result.Changed && len(result.Notes) == 0 {
+		return nil
+	}
+	if result.Changed {
+		if result.Backup != "" {
+			bootstrapLogf("config migration: migrated %s (backup: %s)", result.Path, result.Backup)
+		} else {
+			bootstrapLogf("config migration: migrated %s", result.Path)
+		}
+	}
+	for _, note := range result.Notes {
+		bootstrapLogf("config migration: note: %s", strings.TrimSpace(note))
+	}
+	return nil
 }
 
 // BuildTUIClientDeps 构建 TUI 客户端依赖，仅保留配置与 Provider 选择，不创建本地 runtime/tool 栈。

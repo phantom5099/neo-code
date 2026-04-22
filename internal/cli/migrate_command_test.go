@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"neo-code/internal/config"
 )
 
 func TestMigrateContextBudgetCommandDryRunSkipsGlobalHooks(t *testing.T) {
@@ -92,5 +94,35 @@ func TestMigrateContextBudgetCommandWritesBackup(t *testing.T) {
 	}
 	if strings.Contains(string(migrated), "auto_compact") || !strings.Contains(string(migrated), "budget:") {
 		t.Fatalf("unexpected migrated config:\n%s", migrated)
+	}
+}
+
+func TestMigrateContextBudgetCommandPrintsMigrationNotes(t *testing.T) {
+	originalPreload := runGlobalPreload
+	originalSilentCheck := runSilentUpdateCheck
+	t.Cleanup(func() {
+		runGlobalPreload = originalPreload
+		runSilentUpdateCheck = originalSilentCheck
+	})
+	runGlobalPreload = func(context.Context) error { return nil }
+	runSilentUpdateCheck = func(context.Context) {}
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "config.yaml")
+	original := "context:\n  auto_compact:\n    enabled: false\n    reserve_tokens: 13000\n"
+	if err := os.WriteFile(target, []byte(original), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	cmd := NewRootCommand()
+	cmd.SetOut(&stdout)
+	cmd.SetArgs([]string{"migrate", "context-budget", "--config", target})
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext() error = %v", err)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "说明: "+config.ContextBudgetMigrationNoteEnabledDeprecated) {
+		t.Fatalf("expected migration note in output, got %q", out)
 	}
 }

@@ -14,7 +14,7 @@ type migrateContextBudgetOptions struct {
 	DryRun     bool
 }
 
-// newMigrateCommand 构建一次性迁移命令集合，迁移逻辑不接入主配置加载路径。
+// newMigrateCommand 构建一次性迁移命令集合，命令可手动触发，启动 preflight 也会自动执行迁移。
 func newMigrateCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:          "migrate",
@@ -55,6 +55,9 @@ func newMigrateContextBudgetCommand() *cobra.Command {
 // printContextBudgetMigrationResult 输出迁移结果，确保 dry-run 和真实写入提示保持一致。
 func printContextBudgetMigrationResult(cmd *cobra.Command, result config.ContextBudgetMigrationResult, dryRun bool) {
 	writer := cmd.OutOrStdout()
+	for _, note := range result.Notes {
+		_, _ = fmt.Fprintf(writer, "说明: %s\n", strings.TrimSpace(note))
+	}
 	if !result.Changed {
 		_, _ = fmt.Fprintf(writer, "跳过: %s (%s)\n", result.Path, result.Reason)
 		return

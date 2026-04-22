@@ -36,6 +36,7 @@ type BudgetCheckedPayload struct {
 	EstimatedInputTokens int    `json:"estimated_input_tokens"`
 	PromptBudget         int    `json:"prompt_budget"`
 	EstimateSource       string `json:"estimate_source,omitempty"`
+	EstimateAccurate     bool   `json:"estimate_accurate"`
 }
 
 // ProgressEvaluatedPayload 汇总 progress 控制面的评估结果。
@@ -70,6 +71,7 @@ func newBudgetCheckedPayload(decision controlplane.TurnBudgetDecision) BudgetChe
 		EstimatedInputTokens: decision.EstimatedInputTokens,
 		PromptBudget:         decision.PromptBudget,
 		EstimateSource:       decision.EstimateSource,
+		EstimateAccurate:     decision.EstimateAccurate,
 	}
 }
 

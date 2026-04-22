@@ -117,9 +117,6 @@ func (l *Loader) Load(ctx context.Context) (*Config, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if err := UpgradeConfigSchemaBeforeLoad(l.ConfigPath()); err != nil {
-		return nil, err
-	}
 
 	data, err := os.ReadFile(l.ConfigPath())
 	if err != nil {

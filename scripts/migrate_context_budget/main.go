@@ -33,6 +33,9 @@ func main() {
 
 // printMigrationResult 输出迁移结果，保持脚本与打包 CLI 的用户提示一致。
 func printMigrationResult(result config.ContextBudgetMigrationResult, dryRun bool) {
+	for _, note := range result.Notes {
+		fmt.Printf("说明: %s\n", strings.TrimSpace(note))
+	}
 	if !result.Changed {
 		fmt.Printf("跳过: %s (%s)\n", result.Path, result.Reason)
 		return

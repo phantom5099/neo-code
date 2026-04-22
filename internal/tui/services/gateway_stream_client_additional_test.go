@@ -3,6 +3,7 @@ package services
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -53,6 +54,7 @@ func TestDecodeRuntimeEventFromGatewayNotificationUsesCurrentTimeWhenTimestampMi
 		Action: gateway.FrameActionRun,
 		Payload: map[string]any{
 			"runtime_event_type": string(EventError),
+			"payload_version":    runtimeEventPayloadVersion,
 			"payload":            "boom",
 		},
 	})
@@ -64,6 +66,28 @@ func TestDecodeRuntimeEventFromGatewayNotificationUsesCurrentTimeWhenTimestampMi
 	}
 	if event.Timestamp.Before(before) {
 		t.Fatalf("event timestamp should fallback to now, got %v", event.Timestamp)
+	}
+}
+
+func TestDecodeRuntimeEventFromGatewayNotificationRejectsPayloadVersionMismatch(t *testing.T) {
+	t.Parallel()
+
+	notification := buildGatewayEventNotification(t, gateway.MessageFrame{
+		Type:   gateway.FrameTypeEvent,
+		Action: gateway.FrameActionRun,
+		Payload: map[string]any{
+			"runtime_event_type": string(EventError),
+			"payload_version":    runtimeEventPayloadVersion - 1,
+			"payload":            "boom",
+		},
+	})
+
+	_, err := decodeRuntimeEventFromGatewayNotification(notification)
+	if err == nil {
+		t.Fatalf("expected payload version mismatch error")
+	}
+	if got := err.Error(); got == "" || !containsAll(got, "payload_version", "want") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -271,6 +295,7 @@ func TestGatewayStreamClientRunSkipsNonGatewayEventsAndStopsOnClose(t *testing.T
 		Action: gateway.FrameActionRun,
 		Payload: map[string]any{
 			"runtime_event_type": string(EventAgentChunk),
+			"payload_version":    runtimeEventPayloadVersion,
 			"payload":            "ok",
 		},
 	})
@@ -290,6 +315,15 @@ func TestGatewayStreamClientRunSkipsNonGatewayEventsAndStopsOnClose(t *testing.T
 	if err := client.Close(); err != nil {
 		t.Fatalf("Close() second call error = %v", err)
 	}
+}
+
+func containsAll(input string, subs ...string) bool {
+	for _, sub := range subs {
+		if !strings.Contains(input, sub) {
+			return false
+		}
+	}
+	return true
 }
 
 func TestGatewayStreamClientRunStopsWhenSourceClosed(t *testing.T) {
@@ -436,6 +470,7 @@ func TestGatewayStreamDecodeAndEnvelopeExtraBranches(t *testing.T) {
 		Action: gateway.FrameActionRun,
 		Payload: map[string]any{
 			"runtime_event_type": string(EventToolResult),
+			"payload_version":    runtimeEventPayloadVersion,
 			"payload":            "not-an-object",
 		},
 	})
