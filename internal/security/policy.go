@@ -144,10 +144,11 @@ func (e *PolicyEngine) Check(ctx context.Context, action Action) (CheckResult, e
 }
 
 // NewRecommendedPolicyEngine 返回推荐安全策略：
-// git 语义命令均需审批，filesystem write=ask，filesystem read敏感路径=ask/deny，webfetch 白名单 allow 其余 ask。
+// git 只读语义默认放行（受语义解析和安全拦截约束），其余 git 语义需审批，filesystem write=ask，
+// filesystem read 敏感路径=ask/deny，webfetch 白名单 allow 其余 ask。
 func NewRecommendedPolicyEngine() (*PolicyEngine, error) {
 	const (
-		reasonAskGitReadOnly      = "git read-only operation requires approval"
+		reasonAllowGitReadOnly    = "git read-only operation allowed by policy"
 		reasonAskGitRemote        = "git remote operation requires approval"
 		reasonAskGitDestructive   = "git destructive operation requires approval"
 		reasonAskGitMutation      = "git local mutation requires approval"
@@ -187,10 +188,10 @@ func NewRecommendedPolicyEngine() (*PolicyEngine, error) {
 			RequireHostMatch:     false,
 		},
 		{
-			ID:               "ask-bash-git-read-only",
+			ID:               "allow-bash-git-read-only",
 			Priority:         860,
-			Decision:         DecisionAsk,
-			Reason:           reasonAskGitReadOnly,
+			Decision:         DecisionAllow,
+			Reason:           reasonAllowGitReadOnly,
 			ActionTypes:      []ActionType{ActionTypeBash},
 			ResourcePatterns: []string{"bash_git_read_only"},
 		},

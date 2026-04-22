@@ -22,7 +22,7 @@ func TestPolicyEngineRecommendedRules(t *testing.T) {
 		wantRuleID   string
 	}{
 		{
-			name: "git read-only bash ask",
+			name: "git read-only bash allow",
 			action: Action{
 				Type: ActionTypeBash,
 				Payload: ActionPayload{
@@ -37,8 +37,8 @@ func TestPolicyEngineRecommendedRules(t *testing.T) {
 					PermissionFingerprint: "bash.git|read_only|status",
 				},
 			},
-			wantDecision: DecisionAsk,
-			wantRuleID:   "ask-bash-git-read-only",
+			wantDecision: DecisionAllow,
+			wantRuleID:   "allow-bash-git-read-only",
 		},
 		{
 			name: "git remote bash ask",
