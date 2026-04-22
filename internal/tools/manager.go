@@ -593,8 +593,15 @@ func splitPathSegments(path string) []string {
 
 // sandboxErrorDetails 生成可回灌给模型的沙箱拒绝详情，便于模型正确感知失败原因。
 func sandboxErrorDetails(action security.Action, sandboxErr error) string {
+	securityMessage := strings.TrimSpace(errorMessage(sandboxErr))
+	if securityMessage == "" {
+		securityMessage = "sandbox rejected action"
+	}
+	if !strings.HasPrefix(strings.ToLower(securityMessage), "security:") {
+		securityMessage = "security: " + securityMessage
+	}
 	parts := []string{
-		"security: " + strings.TrimSpace(errorMessage(sandboxErr)),
+		securityMessage,
 	}
 	if workdir := strings.TrimSpace(action.Payload.Workdir); workdir != "" {
 		parts = append(parts, "workdir: "+workdir)

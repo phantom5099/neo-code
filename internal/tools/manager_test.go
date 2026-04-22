@@ -709,7 +709,7 @@ func TestSandboxErrorDetailsIncludesWorkspaceContext(t *testing.T) {
 
 	details := sandboxErrorDetails(action, errors.New("security: path escapes workspace root"))
 	for _, fragment := range []string{
-		"security: security: path escapes workspace root",
+		"security: path escapes workspace root",
 		"workdir: " + action.Payload.Workdir,
 		"target: " + action.Payload.Target,
 		"sandbox_target: " + action.Payload.SandboxTarget,
@@ -717,6 +717,11 @@ func TestSandboxErrorDetailsIncludesWorkspaceContext(t *testing.T) {
 		if !strings.Contains(details, fragment) {
 			t.Fatalf("expected details containing %q, got %q", fragment, details)
 		}
+	}
+
+	withoutPrefix := sandboxErrorDetails(action, errors.New("path escapes workspace root"))
+	if !strings.Contains(withoutPrefix, "security: path escapes workspace root") {
+		t.Fatalf("expected details to normalize security prefix, got %q", withoutPrefix)
 	}
 }
 
