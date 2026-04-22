@@ -183,9 +183,9 @@ func parseGitCommandParts(tokens []string) (string, []string, []string, bool) {
 				value = strings.ToLower(strings.TrimSpace(tokens[cursor]))
 			}
 			if value == "" {
-				globalFlags = append(globalFlags, strings.ToLower(key))
+				globalFlags = append(globalFlags, canonicalizeGitFlagKey(key))
 			} else {
-				globalFlags = append(globalFlags, strings.ToLower(key)+"="+value)
+				globalFlags = append(globalFlags, canonicalizeGitFlagKey(key)+"="+value)
 			}
 			continue
 		}
@@ -342,9 +342,9 @@ func normalizeGitArgs(tokens []string) ([]string, []string) {
 				value = strings.ToLower(strings.TrimSpace(tokens[idx]))
 			}
 			if value == "" {
-				flags = append(flags, strings.ToLower(key))
+				flags = append(flags, canonicalizeGitFlagKey(key))
 			} else {
-				flags = append(flags, strings.ToLower(key)+"="+value)
+				flags = append(flags, canonicalizeGitFlagKey(key)+"="+value)
 			}
 			continue
 		}
@@ -363,6 +363,15 @@ func splitGitFlagToken(token string) (string, string) {
 		return key, value
 	}
 	return trimmed, ""
+}
+
+// canonicalizeGitFlagKey 规范化 flag key，保留短参数大小写语义并统一长参数大小写。
+func canonicalizeGitFlagKey(key string) string {
+	trimmed := strings.TrimSpace(key)
+	if strings.HasPrefix(trimmed, "--") {
+		return strings.ToLower(trimmed)
+	}
+	return trimmed
 }
 
 // shouldConsumeGitFlagValue 判断当前 flag 是否应消费后继值。
@@ -439,16 +448,19 @@ func classifyGitIntent(subcommand string, flags []string, args []string) string 
 
 // hasRiskyGitConfigFlag 判断是否包含可能改变 Git 执行语义的配置注入参数。
 func hasRiskyGitConfigFlag(flags []string) bool {
-	return hasGitFlag(flags, "-c", "--config-env")
+	for _, raw := range flags {
+		key := gitFlagKey(raw)
+		if key == "-c" || strings.EqualFold(key, "--config-env") {
+			return true
+		}
+	}
+	return false
 }
 
 // hasGitFlag 判断 flags 中是否命中指定 flag（支持 key=value 形式）。
 func hasGitFlag(flags []string, candidates ...string) bool {
 	for _, raw := range flags {
-		key := raw
-		if idx := strings.Index(key, "="); idx > 0 {
-			key = key[:idx]
-		}
+		key := gitFlagKey(raw)
 		for _, candidate := range candidates {
 			if strings.EqualFold(key, candidate) {
 				return true
@@ -469,16 +481,22 @@ func hasGitArgument(args []string, candidate string) bool {
 	return false
 }
 
+// gitFlagKey 提取并归一化 flag key，去除前后空白与 key=value 的 value 段。
+func gitFlagKey(raw string) string {
+	key := strings.TrimSpace(raw)
+	if idx := strings.Index(key, "="); idx > 0 {
+		key = key[:idx]
+	}
+	return strings.TrimSpace(key)
+}
+
 // buildNormalizedGitIntent 构造用于展示的稳定 git 语义文本，避免暴露原始参数。
 func buildNormalizedGitIntent(subcommand string, flags []string, args []string) string {
 	parts := []string{"git", subcommand}
 	if len(flags) > 0 {
 		keys := make([]string, 0, len(flags))
 		for _, flag := range flags {
-			key := strings.TrimSpace(flag)
-			if idx := strings.Index(key, "="); idx > 0 {
-				key = key[:idx]
-			}
+			key := gitFlagKey(flag)
 			if key == "" {
 				continue
 			}

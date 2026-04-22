@@ -82,6 +82,14 @@ func TestAnalyzeBashCommandClassifiesGitCommand(t *testing.T) {
 			wantPrefix: "bash.git|unknown|status",
 		},
 		{
+			name:       "git push with uppercase -C keeps remote classification",
+			command:    "git -C ../repo push origin main",
+			wantIsGit:  true,
+			wantClass:  BashIntentClassificationRemoteOp,
+			wantSubcmd: "push",
+			wantPrefix: "bash.git|remote_op|push",
+		},
+		{
 			name:        "non git command is unknown",
 			command:     "Get-ChildItem -Force",
 			wantIsGit:   false,

@@ -482,6 +482,7 @@ func TestAppendToolMessageAndSaveMarksExitCodeNonZeroAsError(t *testing.T) {
 		{name: "int", exitCode: 1},
 		{name: "string", exitCode: "2"},
 		{name: "float", exitCode: 3.0},
+		{name: "float fractional", exitCode: 0.5},
 	}
 
 	for _, tt := range tests {

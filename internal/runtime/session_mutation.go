@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"math"
 	"strconv"
 	"strings"
 
@@ -215,9 +216,9 @@ func parseToolResultExitCode(raw any) (int, bool) {
 	case uint64:
 		return int(value), true
 	case float32:
-		return int(value), true
+		return parseFloatExitCode(float64(value))
 	case float64:
-		return int(value), true
+		return parseFloatExitCode(value)
 	case string:
 		trimmed := strings.TrimSpace(value)
 		if trimmed == "" {
@@ -231,6 +232,24 @@ func parseToolResultExitCode(raw any) (int, bool) {
 	default:
 		return 0, false
 	}
+}
+
+// parseFloatExitCode 将浮点退出码折叠为稳定整数，避免 0<|x|<1 被截断为 0。
+func parseFloatExitCode(value float64) (int, bool) {
+	if value == 0 {
+		return 0, true
+	}
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return 0, false
+	}
+	parsed := int(value)
+	if parsed == 0 {
+		if value > 0 {
+			return 1, true
+		}
+		return -1, true
+	}
+	return parsed, true
 }
 
 // createSessionInputFromSession 将运行态 session 转为建库时使用的会话头输入。
