@@ -101,15 +101,19 @@ func normalizeToolMessageForPersistence(call providertypes.ToolCall, result tool
 
 	sanitizedMetadata := tools.SanitizeToolMetadata(toolName, result.Metadata)
 	content := result.Content
-	if !result.IsError && strings.TrimSpace(content) == "" && !hasNonToolNameToolMetadata(sanitizedMetadata) {
+	isError := result.IsError || toolResultMarkedFailed(result.Metadata)
+	if !isError && strings.TrimSpace(content) == "" && !hasNonToolNameToolMetadata(sanitizedMetadata) {
 		content = "ok"
+	}
+	if isError && strings.TrimSpace(content) == "" {
+		content = "tool execution failed (ok=false)"
 	}
 
 	return providertypes.Message{
 		Role:         providertypes.RoleTool,
 		Parts:        []providertypes.ContentPart{providertypes.NewTextPart(content)},
 		ToolCallID:   call.ID,
-		IsError:      result.IsError,
+		IsError:      isError,
 		ToolMetadata: sanitizedMetadata,
 	}
 }
@@ -122,6 +126,19 @@ func hasNonToolNameToolMetadata(metadata map[string]string) bool {
 		}
 	}
 	return false
+}
+
+// toolResultMarkedFailed 根据工具元数据中的 ok 字段判断是否应强制标记为失败。
+func toolResultMarkedFailed(metadata map[string]any) bool {
+	if len(metadata) == 0 {
+		return false
+	}
+	raw, exists := metadata["ok"]
+	if !exists {
+		return false
+	}
+	ok, cast := raw.(bool)
+	return cast && !ok
 }
 
 // createSessionInputFromSession 将运行态 session 转为建库时使用的会话头输入。

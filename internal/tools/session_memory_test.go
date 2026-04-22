@@ -153,6 +153,17 @@ func TestSessionPermissionCategoryAndActionKey(t *testing.T) {
 			expected: "bash",
 		},
 		{
+			name: "bash git category",
+			action: security.Action{
+				Type: security.ActionTypeBash,
+				Payload: security.ActionPayload{
+					SemanticType:  "git",
+					SemanticClass: BashIntentClassificationRemoteOp,
+				},
+			},
+			expected: "bash_git_remote_op",
+		},
+		{
 			name: "mcp with target",
 			action: security.Action{
 				Type: security.ActionTypeMCP,
@@ -337,10 +348,11 @@ func TestSessionPermissionMemoryResolveMatchesNormalizedCommandScope(t *testing.
 	remembered := security.Action{
 		Type: security.ActionTypeBash,
 		Payload: security.ActionPayload{
-			ToolName:   "bash",
-			Resource:   "bash",
-			TargetType: security.TargetTypeCommand,
-			Target:     "Get-ChildItem   -Force\r\n|   Select-String    'TODO'",
+			ToolName:              "bash",
+			Resource:              "bash",
+			TargetType:            security.TargetTypeCommand,
+			Target:                "Get-ChildItem   -Force\r\n|   Select-String    'TODO'",
+			PermissionFingerprint: "bash.command.get-childitem -force | select-string 'todo'",
 		},
 	}
 	if err := memory.remember(sessionID, remembered, SessionPermissionScopeAlways); err != nil {
@@ -350,13 +362,40 @@ func TestSessionPermissionMemoryResolveMatchesNormalizedCommandScope(t *testing.
 	normalizedEquivalent := security.Action{
 		Type: security.ActionTypeBash,
 		Payload: security.ActionPayload{
-			ToolName:   "bash",
-			Resource:   "bash",
-			TargetType: security.TargetTypeCommand,
-			Target:     "Get-ChildItem -Force | Select-String 'TODO'",
+			ToolName:              "bash",
+			Resource:              "bash",
+			TargetType:            security.TargetTypeCommand,
+			Target:                "Get-ChildItem -Force | Select-String 'TODO'",
+			PermissionFingerprint: "bash.command.get-childitem -force | select-string 'todo'",
 		},
 	}
 	if _, _, ok := memory.resolve(sessionID, normalizedEquivalent); !ok {
 		t.Fatalf("expected normalized-equivalent command to hit session memory")
+	}
+}
+
+func TestSessionPermissionMemorySkipsRemoteGitRemember(t *testing.T) {
+	t.Parallel()
+
+	memory := newSessionPermissionMemory()
+	sessionID := "session-git-remote-no-cache"
+	remoteAction := security.Action{
+		Type: security.ActionTypeBash,
+		Payload: security.ActionPayload{
+			ToolName:              "bash",
+			Resource:              "bash_git_remote_op",
+			TargetType:            security.TargetTypeCommand,
+			Target:                "git push origin main",
+			SemanticType:          "git",
+			SemanticClass:         BashIntentClassificationRemoteOp,
+			PermissionFingerprint: "bash.git|remote_op|push|a=origin,main",
+		},
+	}
+
+	if err := memory.remember(sessionID, remoteAction, SessionPermissionScopeAlways); err != nil {
+		t.Fatalf("remember remote action: %v", err)
+	}
+	if _, _, ok := memory.resolve(sessionID, remoteAction); ok {
+		t.Fatalf("expected remote git action not to be cached")
 	}
 }

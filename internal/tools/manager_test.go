@@ -621,7 +621,7 @@ func TestSandboxOutsideWriteUtilityHelpers(t *testing.T) {
 				SandboxTarget: "/tmp/final.txt",
 			},
 		}
-		if got := resolveActionSandboxTargetPath(actionWithSandboxTarget); filepath.Clean(got) != filepath.Clean("/tmp/final.txt") {
+		if got := resolveActionSandboxTargetPath(actionWithSandboxTarget); !strings.HasSuffix(filepath.ToSlash(got), "/tmp/final.txt") {
 			t.Fatalf("expected sandbox target to win, got %q", got)
 		}
 	})
@@ -672,7 +672,7 @@ func TestSandboxOutsideWriteUtilityHelpers(t *testing.T) {
 		if !isSystemProtectedPathForOS(`C:\Users\tester\AppData\Roaming\config`, "windows") {
 			t.Fatalf("expected appdata path to be protected")
 		}
-		if !isSystemProtectedPathForOS(`C:`, "windows") {
+		if !isSystemProtectedPathForOS(`C:\`, "windows") {
 			t.Fatalf("expected windows drive root to be protected")
 		}
 		if isSystemProtectedPathForOS(`C:\Users\tester\Desktop\note.txt`, "windows") {
@@ -1470,6 +1470,9 @@ func TestBuildPermissionAction(t *testing.T) {
 		wantResource string
 		wantTarget   string
 		wantSandbox  string
+		wantSemantic string
+		wantClass    string
+		wantFPPrefix string
 		wantErr      string
 	}{
 		{
@@ -1482,6 +1485,8 @@ func TestBuildPermissionAction(t *testing.T) {
 			wantResource: "bash",
 			wantTarget:   "echo hi",
 			wantSandbox:  "scripts",
+			wantClass:    BashIntentClassificationUnknown,
+			wantFPPrefix: "bash.command|sha256=",
 		},
 		{
 			name: "bash defaults sandbox workdir to dot",
@@ -1493,6 +1498,36 @@ func TestBuildPermissionAction(t *testing.T) {
 			wantResource: "bash",
 			wantTarget:   "echo hi",
 			wantSandbox:  ".",
+			wantClass:    BashIntentClassificationUnknown,
+			wantFPPrefix: "bash.command|sha256=",
+		},
+		{
+			name: "git read-only bash maps semantic resource",
+			input: ToolCallInput{
+				Name:      "bash",
+				Arguments: []byte(`{"command":"git status --short --branch"}`),
+			},
+			wantType:     security.ActionTypeBash,
+			wantResource: "bash_git_read_only",
+			wantTarget:   "git status --short --branch",
+			wantSandbox:  ".",
+			wantSemantic: "git",
+			wantClass:    BashIntentClassificationReadOnly,
+			wantFPPrefix: "bash.git|read_only|status",
+		},
+		{
+			name: "git remote bash maps semantic resource",
+			input: ToolCallInput{
+				Name:      "bash",
+				Arguments: []byte(`{"command":"git push origin main"}`),
+			},
+			wantType:     security.ActionTypeBash,
+			wantResource: "bash_git_remote_op",
+			wantTarget:   "git push origin main",
+			wantSandbox:  ".",
+			wantSemantic: "git",
+			wantClass:    BashIntentClassificationRemoteOp,
+			wantFPPrefix: "bash.git|remote_op|push",
 		},
 		{
 			name: "read file maps to read action",
@@ -1637,6 +1672,15 @@ func TestBuildPermissionAction(t *testing.T) {
 			}
 			if action.Payload.SandboxTarget != tt.wantSandbox {
 				t.Fatalf("expected sandbox target %q, got %q", tt.wantSandbox, action.Payload.SandboxTarget)
+			}
+			if action.Payload.SemanticType != tt.wantSemantic {
+				t.Fatalf("expected semantic type %q, got %q", tt.wantSemantic, action.Payload.SemanticType)
+			}
+			if action.Payload.SemanticClass != tt.wantClass {
+				t.Fatalf("expected semantic class %q, got %q", tt.wantClass, action.Payload.SemanticClass)
+			}
+			if tt.wantFPPrefix != "" && !strings.HasPrefix(action.Payload.PermissionFingerprint, tt.wantFPPrefix) {
+				t.Fatalf("expected permission fingerprint prefix %q, got %q", tt.wantFPPrefix, action.Payload.PermissionFingerprint)
 			}
 		})
 	}
