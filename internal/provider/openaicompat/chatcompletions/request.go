@@ -3,18 +3,24 @@ package chatcompletions
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 
 	"neo-code/internal/provider"
 	providertypes "neo-code/internal/provider/types"
+	"neo-code/internal/session"
 )
 
 const errorPrefix = "openaicompat provider: "
 
-const maxSessionAssetReadBytes = providertypes.MaxSessionAssetBytes
-const maxSessionAssetsTotalBytes = providertypes.MaxSessionAssetsTotalBytes
+const maxSessionAssetReadBytes = session.MaxSessionAssetBytes
+const maxSessionAssetsTotalBytes = provider.MaxSessionAssetsTotalBytes
+
+const htmlErrorSnippetMaxRunes = 320
 
 // BuildRequest 将 provider.GenerateRequest 转换为 Chat Completions 请求结构。
 // 模型优先取 req.Model，其次使用配置中的默认模型。
@@ -32,7 +38,8 @@ func BuildRequest(ctx context.Context, cfg provider.RuntimeConfig, req providert
 		Stream:   true,
 		Messages: make([]Message, 0, len(req.Messages)+1),
 	}
-	assetLimits := providertypes.NormalizeSessionAssetLimits(cfg.SessionAssetLimits)
+	assetPolicy := session.NormalizeAssetPolicy(cfg.SessionAssetPolicy)
+	requestBudget := provider.NormalizeRequestAssetBudget(cfg.RequestAssetBudget, assetPolicy.MaxSessionAssetBytes)
 
 	if strings.TrimSpace(req.SystemPrompt) != "" {
 		payload.Messages = append(payload.Messages, Message{
@@ -43,13 +50,14 @@ func BuildRequest(ctx context.Context, cfg provider.RuntimeConfig, req providert
 
 	var usedSessionAssetBytes int64
 	for _, message := range req.Messages {
-		remainingSessionAssetBytes := assetLimits.MaxSessionAssetsTotalBytes - usedSessionAssetBytes
+		remainingSessionAssetBytes := requestBudget.MaxSessionAssetsTotalBytes - usedSessionAssetBytes
 		msg, consumedBytes, err := toOpenAIMessageWithBudget(
 			ctx,
 			message,
 			req.SessionAssetReader,
 			remainingSessionAssetBytes,
-			assetLimits,
+			assetPolicy.MaxSessionAssetBytes,
+			requestBudget,
 		)
 		if err != nil {
 			return Request{}, err
@@ -89,7 +97,8 @@ func ToOpenAIMessage(ctx context.Context, message providertypes.Message, assetRe
 		message,
 		assetReader,
 		maxSessionAssetsTotalBytes,
-		providertypes.DefaultSessionAssetLimits(),
+		session.DefaultAssetPolicy().MaxSessionAssetBytes,
+		provider.DefaultRequestAssetBudget(),
 	)
 	return msg, err
 }
@@ -100,9 +109,10 @@ func ToOpenAIMessageWithBudget(
 	message providertypes.Message,
 	assetReader providertypes.SessionAssetReader,
 	remainingAssetBudget int64,
-	assetLimits providertypes.SessionAssetLimits,
+	maxSessionAssetBytes int64,
+	requestBudget provider.RequestAssetBudget,
 ) (Message, int64, error) {
-	return toOpenAIMessageWithBudget(ctx, message, assetReader, remainingAssetBudget, assetLimits)
+	return toOpenAIMessageWithBudget(ctx, message, assetReader, remainingAssetBudget, maxSessionAssetBytes, requestBudget)
 }
 
 // toOpenAIMessageWithBudget 将通用 Message 转换为 OpenAI 协议消息格式，并记录 session_asset 消耗字节数。
@@ -111,9 +121,9 @@ func toOpenAIMessageWithBudget(
 	message providertypes.Message,
 	assetReader providertypes.SessionAssetReader,
 	remainingAssetBudget int64,
-	assetLimits providertypes.SessionAssetLimits,
+	maxSessionAssetBytes int64,
+	requestBudget provider.RequestAssetBudget,
 ) (Message, int64, error) {
-	normalizedAssetLimits := providertypes.NormalizeSessionAssetLimits(assetLimits)
 	if remainingAssetBudget < 0 {
 		remainingAssetBudget = 0
 	}
@@ -170,17 +180,18 @@ func toOpenAIMessageWithBudget(
 					if assetReader == nil {
 						return Message{}, 0, errors.New("session_asset reader is not configured")
 					}
-					imageURL, readBytes, err := resolveSessionAssetDataURL(
+					imageURL, consumedBudgetBytes, err := resolveSessionAssetDataURL(
 						ctx,
 						assetReader,
 						part.Image.Asset,
 						remainingAssetBudget-usedAssetBytes,
-						normalizedAssetLimits,
+						maxSessionAssetBytes,
+						requestBudget,
 					)
 					if err != nil {
 						return Message{}, 0, err
 					}
-					usedAssetBytes += readBytes
+					usedAssetBytes += consumedBudgetBytes
 					contentParts = append(contentParts, MessageContentPart{
 						Type: "image_url",
 						ImageURL: &ImageURL{
@@ -220,18 +231,149 @@ func resolveSessionAssetDataURL(
 	assetReader providertypes.SessionAssetReader,
 	asset *providertypes.AssetRef,
 	remainingBudget int64,
-	assetLimits providertypes.SessionAssetLimits,
+	maxSessionAssetBytes int64,
+	requestBudget provider.RequestAssetBudget,
 ) (string, int64, error) {
 	normalizedMime, data, readBytes, err := provider.ReadSessionAssetImage(
 		ctx,
 		assetReader,
 		asset,
 		remainingBudget,
-		assetLimits,
+		maxSessionAssetBytes,
+		requestBudget,
 	)
 	if err != nil {
 		return "", 0, err
 	}
+	normalizedBudget := provider.NormalizeRequestAssetBudget(requestBudget, maxSessionAssetBytes)
+	transportBytes := provider.EstimateDataURLTransportBytes(readBytes, normalizedMime)
+	if transportBytes > remainingBudget {
+		return "", 0, fmt.Errorf("session_asset total exceeds %d bytes", normalizedBudget.MaxSessionAssetsTotalBytes)
+	}
 	encoded := base64.StdEncoding.EncodeToString(data)
-	return fmt.Sprintf("data:%s;base64,%s", normalizedMime, encoded), readBytes, nil
+	return fmt.Sprintf("data:%s;base64,%s", normalizedMime, encoded), transportBytes, nil
+}
+
+// ParseError 解析 HTTP 错误响应并包装为 ProviderError。
+func ParseError(resp *http.Response) error {
+	if resp == nil {
+		return provider.NewProviderErrorFromStatus(0, errorPrefix+"empty http response")
+	}
+	data, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return provider.NewProviderErrorFromStatus(resp.StatusCode,
+			fmt.Sprintf("%sread error response: %v", errorPrefix, readErr))
+	}
+
+	var parsed struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(data, &parsed); err == nil && strings.TrimSpace(parsed.Error.Message) != "" {
+		return provider.NewProviderErrorFromStatus(resp.StatusCode, parsed.Error.Message)
+	}
+
+	contentType := normalizeErrorContentType(resp.Header.Get("Content-Type"))
+	bodyText := strings.TrimSpace(string(data))
+	if bodyText == "" {
+		return provider.NewProviderErrorFromStatus(resp.StatusCode, resp.Status)
+	}
+	if isLikelyHTMLError(contentType, bodyText) {
+		return provider.NewProviderErrorFromStatus(
+			resp.StatusCode,
+			formatHTMLErrorMessage(resp.Status, contentType, bodyText),
+		)
+	}
+
+	return provider.NewProviderErrorFromStatus(resp.StatusCode, bodyText)
+}
+
+// normalizeErrorContentType 归一化错误响应 content-type，仅保留 media type 并转小写。
+func normalizeErrorContentType(contentType string) string {
+	mediaType := strings.TrimSpace(strings.ToLower(contentType))
+	if mediaType == "" {
+		return ""
+	}
+	if index := strings.Index(mediaType, ";"); index >= 0 {
+		mediaType = strings.TrimSpace(mediaType[:index])
+	}
+	return mediaType
+}
+
+// isLikelyHTMLError 判断错误响应是否为 HTML 页面，兼容 header 缺失时的 body 特征识别。
+func isLikelyHTMLError(contentType string, body string) bool {
+	if strings.Contains(contentType, "text/html") || strings.Contains(contentType, "application/xhtml+xml") {
+		return true
+	}
+	normalized := strings.ToLower(strings.TrimSpace(body))
+	return strings.HasPrefix(normalized, "<!doctype html") ||
+		strings.HasPrefix(normalized, "<html") ||
+		strings.Contains(normalized, "<body") ||
+		strings.Contains(normalized, "</html>")
+}
+
+// formatHTMLErrorMessage 将 HTML 错误统一收敛为结构化摘要，避免把整段网页内容暴露给上层。
+func formatHTMLErrorMessage(status string, contentType string, body string) string {
+	trimmedStatus := strings.TrimSpace(status)
+	if trimmedStatus == "" {
+		trimmedStatus = "unknown"
+	}
+	trimmedType := strings.TrimSpace(contentType)
+	if trimmedType == "" {
+		trimmedType = "text/html"
+	}
+	snippet := extractErrorSnippet(body, htmlErrorSnippetMaxRunes)
+	lines := []string{
+		"upstream returned html error payload",
+		"status: " + trimmedStatus,
+		"content_type: " + trimmedType,
+	}
+	if snippet != "" {
+		lines = append(lines, "snippet: "+snippet)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// extractErrorSnippet 提取单行错误摘要，优先去掉 HTML 标签并限制最大字符数。
+func extractErrorSnippet(body string, maxRunes int) string {
+	plain := stripHTMLTags(body)
+	if strings.TrimSpace(plain) == "" {
+		plain = body
+	}
+	normalized := strings.Join(strings.Fields(strings.TrimSpace(plain)), " ")
+	if normalized == "" || maxRunes <= 0 {
+		return ""
+	}
+	runes := []rune(normalized)
+	if len(runes) <= maxRunes {
+		return normalized
+	}
+	return string(runes[:maxRunes]) + "..."
+}
+
+// stripHTMLTags 使用轻量扫描移除 HTML 标签，降低错误摘要中的噪声。
+func stripHTMLTags(content string) string {
+	if strings.TrimSpace(content) == "" {
+		return ""
+	}
+	var builder strings.Builder
+	inTag := false
+	for _, r := range content {
+		switch r {
+		case '<':
+			inTag = true
+			continue
+		case '>':
+			if inTag {
+				inTag = false
+				builder.WriteRune(' ')
+				continue
+			}
+		}
+		if !inTag {
+			builder.WriteRune(r)
+		}
+	}
+	return builder.String()
 }

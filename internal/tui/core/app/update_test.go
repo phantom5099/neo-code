@@ -19,6 +19,7 @@ import (
 	"neo-code/internal/provider"
 	providertypes "neo-code/internal/provider/types"
 	agentsession "neo-code/internal/session"
+	"neo-code/internal/skills"
 	"neo-code/internal/tools"
 	tuibootstrap "neo-code/internal/tui/bootstrap"
 	agentruntime "neo-code/internal/tui/services"
@@ -105,24 +106,38 @@ func (s stubProviderService) CreateCustomProvider(
 }
 
 type stubRuntime struct {
-	events          chan agentruntime.RuntimeEvent
-	prepareInputs   []agentruntime.PrepareInput
-	prepareErr      error
-	preparedOutput  agentruntime.UserInput
-	runInputs       []agentruntime.UserInput
-	systemToolCalls []agentruntime.SystemToolInput
-	systemToolRes   tools.ToolResult
-	systemToolErr   error
-	resolveCalls    []agentruntime.PermissionResolutionInput
-	resolveErr      error
-	cancelInvoked   bool
-	listSessions    []agentsession.Summary
-	listSessionsErr error
-	loadSessions    map[string]agentsession.Session
-	loadSessionErr  error
-	logEntriesBySID map[string][]agentruntime.SessionLogEntry
-	loadLogErr      error
-	saveLogErr      error
+	events             chan agentruntime.RuntimeEvent
+	prepareInputs      []agentruntime.PrepareInput
+	prepareErr         error
+	preparedOutput     agentruntime.UserInput
+	runInputs          []agentruntime.UserInput
+	systemToolCalls    []agentruntime.SystemToolInput
+	systemToolRes      tools.ToolResult
+	systemToolErr      error
+	resolveCalls       []agentruntime.PermissionResolutionInput
+	resolveErr         error
+	cancelInvoked      bool
+	listSessions       []agentsession.Summary
+	listSessionsErr    error
+	loadSessions       map[string]agentsession.Session
+	loadSessionErr     error
+	logEntriesBySID    map[string][]agentruntime.SessionLogEntry
+	loadLogErr         error
+	saveLogErr         error
+	activateSkillCalls []struct {
+		SessionID string
+		SkillID   string
+	}
+	activateSkillErr     error
+	deactivateSkillCalls []struct {
+		SessionID string
+		SkillID   string
+	}
+	deactivateSkillErr    error
+	sessionSkillsResult   []agentruntime.SessionSkillState
+	sessionSkillsErr      error
+	availableSkillsResult []agentruntime.AvailableSkillState
+	availableSkillsErr    error
 }
 
 type snapshotRuntime struct {
@@ -222,15 +237,39 @@ func (s *stubRuntime) LoadSession(ctx context.Context, id string) (agentsession.
 }
 
 func (s *stubRuntime) ActivateSessionSkill(ctx context.Context, sessionID string, skillID string) error {
-	return nil
+	s.activateSkillCalls = append(s.activateSkillCalls, struct {
+		SessionID string
+		SkillID   string
+	}{
+		SessionID: sessionID,
+		SkillID:   skillID,
+	})
+	return s.activateSkillErr
 }
 
 func (s *stubRuntime) DeactivateSessionSkill(ctx context.Context, sessionID string, skillID string) error {
-	return nil
+	s.deactivateSkillCalls = append(s.deactivateSkillCalls, struct {
+		SessionID string
+		SkillID   string
+	}{
+		SessionID: sessionID,
+		SkillID:   skillID,
+	})
+	return s.deactivateSkillErr
 }
 
 func (s *stubRuntime) ListSessionSkills(ctx context.Context, sessionID string) ([]agentruntime.SessionSkillState, error) {
-	return nil, nil
+	if s.sessionSkillsErr != nil {
+		return nil, s.sessionSkillsErr
+	}
+	return append([]agentruntime.SessionSkillState(nil), s.sessionSkillsResult...), nil
+}
+
+func (s *stubRuntime) ListAvailableSkills(ctx context.Context, sessionID string) ([]agentruntime.AvailableSkillState, error) {
+	if s.availableSkillsErr != nil {
+		return nil, s.availableSkillsErr
+	}
+	return append([]agentruntime.AvailableSkillState(nil), s.availableSkillsResult...), nil
 }
 
 func (s *stubRuntime) LoadSessionLogEntries(ctx context.Context, sessionID string) ([]agentruntime.SessionLogEntry, error) {
@@ -1971,6 +2010,112 @@ func TestHandleRememberAndForgetValidation(t *testing.T) {
 	}
 	if len(app.activeMessages) == 0 || !strings.Contains(messageText(app.activeMessages[len(app.activeMessages)-1]), "Usage") {
 		t.Fatalf("expected usage message for empty /forget")
+	}
+}
+
+func TestHandleSkillsSlashCommands(t *testing.T) {
+	app, runtime := newTestApp(t)
+	app.state.ActiveSessionID = "session-skills"
+	runtime.availableSkillsResult = []agentruntime.AvailableSkillState{
+		{
+			Descriptor: skills.Descriptor{
+				ID:          "go-review",
+				Description: "review go code",
+				Source:      skills.Source{Kind: skills.SourceKindLocal},
+				Scope:       skills.ScopeSession,
+				Version:     "v1",
+			},
+			Active: true,
+		},
+	}
+
+	handled, cmd := app.handleImmediateSlashCommand("/skills")
+	if !handled || cmd == nil {
+		t.Fatalf("expected /skills command to return async cmd")
+	}
+	model, _ := app.Update(cmd())
+	app = model.(App)
+	if !strings.Contains(app.state.StatusText, "Available skills:") {
+		t.Fatalf("expected available skill notice, got %q", app.state.StatusText)
+	}
+	if len(app.activeMessages) == 0 || !strings.Contains(messageText(app.activeMessages[len(app.activeMessages)-1]), "go-review") {
+		t.Fatalf("expected transcript to include listed skill")
+	}
+}
+
+func TestHandleSkillUseOffAndActiveCommands(t *testing.T) {
+	app, runtime := newTestApp(t)
+	app.state.ActiveSessionID = "session-skills"
+	runtime.sessionSkillsResult = []agentruntime.SessionSkillState{
+		{SkillID: "go-review", Descriptor: &skills.Descriptor{ID: "go-review", Description: "review"}},
+	}
+
+	handled, cmd := app.handleImmediateSlashCommand("/skill use go-review")
+	if !handled || cmd == nil {
+		t.Fatalf("expected /skill use to produce command")
+	}
+	model, _ := app.Update(cmd())
+	app = model.(App)
+	if len(runtime.activateSkillCalls) != 1 || runtime.activateSkillCalls[0].SkillID != "go-review" {
+		t.Fatalf("unexpected activate calls: %+v", runtime.activateSkillCalls)
+	}
+	if !strings.Contains(app.state.StatusText, "Skill activated") {
+		t.Fatalf("expected activate notice, got %q", app.state.StatusText)
+	}
+
+	handled, cmd = app.handleImmediateSlashCommand("/skill off go-review")
+	if !handled || cmd == nil {
+		t.Fatalf("expected /skill off to produce command")
+	}
+	model, _ = app.Update(cmd())
+	app = model.(App)
+	if len(runtime.deactivateSkillCalls) != 1 || runtime.deactivateSkillCalls[0].SkillID != "go-review" {
+		t.Fatalf("unexpected deactivate calls: %+v", runtime.deactivateSkillCalls)
+	}
+	if !strings.Contains(app.state.StatusText, "Skill deactivated") {
+		t.Fatalf("expected deactivate notice, got %q", app.state.StatusText)
+	}
+
+	handled, cmd = app.handleImmediateSlashCommand("/skill active")
+	if !handled || cmd == nil {
+		t.Fatalf("expected /skill active to produce command")
+	}
+	model, _ = app.Update(cmd())
+	app = model.(App)
+	if !strings.Contains(app.state.StatusText, "Active skills:") {
+		t.Fatalf("expected active skill listing, got %q", app.state.StatusText)
+	}
+}
+
+func TestHandleSkillCommandValidationAndGatewayErrors(t *testing.T) {
+	app, runtime := newTestApp(t)
+
+	handled, cmd := app.handleImmediateSlashCommand("/skill use go-review")
+	if !handled || cmd != nil {
+		t.Fatalf("expected missing session branch handled without cmd")
+	}
+	if !strings.Contains(app.state.StatusText, "requires an active session") {
+		t.Fatalf("expected missing session hint, got %q", app.state.StatusText)
+	}
+
+	app.state.ActiveSessionID = "session-skills"
+	handled, cmd = app.handleImmediateSlashCommand("/skills now")
+	if !handled || cmd != nil {
+		t.Fatalf("expected /skills with args to reject usage")
+	}
+	if !strings.Contains(app.state.StatusText, "usage: /skills") {
+		t.Fatalf("expected /skills usage error, got %q", app.state.StatusText)
+	}
+
+	runtime.activateSkillErr = agentruntime.ErrUnsupportedActionInGatewayMode
+	handled, cmd = app.handleImmediateSlashCommand("/skill use go-review")
+	if !handled || cmd == nil {
+		t.Fatalf("expected /skill use to produce cmd on gateway error")
+	}
+	model, _ := app.Update(cmd())
+	app = model.(App)
+	if !strings.Contains(strings.ToLower(app.state.StatusText), "gateway") {
+		t.Fatalf("expected gateway unsupported hint, got %q", app.state.StatusText)
 	}
 }
 
@@ -4056,4 +4201,84 @@ func TestRebuildActivityWithHeightAndPersistPathGuard(t *testing.T) {
 
 	app.state.ActiveSessionID = "___"
 	app.persistLogEntriesForActiveSession()
+}
+
+func updateWithSkillCommandResult(t *testing.T, app App, result skillCommandResultMsg) App {
+	t.Helper()
+
+	model, _ := app.Update(result)
+	return model.(App)
+}
+
+func assertIgnoredStaleSkillResultActivity(t *testing.T, app App, beforeActivities int, wantError bool) tuistate.ActivityEntry {
+	t.Helper()
+
+	if len(app.activities) != beforeActivities+1 {
+		t.Fatalf("expected stale skill result to be logged, got %d activities", len(app.activities))
+	}
+	last := app.activities[len(app.activities)-1]
+	if last.Title != "Ignored stale skill command result" {
+		t.Fatalf("expected stale result activity title, got %q", last.Title)
+	}
+	if last.IsError != wantError {
+		t.Fatalf("expected stale result error flag=%v, got %v", wantError, last.IsError)
+	}
+	return last
+}
+
+func TestUpdateIgnoresStaleSkillCommandResultBySession(t *testing.T) {
+	t.Parallel()
+
+	app, _ := newTestApp(t)
+	app.state.ActiveSessionID = "session-current"
+	app.state.StatusText = "before"
+	beforeActivities := len(app.activities)
+
+	app = updateWithSkillCommandResult(t, app, skillCommandResultMsg{
+		Notice:           "should be ignored",
+		RequestSessionID: "session-old",
+	})
+
+	if app.state.StatusText != "before" {
+		t.Fatalf("expected stale skill result to be ignored, got status %q", app.state.StatusText)
+	}
+	assertIgnoredStaleSkillResultActivity(t, app, beforeActivities, false)
+}
+
+func TestUpdateAcceptsSkillCommandResultForCurrentSession(t *testing.T) {
+	t.Parallel()
+
+	app, _ := newTestApp(t)
+	app.state.ActiveSessionID = "session-current"
+
+	app = updateWithSkillCommandResult(t, app, skillCommandResultMsg{
+		Notice:           "Skill command completed.",
+		RequestSessionID: "session-current",
+	})
+
+	if app.state.StatusText != "Skill command completed." {
+		t.Fatalf("expected status to be updated, got %q", app.state.StatusText)
+	}
+}
+
+func TestUpdateLogsStaleSkillCommandErrorBySession(t *testing.T) {
+	t.Parallel()
+
+	app, _ := newTestApp(t)
+	app.state.ActiveSessionID = "session-current"
+	app.state.StatusText = "before"
+	beforeActivities := len(app.activities)
+
+	app = updateWithSkillCommandResult(t, app, skillCommandResultMsg{
+		Err:              errors.New("activate failed"),
+		RequestSessionID: "session-old",
+	})
+
+	if app.state.StatusText != "before" {
+		t.Fatalf("expected stale skill error to keep current status, got %q", app.state.StatusText)
+	}
+	last := assertIgnoredStaleSkillResultActivity(t, app, beforeActivities, true)
+	if !strings.Contains(last.Detail, "activate failed") {
+		t.Fatalf("expected stale error detail to include original error, got %q", last.Detail)
+	}
 }

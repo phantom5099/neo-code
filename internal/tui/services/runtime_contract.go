@@ -25,6 +25,7 @@ type Runtime interface {
 	ActivateSessionSkill(ctx context.Context, sessionID string, skillID string) error
 	DeactivateSessionSkill(ctx context.Context, sessionID string, skillID string) error
 	ListSessionSkills(ctx context.Context, sessionID string) ([]SessionSkillState, error)
+	ListAvailableSkills(ctx context.Context, sessionID string) ([]AvailableSkillState, error)
 }
 
 // EventType 标识运行时事件类型。

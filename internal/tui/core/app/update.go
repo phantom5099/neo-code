@@ -224,6 +224,29 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.appendActivity("command", typed.Notice, "", false)
 		}
 		return a, tea.Batch(cmds...)
+	case skillCommandResultMsg:
+		requestSessionID := strings.TrimSpace(typed.RequestSessionID)
+		activeSessionID := strings.TrimSpace(a.state.ActiveSessionID)
+		if requestSessionID != "" && !strings.EqualFold(requestSessionID, activeSessionID) {
+			a.recordStaleSkillCommandResult(requestSessionID, activeSessionID, typed.Err)
+			return a, tea.Batch(cmds...)
+		}
+		if typed.Err != nil {
+			a.state.ExecutionError = typed.Err.Error()
+			a.state.StatusText = typed.Err.Error()
+			a.appendActivity("skills", "Skill command failed", typed.Err.Error(), true)
+		} else {
+			notice := strings.TrimSpace(typed.Notice)
+			if notice == "" {
+				notice = "Skill command completed."
+			}
+			a.state.ExecutionError = ""
+			a.state.StatusText = notice
+			a.appendInlineMessage(roleSystem, notice)
+			a.appendActivity("skills", "Skill command completed", notice, false)
+		}
+		a.rebuildTranscript()
+		return a, tea.Batch(cmds...)
 	case workspaceCommandResultMsg:
 		if typed.Command == "" && typed.Err != nil {
 			a.state.ExecutionError = typed.Err.Error()
@@ -1173,10 +1196,7 @@ func runtimeEventSkillActivatedHandler(a *App, event tuiservices.RuntimeEvent) b
 	if !ok {
 		return false
 	}
-	skillID := strings.TrimSpace(payload.SkillID)
-	if skillID == "" {
-		skillID = "(unknown)"
-	}
+	skillID := sanitizeSkillDisplayText(payload.SkillID, "(unknown)")
 	a.appendActivity("skills", "Skill activated", skillID, false)
 	return false
 }
@@ -1187,10 +1207,7 @@ func runtimeEventSkillDeactivatedHandler(a *App, event tuiservices.RuntimeEvent)
 	if !ok {
 		return false
 	}
-	skillID := strings.TrimSpace(payload.SkillID)
-	if skillID == "" {
-		skillID = "(unknown)"
-	}
+	skillID := sanitizeSkillDisplayText(payload.SkillID, "(unknown)")
 	a.appendActivity("skills", "Skill deactivated", skillID, false)
 	return false
 }
@@ -1201,10 +1218,7 @@ func runtimeEventSkillMissingHandler(a *App, event tuiservices.RuntimeEvent) boo
 	if !ok {
 		return false
 	}
-	skillID := strings.TrimSpace(payload.SkillID)
-	if skillID == "" {
-		skillID = "(unknown)"
-	}
+	skillID := sanitizeSkillDisplayText(payload.SkillID, "(unknown)")
 	a.appendActivity("skills", "Skill missing in registry", skillID, true)
 	return false
 }
@@ -2506,6 +2520,14 @@ func (a *App) handleImmediateSlashCommand(input string) (bool, tea.Cmd) {
 		return true, a.handleRememberCommand(rest)
 	case slashCommandForget:
 		return true, a.handleForgetCommand(rest)
+	case slashCommandSkills:
+		if strings.TrimSpace(rest) != "" {
+			a.applyInlineCommandError(fmt.Sprintf("usage: %s", slashUsageSkills))
+			return true, nil
+		}
+		return true, a.handleSkillsCommand()
+	case slashCommandSkill:
+		return true, a.handleSkillCommand(rest)
 	case slashCommandSession:
 		if err := a.ensureSessionSwitchAllowed(""); err != nil {
 			a.state.ExecutionError = err.Error()
