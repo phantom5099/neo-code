@@ -12,7 +12,6 @@ import (
 	"neo-code/internal/gateway"
 	"neo-code/internal/gateway/protocol"
 	providertypes "neo-code/internal/provider/types"
-	agentruntime "neo-code/internal/runtime"
 	agentsession "neo-code/internal/session"
 	"neo-code/internal/tools"
 )
@@ -45,7 +44,7 @@ type remoteGatewayRPCClient interface {
 }
 
 type remoteGatewayStreamClient interface {
-	Events() <-chan agentruntime.RuntimeEvent
+	Events() <-chan RuntimeEvent
 	Close() error
 }
 
@@ -59,7 +58,7 @@ type RemoteRuntimeAdapter struct {
 	closeOnce sync.Once
 	closeCh   chan struct{}
 	done      chan struct{}
-	events    chan agentruntime.RuntimeEvent
+	events    chan RuntimeEvent
 
 	activeMu      sync.Mutex
 	activeRunID   string
@@ -110,14 +109,14 @@ func newRemoteRuntimeAdapterWithClients(
 		retryCount:   retryCount,
 		closeCh:      make(chan struct{}),
 		done:         make(chan struct{}),
-		events:       make(chan agentruntime.RuntimeEvent, 128),
+		events:       make(chan RuntimeEvent, 128),
 	}
 	go adapter.forwardEvents()
 	return adapter
 }
 
 // Submit 将用户输入提交到网关：先 authenticate，再 bindStream，随后 loadSession，最后 run。
-func (r *RemoteRuntimeAdapter) Submit(ctx context.Context, input agentruntime.PrepareInput) error {
+func (r *RemoteRuntimeAdapter) Submit(ctx context.Context, input PrepareInput) error {
 	sessionID := strings.TrimSpace(input.SessionID)
 	if sessionID == "" {
 		sessionID = agentsession.NewID("session")
@@ -155,9 +154,9 @@ func (r *RemoteRuntimeAdapter) Submit(ctx context.Context, input agentruntime.Pr
 }
 
 // PrepareUserInput 在 gateway 模式下提供最小可用输入归一化结果，保持接口兼容。
-func (r *RemoteRuntimeAdapter) PrepareUserInput(ctx context.Context, input agentruntime.PrepareInput) (agentruntime.UserInput, error) {
+func (r *RemoteRuntimeAdapter) PrepareUserInput(ctx context.Context, input PrepareInput) (UserInput, error) {
 	if err := ctx.Err(); err != nil {
-		return agentruntime.UserInput{}, err
+		return UserInput{}, err
 	}
 
 	sessionID := strings.TrimSpace(input.SessionID)
@@ -181,7 +180,7 @@ func (r *RemoteRuntimeAdapter) PrepareUserInput(ctx context.Context, input agent
 		parts = append(parts, providertypes.NewRemoteImagePart(path))
 	}
 
-	return agentruntime.UserInput{
+	return UserInput{
 		SessionID: sessionID,
 		RunID:     runID,
 		Parts:     parts,
@@ -190,8 +189,8 @@ func (r *RemoteRuntimeAdapter) PrepareUserInput(ctx context.Context, input agent
 }
 
 // Run 保持 runtime 接口兼容，在 gateway 模式下回落到 Submit 通道。
-func (r *RemoteRuntimeAdapter) Run(ctx context.Context, input agentruntime.UserInput) error {
-	prepareInput := agentruntime.PrepareInput{
+func (r *RemoteRuntimeAdapter) Run(ctx context.Context, input UserInput) error {
+	prepareInput := PrepareInput{
 		SessionID: strings.TrimSpace(input.SessionID),
 		RunID:     strings.TrimSpace(input.RunID),
 		Workdir:   strings.TrimSpace(input.Workdir),
@@ -202,16 +201,16 @@ func (r *RemoteRuntimeAdapter) Run(ctx context.Context, input agentruntime.UserI
 }
 
 // Compact 转发 gateway.compact 请求并映射回 runtime CompactResult。
-func (r *RemoteRuntimeAdapter) Compact(ctx context.Context, input agentruntime.CompactInput) (agentruntime.CompactResult, error) {
+func (r *RemoteRuntimeAdapter) Compact(ctx context.Context, input CompactInput) (CompactResult, error) {
 	sessionID := strings.TrimSpace(input.SessionID)
 	if sessionID == "" {
-		return agentruntime.CompactResult{}, errors.New("gateway runtime adapter: compact session_id is empty")
+		return CompactResult{}, errors.New("gateway runtime adapter: compact session_id is empty")
 	}
 	if err := r.authenticate(ctx); err != nil {
-		return agentruntime.CompactResult{}, err
+		return CompactResult{}, err
 	}
 	if err := r.bindStream(ctx, sessionID, strings.TrimSpace(input.RunID)); err != nil {
-		return agentruntime.CompactResult{}, err
+		return CompactResult{}, err
 	}
 
 	frame, err := r.callFrame(ctx, protocol.MethodGatewayCompact, protocol.CompactParams{
@@ -222,14 +221,14 @@ func (r *RemoteRuntimeAdapter) Compact(ctx context.Context, input agentruntime.C
 		Retries: r.retryCount,
 	})
 	if err != nil {
-		return agentruntime.CompactResult{}, err
+		return CompactResult{}, err
 	}
 
 	gatewayResult, err := decodeFramePayload[gateway.CompactResult](frame.Payload)
 	if err != nil {
-		return agentruntime.CompactResult{}, err
+		return CompactResult{}, err
 	}
-	return agentruntime.CompactResult{
+	return CompactResult{
 		Applied:        gatewayResult.Applied,
 		BeforeChars:    gatewayResult.BeforeChars,
 		AfterChars:     gatewayResult.AfterChars,
@@ -241,12 +240,14 @@ func (r *RemoteRuntimeAdapter) Compact(ctx context.Context, input agentruntime.C
 }
 
 // ExecuteSystemTool 在 gateway 模式下显式不支持，避免任何本地 fallback。
-func (r *RemoteRuntimeAdapter) ExecuteSystemTool(context.Context, agentruntime.SystemToolInput) (tools.ToolResult, error) {
+func (r *RemoteRuntimeAdapter) ExecuteSystemTool(ctx context.Context, input SystemToolInput) (tools.ToolResult, error) {
+	_ = ctx
+	_ = input
 	return tools.ToolResult{}, unsupportedGatewayActionError()
 }
 
 // ResolvePermission 转发 gateway.resolvePermission 请求。
-func (r *RemoteRuntimeAdapter) ResolvePermission(ctx context.Context, input agentruntime.PermissionResolutionInput) error {
+func (r *RemoteRuntimeAdapter) ResolvePermission(ctx context.Context, input PermissionResolutionInput) error {
 	if err := r.authenticate(ctx); err != nil {
 		return err
 	}
@@ -296,7 +297,7 @@ func (r *RemoteRuntimeAdapter) CancelActiveRun() bool {
 }
 
 // Events 返回适配后的 runtime 事件流。
-func (r *RemoteRuntimeAdapter) Events() <-chan agentruntime.RuntimeEvent {
+func (r *RemoteRuntimeAdapter) Events() <-chan RuntimeEvent {
 	return r.events
 }
 
@@ -369,7 +370,9 @@ func (r *RemoteRuntimeAdapter) DeactivateSessionSkill(context.Context, string, s
 }
 
 // ListSessionSkills 在 gateway 模式下显式不支持。
-func (r *RemoteRuntimeAdapter) ListSessionSkills(context.Context, string) ([]agentruntime.SessionSkillState, error) {
+func (r *RemoteRuntimeAdapter) ListSessionSkills(ctx context.Context, sessionID string) ([]SessionSkillState, error) {
+	_ = ctx
+	_ = sessionID
 	return nil, unsupportedGatewayActionError()
 }
 
@@ -377,7 +380,7 @@ func (r *RemoteRuntimeAdapter) ListSessionSkills(context.Context, string) ([]age
 func (r *RemoteRuntimeAdapter) ListAvailableSkills(
 	context.Context,
 	string,
-) ([]agentruntime.AvailableSkillState, error) {
+) ([]AvailableSkillState, error) {
 	return nil, unsupportedGatewayActionError()
 }
 
@@ -469,7 +472,7 @@ func (r *RemoteRuntimeAdapter) forwardEvents() {
 	}
 }
 
-func (r *RemoteRuntimeAdapter) observeEvent(event agentruntime.RuntimeEvent) {
+func (r *RemoteRuntimeAdapter) observeEvent(event RuntimeEvent) {
 	runID := strings.TrimSpace(event.RunID)
 	sessionID := strings.TrimSpace(event.SessionID)
 	if runID != "" || sessionID != "" {
@@ -477,7 +480,7 @@ func (r *RemoteRuntimeAdapter) observeEvent(event agentruntime.RuntimeEvent) {
 	}
 
 	switch event.Type {
-	case agentruntime.EventAgentDone, agentruntime.EventError, agentruntime.EventRunCanceled, agentruntime.EventStopReasonDecided:
+	case EventAgentDone, EventError, EventRunCanceled, EventStopReasonDecided:
 		r.clearActiveRun(runID)
 	}
 }
@@ -526,7 +529,7 @@ func unsupportedGatewayActionError() error {
 	return ErrUnsupportedActionInGatewayMode
 }
 
-func buildGatewayRunParams(sessionID string, runID string, input agentruntime.PrepareInput) protocol.RunParams {
+func buildGatewayRunParams(sessionID string, runID string, input PrepareInput) protocol.RunParams {
 	parts := make([]protocol.RunInputPart, 0, len(input.Images))
 	for _, image := range input.Images {
 		path := strings.TrimSpace(image.Path)
@@ -566,8 +569,8 @@ func renderInputTextFromParts(parts []providertypes.ContentPart) string {
 	return strings.Join(textParts, "\n")
 }
 
-func renderInputImagesFromParts(parts []providertypes.ContentPart) []agentruntime.UserImageInput {
-	images := make([]agentruntime.UserImageInput, 0, len(parts))
+func renderInputImagesFromParts(parts []providertypes.ContentPart) []UserImageInput {
+	images := make([]UserImageInput, 0, len(parts))
 	for _, part := range parts {
 		if part.Kind != providertypes.ContentPartImage || part.Image == nil {
 			continue
@@ -580,7 +583,7 @@ func renderInputImagesFromParts(parts []providertypes.ContentPart) []agentruntim
 		if part.Image.Asset != nil {
 			mimeType = strings.TrimSpace(part.Image.Asset.MimeType)
 		}
-		images = append(images, agentruntime.UserImageInput{
+		images = append(images, UserImageInput{
 			Path:     path,
 			MimeType: mimeType,
 		})
@@ -645,4 +648,4 @@ func decodeIntoValue(payload any, target any) error {
 	return nil
 }
 
-var _ agentruntime.Runtime = (*RemoteRuntimeAdapter)(nil)
+var _ Runtime = (*RemoteRuntimeAdapter)(nil)

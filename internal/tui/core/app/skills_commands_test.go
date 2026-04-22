@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	agentruntime "neo-code/internal/runtime"
 	"neo-code/internal/skills"
 	tuiservices "neo-code/internal/tui/services"
 )
@@ -18,7 +17,7 @@ func TestFormatAvailableSkills(t *testing.T) {
 		t.Fatalf("expected empty message, got %q", got)
 	}
 
-	text := formatAvailableSkills([]agentruntime.AvailableSkillState{
+	text := formatAvailableSkills([]tuiservices.AvailableSkillState{
 		{
 			Descriptor: skills.Descriptor{
 				ID:          "go-review",
@@ -42,7 +41,7 @@ func TestFormatSessionSkills(t *testing.T) {
 		t.Fatalf("expected empty active message, got %q", got)
 	}
 
-	text := formatSessionSkills([]agentruntime.SessionSkillState{
+	text := formatSessionSkills([]tuiservices.SessionSkillState{
 		{SkillID: "missing", Missing: true},
 		{SkillID: "go-review", Descriptor: &skills.Descriptor{ID: "go-review", Description: "review"}},
 	})
@@ -181,7 +180,7 @@ func TestHandleSkillsAndActiveCommandErrorBranches(t *testing.T) {
 func TestFormatHelpersCoverFallbackBranches(t *testing.T) {
 	t.Parallel()
 
-	text := formatAvailableSkills([]agentruntime.AvailableSkillState{
+	text := formatAvailableSkills([]tuiservices.AvailableSkillState{
 		{
 			Descriptor: skills.Descriptor{
 				ID:          "plain",
@@ -200,7 +199,7 @@ func TestFormatHelpersCoverFallbackBranches(t *testing.T) {
 		t.Fatalf("expected empty description fallback, got %q", text)
 	}
 
-	sessionText := formatSessionSkills([]agentruntime.SessionSkillState{
+	sessionText := formatSessionSkills([]tuiservices.SessionSkillState{
 		{SkillID: "zeta", Descriptor: nil},
 		{SkillID: "Alpha", Descriptor: &skills.Descriptor{ID: "Alpha", Description: ""}},
 	})
@@ -217,7 +216,7 @@ func TestFormatSkillHelpersSanitizeAndLimitOutput(t *testing.T) {
 
 	evil := "go\x1b[31m-review"
 	longDescription := strings.Repeat("x", maxSkillFieldLength+20)
-	text := formatAvailableSkills([]agentruntime.AvailableSkillState{
+	text := formatAvailableSkills([]tuiservices.AvailableSkillState{
 		{
 			Descriptor: skills.Descriptor{
 				ID:          evil,
@@ -239,9 +238,9 @@ func TestFormatSkillHelpersSanitizeAndLimitOutput(t *testing.T) {
 		t.Fatalf("expected long description to be truncated, got %q", text)
 	}
 
-	states := make([]agentruntime.AvailableSkillState, 0, maxRenderedSkillsCount+1)
+	states := make([]tuiservices.AvailableSkillState, 0, maxRenderedSkillsCount+1)
 	for i := 0; i < maxRenderedSkillsCount+1; i++ {
-		states = append(states, agentruntime.AvailableSkillState{
+		states = append(states, tuiservices.AvailableSkillState{
 			Descriptor: skills.Descriptor{
 				ID:          fmt.Sprintf("skill-%02d", i),
 				Description: "desc",

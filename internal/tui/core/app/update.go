@@ -23,9 +23,6 @@ import (
 	configstate "neo-code/internal/config/state"
 	"neo-code/internal/provider"
 	providertypes "neo-code/internal/provider/types"
-	agentruntime "neo-code/internal/runtime"
-	approvalflow "neo-code/internal/runtime/approval"
-	"neo-code/internal/runtime/controlplane"
 	agentsession "neo-code/internal/session"
 	"neo-code/internal/tools"
 	tuistatus "neo-code/internal/tui/core/status"
@@ -56,8 +53,8 @@ const logViewerPersistDebounce = 300 * time.Millisecond
 const footerErrorFlashDuration = 8 * time.Second
 
 type sessionLogPersistenceRuntime interface {
-	LoadSessionLogEntries(ctx context.Context, sessionID string) ([]agentruntime.SessionLogEntry, error)
-	SaveSessionLogEntries(ctx context.Context, sessionID string, entries []agentruntime.SessionLogEntry) error
+	LoadSessionLogEntries(ctx context.Context, sessionID string) ([]tuiservices.SessionLogEntry, error)
+	SaveSessionLogEntries(ctx context.Context, sessionID string, entries []tuiservices.SessionLogEntry) error
 }
 
 var panelOrder = []panel{panelTranscript, panelInput}
@@ -90,7 +87,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.handleProviderAddResultMsg(typed)
 		return a, nil
 	case RuntimeMsg:
-		transcriptDirty := a.handleRuntimeEvent(typed.Event)
+		runtimeEvent, ok := typed.Event.(tuiservices.RuntimeEvent)
+		if !ok {
+			cmds = append(cmds, ListenForRuntimeEvent(a.runtime.Events()))
+			return a, tea.Batch(cmds...)
+		}
+		transcriptDirty := a.handleRuntimeEvent(runtimeEvent)
 		if a.deferredEventCmd != nil {
 			cmds = append(cmds, a.deferredEventCmd)
 			a.deferredEventCmd = nil
@@ -565,14 +567,14 @@ func (a App) updateInputPanel(msg tea.Msg, typed tea.KeyMsg, cmds []tea.Cmd) (te
 			runID := fmt.Sprintf("run-%d", a.now().UnixNano())
 			a.state.ActiveRunID = runID
 			requestedWorkdir := tuiutils.RequestedWorkdirForRun(a.state.CurrentWorkdir)
-			images := make([]agentruntime.UserImageInput, 0, len(a.pendingImageAttachments))
+			images := make([]tuiservices.UserImageInput, 0, len(a.pendingImageAttachments))
 			for _, attachment := range a.pendingImageAttachments {
-				images = append(images, agentruntime.UserImageInput{
+				images = append(images, tuiservices.UserImageInput{
 					Path:     attachment.Path,
 					MimeType: attachment.MimeType,
 				})
 			}
-			cmds = append(cmds, runAgent(a.runtime, agentruntime.PrepareInput{
+			cmds = append(cmds, runAgent(a.runtime, tuiservices.PrepareInput{
 				SessionID: a.state.ActiveSessionID,
 				RunID:     runID,
 				Workdir:   requestedWorkdir,
@@ -633,7 +635,7 @@ func (a *App) updatePendingPermissionInput(typed tea.KeyMsg) (tea.Cmd, bool) {
 	return nil, true
 }
 
-func (a *App) submitPermissionDecision(decision agentruntime.PermissionResolutionDecision) tea.Cmd {
+func (a *App) submitPermissionDecision(decision tuiservices.PermissionResolutionDecision) tea.Cmd {
 	if a.pendingPermission == nil {
 		return nil
 	}
@@ -1065,36 +1067,36 @@ type runtimeRunSnapshotSource interface {
 	GetRunSnapshot(ctx context.Context, runID string) (any, error)
 }
 
-var runtimeEventHandlerRegistry = map[agentruntime.EventType]func(*App, agentruntime.RuntimeEvent) bool{
-	agentruntime.EventUserMessage:                              runtimeEventUserMessageHandler,
-	agentruntime.EventInputNormalized:                          runtimeEventInputNormalizedHandler,
-	agentruntime.EventAssetSaved:                               runtimeEventAssetSavedHandler,
-	agentruntime.EventAssetSaveFailed:                          runtimeEventAssetSaveFailedHandler,
-	agentruntime.EventType(tuiservices.RuntimeEventRunContext): runtimeEventRunContextHandler,
-	agentruntime.EventType(tuiservices.RuntimeEventToolStatus): runtimeEventToolStatusHandler,
-	agentruntime.EventType(tuiservices.RuntimeEventUsage):      runtimeEventUsageHandler,
-	agentruntime.EventToolCallThinking:                         runtimeEventToolCallThinkingHandler,
-	agentruntime.EventToolStart:                                runtimeEventToolStartHandler,
-	agentruntime.EventToolResult:                               runtimeEventToolResultHandler,
-	agentruntime.EventAgentChunk:                               runtimeEventAgentChunkHandler,
-	agentruntime.EventToolChunk:                                runtimeEventToolChunkHandler,
-	agentruntime.EventAgentDone:                                runtimeEventAgentDoneHandler,
-	agentruntime.EventProviderRetry:                            runtimeEventProviderRetryHandler,
-	agentruntime.EventPermissionRequested:                      runtimeEventPermissionRequestHandler,
-	agentruntime.EventPermissionResolved:                       runtimeEventPermissionResolvedHandler,
-	agentruntime.EventCompactApplied:                           runtimeEventCompactDoneHandler,
-	agentruntime.EventCompactError:                             runtimeEventCompactErrorHandler,
-	agentruntime.EventPhaseChanged:                             runtimeEventPhaseChangedHandler,
-	agentruntime.EventStopReasonDecided:                        runtimeEventStopReasonDecidedHandler,
-	agentruntime.EventTodoUpdated:                              runtimeEventTodoUpdatedHandler,
-	agentruntime.EventTodoConflict:                             runtimeEventTodoConflictHandler,
-	agentruntime.EventSkillActivated:                           runtimeEventSkillActivatedHandler,
-	agentruntime.EventSkillDeactivated:                         runtimeEventSkillDeactivatedHandler,
-	agentruntime.EventSkillMissing:                             runtimeEventSkillMissingHandler,
+var runtimeEventHandlerRegistry = map[tuiservices.EventType]func(*App, tuiservices.RuntimeEvent) bool{
+	tuiservices.EventUserMessage:                              runtimeEventUserMessageHandler,
+	tuiservices.EventInputNormalized:                          runtimeEventInputNormalizedHandler,
+	tuiservices.EventAssetSaved:                               runtimeEventAssetSavedHandler,
+	tuiservices.EventAssetSaveFailed:                          runtimeEventAssetSaveFailedHandler,
+	tuiservices.EventType(tuiservices.RuntimeEventRunContext): runtimeEventRunContextHandler,
+	tuiservices.EventType(tuiservices.RuntimeEventToolStatus): runtimeEventToolStatusHandler,
+	tuiservices.EventType(tuiservices.RuntimeEventUsage):      runtimeEventUsageHandler,
+	tuiservices.EventToolCallThinking:                         runtimeEventToolCallThinkingHandler,
+	tuiservices.EventToolStart:                                runtimeEventToolStartHandler,
+	tuiservices.EventToolResult:                               runtimeEventToolResultHandler,
+	tuiservices.EventAgentChunk:                               runtimeEventAgentChunkHandler,
+	tuiservices.EventToolChunk:                                runtimeEventToolChunkHandler,
+	tuiservices.EventAgentDone:                                runtimeEventAgentDoneHandler,
+	tuiservices.EventProviderRetry:                            runtimeEventProviderRetryHandler,
+	tuiservices.EventPermissionRequested:                      runtimeEventPermissionRequestHandler,
+	tuiservices.EventPermissionResolved:                       runtimeEventPermissionResolvedHandler,
+	tuiservices.EventCompactApplied:                           runtimeEventCompactDoneHandler,
+	tuiservices.EventCompactError:                             runtimeEventCompactErrorHandler,
+	tuiservices.EventPhaseChanged:                             runtimeEventPhaseChangedHandler,
+	tuiservices.EventStopReasonDecided:                        runtimeEventStopReasonDecidedHandler,
+	tuiservices.EventTodoUpdated:                              runtimeEventTodoUpdatedHandler,
+	tuiservices.EventTodoConflict:                             runtimeEventTodoConflictHandler,
+	tuiservices.EventSkillActivated:                           runtimeEventSkillActivatedHandler,
+	tuiservices.EventSkillDeactivated:                         runtimeEventSkillDeactivatedHandler,
+	tuiservices.EventSkillMissing:                             runtimeEventSkillMissingHandler,
 }
 
-func runtimeEventPhaseChangedHandler(a *App, event agentruntime.RuntimeEvent) bool {
-	payload, ok := event.Payload.(agentruntime.PhaseChangedPayload)
+func runtimeEventPhaseChangedHandler(a *App, event tuiservices.RuntimeEvent) bool {
+	payload, ok := event.Payload.(tuiservices.PhaseChangedPayload)
 	if !ok {
 		return false
 	}
@@ -1105,19 +1107,13 @@ func runtimeEventPhaseChangedHandler(a *App, event agentruntime.RuntimeEvent) bo
 		a.setRunProgress(0.6, "Running tools")
 	case "verify":
 		a.setRunProgress(0.82, "Verifying")
-	case "compacting":
-		a.setRunProgress(0.9, "Compacting context")
-	case "waiting_permission":
-		a.setRunProgress(0.88, "Awaiting permission")
-	case "stopped":
-		a.setRunProgress(1, "Stopped")
 	}
 	return false
 }
 
 // runtimeEventStopReasonDecidedHandler 处理运行结束原因并统一更新状态与活动日志。
-func runtimeEventStopReasonDecidedHandler(a *App, event agentruntime.RuntimeEvent) bool {
-	payload, ok := event.Payload.(agentruntime.StopReasonDecidedPayload)
+func runtimeEventStopReasonDecidedHandler(a *App, event tuiservices.RuntimeEvent) bool {
+	payload, ok := event.Payload.(tuiservices.StopReasonDecidedPayload)
 	if !ok {
 		return false
 	}
@@ -1128,23 +1124,16 @@ func runtimeEventStopReasonDecidedHandler(a *App, event agentruntime.RuntimeEven
 	a.pendingPermission = nil
 	a.clearRunProgress()
 
-	reason := controlplane.StopReason(strings.ToUpper(strings.TrimSpace(string(payload.Reason))))
+	reason := strings.ToLower(strings.TrimSpace(string(payload.Reason)))
 	switch reason {
-	case controlplane.StopReasonCompleted:
-		a.state.ExecutionError = ""
-		a.state.StatusText = statusReady
-	case controlplane.StopReasonUserInterrupt:
+	case "success":
+		if strings.TrimSpace(a.state.ExecutionError) == "" {
+			a.state.StatusText = statusReady
+		}
+	case "canceled":
 		a.state.ExecutionError = ""
 		a.state.StatusText = statusCanceled
 		a.appendActivity("run", "Canceled current run", "", false)
-	case controlplane.StopReasonFatalError:
-		detail := strings.TrimSpace(payload.Detail)
-		if detail == "" {
-			detail = "runtime stopped"
-		}
-		a.state.ExecutionError = detail
-		a.state.StatusText = detail
-		a.appendActivity("run", "Runtime stopped", detail, true)
 	default:
 		detail := strings.TrimSpace(payload.Detail)
 		if detail == "" {
@@ -1157,7 +1146,7 @@ func runtimeEventStopReasonDecidedHandler(a *App, event agentruntime.RuntimeEven
 	return false
 }
 
-func runtimeEventTodoUpdatedHandler(a *App, event agentruntime.RuntimeEvent) bool {
+func runtimeEventTodoUpdatedHandler(a *App, event tuiservices.RuntimeEvent) bool {
 	sessionID := strings.TrimSpace(event.SessionID)
 	if sessionID == "" {
 		sessionID = strings.TrimSpace(a.state.ActiveSessionID)
@@ -1180,7 +1169,7 @@ func runtimeEventTodoUpdatedHandler(a *App, event agentruntime.RuntimeEvent) boo
 	return false
 }
 
-func runtimeEventTodoConflictHandler(a *App, event agentruntime.RuntimeEvent) bool {
+func runtimeEventTodoConflictHandler(a *App, event tuiservices.RuntimeEvent) bool {
 	sessionID := strings.TrimSpace(event.SessionID)
 	if sessionID == "" {
 		sessionID = strings.TrimSpace(a.state.ActiveSessionID)
@@ -1204,7 +1193,7 @@ func runtimeEventTodoConflictHandler(a *App, event agentruntime.RuntimeEvent) bo
 }
 
 // runtimeEventSkillActivatedHandler 在 runtime 激活 skill 后同步活动日志。
-func runtimeEventSkillActivatedHandler(a *App, event agentruntime.RuntimeEvent) bool {
+func runtimeEventSkillActivatedHandler(a *App, event tuiservices.RuntimeEvent) bool {
 	payload, ok := parseSessionSkillEventPayload(event.Payload)
 	if !ok {
 		return false
@@ -1215,7 +1204,7 @@ func runtimeEventSkillActivatedHandler(a *App, event agentruntime.RuntimeEvent) 
 }
 
 // runtimeEventSkillDeactivatedHandler 在 runtime 停用 skill 后同步活动日志。
-func runtimeEventSkillDeactivatedHandler(a *App, event agentruntime.RuntimeEvent) bool {
+func runtimeEventSkillDeactivatedHandler(a *App, event tuiservices.RuntimeEvent) bool {
 	payload, ok := parseSessionSkillEventPayload(event.Payload)
 	if !ok {
 		return false
@@ -1226,7 +1215,7 @@ func runtimeEventSkillDeactivatedHandler(a *App, event agentruntime.RuntimeEvent
 }
 
 // runtimeEventSkillMissingHandler 在会话 skill 丢失时输出显式错误反馈，便于排查恢复问题。
-func runtimeEventSkillMissingHandler(a *App, event agentruntime.RuntimeEvent) bool {
+func runtimeEventSkillMissingHandler(a *App, event tuiservices.RuntimeEvent) bool {
 	payload, ok := parseSessionSkillEventPayload(event.Payload)
 	if !ok {
 		return false
@@ -1237,35 +1226,35 @@ func runtimeEventSkillMissingHandler(a *App, event agentruntime.RuntimeEvent) bo
 }
 
 // parseSessionSkillEventPayload 解析 runtime skill 事件负载并兼容 map 结构。
-func parseSessionSkillEventPayload(payload any) (agentruntime.SessionSkillEventPayload, bool) {
+func parseSessionSkillEventPayload(payload any) (tuiservices.SessionSkillEventPayload, bool) {
 	switch typed := payload.(type) {
-	case agentruntime.SessionSkillEventPayload:
+	case tuiservices.SessionSkillEventPayload:
 		return typed, true
-	case *agentruntime.SessionSkillEventPayload:
+	case *tuiservices.SessionSkillEventPayload:
 		if typed == nil {
-			return agentruntime.SessionSkillEventPayload{}, false
+			return tuiservices.SessionSkillEventPayload{}, false
 		}
 		return *typed, true
 	case map[string]any:
 		if raw, ok := typed["skill_id"]; ok && raw != nil {
-			return agentruntime.SessionSkillEventPayload{SkillID: strings.TrimSpace(fmt.Sprintf("%v", raw))}, true
+			return tuiservices.SessionSkillEventPayload{SkillID: strings.TrimSpace(fmt.Sprintf("%v", raw))}, true
 		}
 		if raw, ok := typed["SkillID"]; ok && raw != nil {
-			return agentruntime.SessionSkillEventPayload{SkillID: strings.TrimSpace(fmt.Sprintf("%v", raw))}, true
+			return tuiservices.SessionSkillEventPayload{SkillID: strings.TrimSpace(fmt.Sprintf("%v", raw))}, true
 		}
-		return agentruntime.SessionSkillEventPayload{}, false
+		return tuiservices.SessionSkillEventPayload{}, false
 	default:
-		return agentruntime.SessionSkillEventPayload{}, false
+		return tuiservices.SessionSkillEventPayload{}, false
 	}
 }
 
-func parseTodoEventPayload(payload any) (agentruntime.TodoEventPayload, bool) {
+func parseTodoEventPayload(payload any) (tuiservices.TodoEventPayload, bool) {
 	switch typed := payload.(type) {
-	case agentruntime.TodoEventPayload:
+	case tuiservices.TodoEventPayload:
 		return typed, true
-	case *agentruntime.TodoEventPayload:
+	case *tuiservices.TodoEventPayload:
 		if typed == nil {
-			return agentruntime.TodoEventPayload{}, false
+			return tuiservices.TodoEventPayload{}, false
 		}
 		return *typed, true
 	case map[string]any:
@@ -1287,13 +1276,13 @@ func parseTodoEventPayload(payload any) (agentruntime.TodoEventPayload, bool) {
 				reason = strings.TrimSpace(fmt.Sprintf("%v", raw))
 			}
 		}
-		return agentruntime.TodoEventPayload{Action: action, Reason: reason}, true
+		return tuiservices.TodoEventPayload{Action: action, Reason: reason}, true
 	default:
-		return agentruntime.TodoEventPayload{}, false
+		return tuiservices.TodoEventPayload{}, false
 	}
 }
 
-func (a *App) handleRuntimeEvent(event agentruntime.RuntimeEvent) bool {
+func (a *App) handleRuntimeEvent(event tuiservices.RuntimeEvent) bool {
 	if !a.shouldHandleRuntimeEvent(event) {
 		return false
 	}
@@ -1304,7 +1293,7 @@ func (a *App) handleRuntimeEvent(event agentruntime.RuntimeEvent) bool {
 	return handler(a, event)
 }
 
-func (a *App) shouldHandleRuntimeEvent(event agentruntime.RuntimeEvent) bool {
+func (a *App) shouldHandleRuntimeEvent(event tuiservices.RuntimeEvent) bool {
 	activeSessionID := strings.TrimSpace(a.state.ActiveSessionID)
 	eventSessionID := strings.TrimSpace(event.SessionID)
 	if activeSessionID != "" && eventSessionID != "" && !strings.EqualFold(activeSessionID, eventSessionID) {
@@ -1319,11 +1308,11 @@ func (a *App) shouldHandleRuntimeEvent(event agentruntime.RuntimeEvent) bool {
 	return true
 }
 
-func runtimeEventInputNormalizedHandler(a *App, event agentruntime.RuntimeEvent) bool {
+func runtimeEventInputNormalizedHandler(a *App, event tuiservices.RuntimeEvent) bool {
 	if strings.TrimSpace(event.RunID) != "" {
 		a.state.ActiveRunID = strings.TrimSpace(event.RunID)
 	}
-	payload, ok := event.Payload.(agentruntime.InputNormalizedPayload)
+	payload, ok := event.Payload.(tuiservices.InputNormalizedPayload)
 	if !ok {
 		return false
 	}
@@ -1338,8 +1327,8 @@ func runtimeEventInputNormalizedHandler(a *App, event agentruntime.RuntimeEvent)
 	return false
 }
 
-func runtimeEventAssetSavedHandler(a *App, event agentruntime.RuntimeEvent) bool {
-	payload, ok := event.Payload.(agentruntime.AssetSavedPayload)
+func runtimeEventAssetSavedHandler(a *App, event tuiservices.RuntimeEvent) bool {
+	payload, ok := event.Payload.(tuiservices.AssetSavedPayload)
 	if !ok {
 		return false
 	}
@@ -1354,8 +1343,8 @@ func runtimeEventAssetSavedHandler(a *App, event agentruntime.RuntimeEvent) bool
 	return false
 }
 
-func runtimeEventAssetSaveFailedHandler(a *App, event agentruntime.RuntimeEvent) bool {
-	payload, ok := event.Payload.(agentruntime.AssetSaveFailedPayload)
+func runtimeEventAssetSaveFailedHandler(a *App, event tuiservices.RuntimeEvent) bool {
+	payload, ok := event.Payload.(tuiservices.AssetSaveFailedPayload)
 	if !ok {
 		return false
 	}
@@ -1369,7 +1358,7 @@ func runtimeEventAssetSaveFailedHandler(a *App, event agentruntime.RuntimeEvent)
 	return false
 }
 
-func runtimeEventUserMessageHandler(a *App, event agentruntime.RuntimeEvent) bool {
+func runtimeEventUserMessageHandler(a *App, event tuiservices.RuntimeEvent) bool {
 	runID := strings.TrimSpace(event.RunID)
 	if runID != "" {
 		a.state.ActiveRunID = runID
@@ -1403,7 +1392,7 @@ func runtimeEventUserMessageHandler(a *App, event agentruntime.RuntimeEvent) boo
 	return true
 }
 
-func runtimeEventRunContextHandler(a *App, event agentruntime.RuntimeEvent) bool {
+func runtimeEventRunContextHandler(a *App, event tuiservices.RuntimeEvent) bool {
 	payload, ok := tuiservices.ParseRunContextPayload(event.Payload)
 	if !ok {
 		return false
@@ -1428,7 +1417,7 @@ func runtimeEventRunContextHandler(a *App, event agentruntime.RuntimeEvent) bool
 	return false
 }
 
-func runtimeEventToolStatusHandler(a *App, event agentruntime.RuntimeEvent) bool {
+func runtimeEventToolStatusHandler(a *App, event tuiservices.RuntimeEvent) bool {
 	payload, ok := tuiservices.ParseToolStatusPayload(event.Payload)
 	if !ok {
 		return false
@@ -1446,7 +1435,7 @@ func runtimeEventToolStatusHandler(a *App, event agentruntime.RuntimeEvent) bool
 	return false
 }
 
-func runtimeEventUsageHandler(a *App, event agentruntime.RuntimeEvent) bool {
+func runtimeEventUsageHandler(a *App, event tuiservices.RuntimeEvent) bool {
 	payload, ok := tuiservices.ParseUsagePayload(event.Payload)
 	if !ok {
 		return false
@@ -1456,7 +1445,7 @@ func runtimeEventUsageHandler(a *App, event agentruntime.RuntimeEvent) bool {
 }
 
 // runtimeEventToolCallThinkingHandler 在工具调用进入思考阶段时同步当前工具与进度提示。
-func runtimeEventToolCallThinkingHandler(a *App, event agentruntime.RuntimeEvent) bool {
+func runtimeEventToolCallThinkingHandler(a *App, event tuiservices.RuntimeEvent) bool {
 	if payload, ok := event.Payload.(string); ok && strings.TrimSpace(payload) != "" {
 		a.state.CurrentTool = payload
 		a.setRunProgress(0.35, "Planning")
@@ -1466,7 +1455,7 @@ func runtimeEventToolCallThinkingHandler(a *App, event agentruntime.RuntimeEvent
 }
 
 // runtimeEventToolStartHandler 在工具实际执行时更新状态条和活动记录。
-func runtimeEventToolStartHandler(a *App, event agentruntime.RuntimeEvent) bool {
+func runtimeEventToolStartHandler(a *App, event tuiservices.RuntimeEvent) bool {
 	a.state.StatusText = statusRunningTool
 	a.state.StreamingReply = false
 	if payload, ok := event.Payload.(providertypes.ToolCall); ok {
@@ -1477,7 +1466,7 @@ func runtimeEventToolStartHandler(a *App, event agentruntime.RuntimeEvent) bool 
 	return false
 }
 
-func runtimeEventToolResultHandler(a *App, event agentruntime.RuntimeEvent) bool {
+func runtimeEventToolResultHandler(a *App, event tuiservices.RuntimeEvent) bool {
 	a.state.StreamingReply = false
 	a.state.CurrentTool = ""
 	a.setRunProgress(0.8, "Integrating result")
@@ -1502,7 +1491,7 @@ func runtimeEventToolResultHandler(a *App, event agentruntime.RuntimeEvent) bool
 }
 
 // runtimeEventAgentChunkHandler 将流式回复分片持续追加到转录区，并推进运行进度。
-func runtimeEventAgentChunkHandler(a *App, event agentruntime.RuntimeEvent) bool {
+func runtimeEventAgentChunkHandler(a *App, event tuiservices.RuntimeEvent) bool {
 	payload, ok := event.Payload.(string)
 	if !ok {
 		return false
@@ -1514,7 +1503,7 @@ func runtimeEventAgentChunkHandler(a *App, event agentruntime.RuntimeEvent) bool
 	return true
 }
 
-func runtimeEventToolChunkHandler(a *App, event agentruntime.RuntimeEvent) bool {
+func runtimeEventToolChunkHandler(a *App, event tuiservices.RuntimeEvent) bool {
 	if payload, ok := event.Payload.(string); ok && strings.TrimSpace(payload) != "" {
 		a.state.StatusText = statusRunningTool
 		a.appendActivity("tool", "Tool output", preview(payload, 88, 4), false)
@@ -1523,7 +1512,7 @@ func runtimeEventToolChunkHandler(a *App, event agentruntime.RuntimeEvent) bool 
 }
 
 // runtimeEventAgentDoneHandler 在代理回复结束时收尾状态并补齐最终 assistant 消息。
-func runtimeEventAgentDoneHandler(a *App, event agentruntime.RuntimeEvent) bool {
+func runtimeEventAgentDoneHandler(a *App, event tuiservices.RuntimeEvent) bool {
 	a.state.IsAgentRunning = false
 	a.state.StreamingReply = false
 	a.state.CurrentTool = ""
@@ -1543,7 +1532,7 @@ func runtimeEventAgentDoneHandler(a *App, event agentruntime.RuntimeEvent) bool 
 	return false
 }
 
-func runtimeEventRunCanceledHandler(a *App, event agentruntime.RuntimeEvent) bool {
+func runtimeEventRunCanceledHandler(a *App, event tuiservices.RuntimeEvent) bool {
 	a.state.IsAgentRunning = false
 	a.state.StreamingReply = false
 	a.state.CurrentTool = ""
@@ -1557,7 +1546,7 @@ func runtimeEventRunCanceledHandler(a *App, event agentruntime.RuntimeEvent) boo
 }
 
 // runtimeEventErrorHandler 在运行报错时统一清理现场并展示错误信息。
-func runtimeEventErrorHandler(a *App, event agentruntime.RuntimeEvent) bool {
+func runtimeEventErrorHandler(a *App, event tuiservices.RuntimeEvent) bool {
 	a.state.StatusText = statusError
 	a.state.IsAgentRunning = false
 	a.state.StreamingReply = false
@@ -1573,7 +1562,7 @@ func runtimeEventErrorHandler(a *App, event agentruntime.RuntimeEvent) bool {
 	return false
 }
 
-func runtimeEventProviderRetryHandler(a *App, event agentruntime.RuntimeEvent) bool {
+func runtimeEventProviderRetryHandler(a *App, event tuiservices.RuntimeEvent) bool {
 	if payload, ok := event.Payload.(string); ok && strings.TrimSpace(payload) != "" {
 		a.state.StatusText = statusThinking
 		a.runProgressKnown = false
@@ -1582,7 +1571,7 @@ func runtimeEventProviderRetryHandler(a *App, event agentruntime.RuntimeEvent) b
 	return false
 }
 
-func runtimeEventPermissionRequestHandler(a *App, event agentruntime.RuntimeEvent) bool {
+func runtimeEventPermissionRequestHandler(a *App, event tuiservices.RuntimeEvent) bool {
 	payload, ok := parsePermissionRequestPayload(event.Payload)
 	if !ok {
 		return false
@@ -1592,7 +1581,7 @@ func runtimeEventPermissionRequestHandler(a *App, event agentruntime.RuntimeEven
 		currentRequestID := strings.TrimSpace(a.pendingPermission.Request.RequestID)
 		nextRequestID := strings.TrimSpace(payload.RequestID)
 		if currentRequestID != "" && currentRequestID != nextRequestID && !a.pendingPermission.Submitting {
-			a.deferredEventCmd = runResolvePermission(a.runtime, currentRequestID, approvalflow.DecisionReject)
+			a.deferredEventCmd = runResolvePermission(a.runtime, currentRequestID, tuiservices.DecisionReject)
 			a.appendActivity(
 				"permission",
 				"Auto-rejected superseded permission request",
@@ -1621,7 +1610,7 @@ func runtimeEventPermissionRequestHandler(a *App, event agentruntime.RuntimeEven
 	return false
 }
 
-func runtimeEventPermissionResolvedHandler(a *App, event agentruntime.RuntimeEvent) bool {
+func runtimeEventPermissionResolvedHandler(a *App, event tuiservices.RuntimeEvent) bool {
 	payload, ok := parsePermissionResolvedPayload(event.Payload)
 	if !ok {
 		return false
@@ -1649,8 +1638,8 @@ func (a *App) refreshPermissionPromptLayout() {
 	a.applyComponentLayout(false)
 }
 
-func runtimeEventCompactDoneHandler(a *App, event agentruntime.RuntimeEvent) bool {
-	payload, ok := event.Payload.(agentruntime.CompactResult)
+func runtimeEventCompactDoneHandler(a *App, event tuiservices.RuntimeEvent) bool {
+	payload, ok := event.Payload.(tuiservices.CompactResult)
 	if !ok {
 		return false
 	}
@@ -1671,8 +1660,8 @@ func runtimeEventCompactDoneHandler(a *App, event agentruntime.RuntimeEvent) boo
 	return true
 }
 
-func runtimeEventCompactErrorHandler(a *App, event agentruntime.RuntimeEvent) bool {
-	payload, ok := event.Payload.(agentruntime.CompactErrorPayload)
+func runtimeEventCompactErrorHandler(a *App, event tuiservices.RuntimeEvent) bool {
+	payload, ok := event.Payload.(tuiservices.CompactErrorPayload)
 	if !ok {
 		return false
 	}
@@ -2709,15 +2698,15 @@ func (a *App) requestModelCatalogRefresh(providerID string) tea.Cmd {
 	return runModelCatalogRefresh(a.providerSvc, providerID)
 }
 
-func ListenForRuntimeEvent(sub <-chan agentruntime.RuntimeEvent) tea.Cmd {
+func ListenForRuntimeEvent(sub <-chan tuiservices.RuntimeEvent) tea.Cmd {
 	return tuiservices.ListenForRuntimeEventCmd(
 		sub,
-		func(event agentruntime.RuntimeEvent) tea.Msg { return RuntimeMsg{Event: event} },
+		func(event tuiservices.RuntimeEvent) tea.Msg { return RuntimeMsg{Event: event} },
 		func() tea.Msg { return RuntimeClosedMsg{} },
 	)
 }
 
-func runAgent(runtime agentruntime.Runtime, input agentruntime.PrepareInput) tea.Cmd {
+func runAgent(runtime tuiservices.Runtime, input tuiservices.PrepareInput) tea.Cmd {
 	return tuiservices.RunSubmitCmd(
 		runtime,
 		input,
@@ -2726,30 +2715,30 @@ func runAgent(runtime agentruntime.Runtime, input agentruntime.PrepareInput) tea
 }
 
 func runResolvePermission(
-	runtime agentruntime.Runtime,
+	runtime tuiservices.Runtime,
 	requestID string,
-	decision agentruntime.PermissionResolutionDecision,
+	decision tuiservices.PermissionResolutionDecision,
 ) tea.Cmd {
 	return tuiservices.RunResolvePermissionCmd(
 		runtime,
-		agentruntime.PermissionResolutionInput{
+		tuiservices.PermissionResolutionInput{
 			RequestID: strings.TrimSpace(requestID),
 			Decision:  decision,
 		},
-		func(input agentruntime.PermissionResolutionInput, err error) tea.Msg {
+		func(input tuiservices.PermissionResolutionInput, err error) tea.Msg {
 			return permissionResolutionFinishedMsg{
 				RequestID: input.RequestID,
-				Decision:  input.Decision,
+				Decision:  string(input.Decision),
 				Err:       err,
 			}
 		},
 	)
 }
 
-func runCompact(runtime agentruntime.Runtime, sessionID string) tea.Cmd {
+func runCompact(runtime tuiservices.Runtime, sessionID string) tea.Cmd {
 	return tuiservices.RunCompactCmd(
 		runtime,
-		agentruntime.CompactInput{SessionID: sessionID},
+		tuiservices.CompactInput{SessionID: sessionID},
 		func(err error) tea.Msg { return compactFinishedMsg{Err: err} },
 	)
 }
@@ -2885,10 +2874,10 @@ func (a *App) restoreStatusAfterLogViewer() {
 }
 
 // toRuntimeSessionLogEntries 转换日志条目到 runtime 持久化模型。
-func toRuntimeSessionLogEntries(entries []logEntry) []agentruntime.SessionLogEntry {
-	converted := make([]agentruntime.SessionLogEntry, 0, len(entries))
+func toRuntimeSessionLogEntries(entries []logEntry) []tuiservices.SessionLogEntry {
+	converted := make([]tuiservices.SessionLogEntry, 0, len(entries))
 	for _, entry := range entries {
-		converted = append(converted, agentruntime.SessionLogEntry{
+		converted = append(converted, tuiservices.SessionLogEntry{
 			Timestamp: entry.Timestamp,
 			Level:     entry.Level,
 			Source:    entry.Source,
@@ -2899,7 +2888,7 @@ func toRuntimeSessionLogEntries(entries []logEntry) []agentruntime.SessionLogEnt
 }
 
 // fromRuntimeSessionLogEntries 将 runtime 持久化模型恢复为 TUI 展示模型。
-func fromRuntimeSessionLogEntries(entries []agentruntime.SessionLogEntry) []logEntry {
+func fromRuntimeSessionLogEntries(entries []tuiservices.SessionLogEntry) []logEntry {
 	converted := make([]logEntry, 0, len(entries))
 	for _, entry := range entries {
 		converted = append(converted, logEntry{
@@ -3003,7 +2992,7 @@ func (a *App) runMemoSystemTool(toolName string, arguments map[string]any) tea.C
 
 	return tuiservices.RunSystemToolCmd(
 		a.runtime,
-		agentruntime.SystemToolInput{
+		tuiservices.SystemToolInput{
 			SessionID: a.state.ActiveSessionID,
 			Workdir:   a.state.CurrentWorkdir,
 			ToolName:  toolName,

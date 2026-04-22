@@ -100,18 +100,11 @@ $env:QINIU_API_KEY = "your_key_here"
 go run ./cmd/neocode --workdir /path/to/workspace
 ```
 
-运行模式切换（默认 `local`）：
+Gateway 转发与自动拉起说明：
 
-```bash
-go run ./cmd/neocode --runtime-mode local
-go run ./cmd/neocode --runtime-mode gateway
-```
-
-说明：
-
-- `--runtime-mode` 仅影响当前进程，不会回写 `config.yaml`
-- `gateway` 模式会通过本地 Gateway（优先 IPC）转发 runtime 请求与事件流
-- 若 Gateway 不可达或握手失败会直接报错退出（Fail Fast），不会自动回退到 `local`
+- `neocode` 默认通过本地 Gateway（优先 IPC）转发 runtime 请求与事件流
+- 启动时会先探测本地网关；若未运行会自动后台拉起并等待就绪（无感）
+- 若自动拉起后仍不可达或握手失败，会直接报错退出（Fail Fast）
 
 ### 4) 首次使用与常用命令
 - `/help`：查看命令帮助
@@ -144,7 +137,7 @@ go run ./cmd/neocode --runtime-mode gateway
 
 - API Key 通过环境变量注入，不写入 `config.yaml`
 - `--workdir` 只影响当前运行，不会回写到配置文件
-- `--runtime-mode` 默认 `local`，用于灰度切换到 `gateway` 模式
+- TUI 默认通过 Gateway 连接 runtime，启动时会自动探测并在必要时后台拉起网关
 
 详细配置请参考：[docs/guides/configuration.md](docs/guides/configuration.md)
 

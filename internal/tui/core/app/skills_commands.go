@@ -10,7 +10,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	agentruntime "neo-code/internal/runtime"
 	tuiservices "neo-code/internal/tui/services"
 )
 
@@ -161,7 +160,7 @@ func normalizeSkillCommandError(err error) error {
 }
 
 // formatAvailableSkills 渲染 `/skills` 输出，包含可见技能清单与当前激活标记。
-func formatAvailableSkills(states []agentruntime.AvailableSkillState, sessionID string) string {
+func formatAvailableSkills(states []tuiservices.AvailableSkillState, sessionID string) string {
 	if len(states) == 0 {
 		return "No skills found in local registry."
 	}
@@ -203,11 +202,11 @@ func formatAvailableSkills(states []agentruntime.AvailableSkillState, sessionID 
 }
 
 // formatSessionSkills 渲染 `/skill active` 输出，并明确缺失技能状态。
-func formatSessionSkills(states []agentruntime.SessionSkillState) string {
+func formatSessionSkills(states []tuiservices.SessionSkillState) string {
 	if len(states) == 0 {
 		return "No active skills in current session."
 	}
-	normalized := append([]agentruntime.SessionSkillState(nil), states...)
+	normalized := append([]tuiservices.SessionSkillState(nil), states...)
 	sort.Slice(normalized, func(i, j int) bool {
 		return strings.ToLower(strings.TrimSpace(normalized[i].SkillID)) <
 			strings.ToLower(strings.TrimSpace(normalized[j].SkillID))
