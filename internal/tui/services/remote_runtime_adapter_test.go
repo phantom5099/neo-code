@@ -15,6 +15,21 @@ import (
 	"neo-code/internal/tools"
 )
 
+func newRemoteRuntimeAdapterForTest(
+	t *testing.T,
+	rpcClient *stubRemoteRPCClient,
+) (*RemoteRuntimeAdapter, *stubRemoteStreamClient) {
+	t.Helper()
+
+	if rpcClient.notifications == nil {
+		rpcClient.notifications = make(chan gatewayRPCNotification)
+	}
+	streamClient := &stubRemoteStreamClient{events: make(chan RuntimeEvent)}
+	adapter := newRemoteRuntimeAdapterWithClients(rpcClient, streamClient, time.Second, 1)
+	t.Cleanup(func() { _ = adapter.Close() })
+	return adapter, streamClient
+}
+
 func TestRemoteRuntimeAdapterSubmitAuthenticatesBindsPreloadsAndRuns(t *testing.T) {
 	rpcClient := &stubRemoteRPCClient{
 		frames: map[string]gateway.MessageFrame{
@@ -36,7 +51,6 @@ func TestRemoteRuntimeAdapterSubmitAuthenticatesBindsPreloadsAndRuns(t *testing.
 				RunID:     "run-1",
 			},
 		},
-		notifications: make(chan gatewayRPCNotification),
 	}
 	streamClient := &stubRemoteStreamClient{events: make(chan RuntimeEvent)}
 	adapter := newRemoteRuntimeAdapterWithClients(rpcClient, streamClient, time.Second, 1)
@@ -96,8 +110,7 @@ func TestRemoteRuntimeAdapterSubmitAuthenticatesBindsPreloadsAndRuns(t *testing.
 
 func TestRemoteRuntimeAdapterSubmitFailFastOnAuthenticateError(t *testing.T) {
 	rpcClient := &stubRemoteRPCClient{
-		authErr:       errors.New("auth failed"),
-		notifications: make(chan gatewayRPCNotification),
+		authErr: errors.New("auth failed"),
 	}
 	streamClient := &stubRemoteStreamClient{events: make(chan RuntimeEvent)}
 	adapter := newRemoteRuntimeAdapterWithClients(rpcClient, streamClient, time.Second, 1)
@@ -121,7 +134,6 @@ func TestRemoteRuntimeAdapterSubmitFailFastOnBindStreamError(t *testing.T) {
 		callErrs: map[string]error{
 			protocol.MethodGatewayBindStream: errors.New("stream bind failed"),
 		},
-		notifications: make(chan gatewayRPCNotification),
 	}
 	streamClient := &stubRemoteStreamClient{events: make(chan RuntimeEvent)}
 	adapter := newRemoteRuntimeAdapterWithClients(rpcClient, streamClient, time.Second, 1)
@@ -151,7 +163,7 @@ func TestRemoteRuntimeAdapterExecuteSystemToolUnsupported(t *testing.T) {
 	_, err := adapter.ExecuteSystemTool(context.Background(), SystemToolInput{
 		ToolName: "bash",
 	})
-	if err == nil || err.Error() != unsupportedActionInGatewayMode {
+	if err == nil || !errors.Is(err, ErrUnsupportedActionInGatewayMode) {
 		t.Fatalf("expected unsupported_action_in_gateway_mode, got %v", err)
 	}
 }
@@ -179,7 +191,6 @@ func TestRemoteRuntimeAdapterLoadSessionMinimalMapping(t *testing.T) {
 				},
 			},
 		},
-		notifications: make(chan gatewayRPCNotification),
 	}
 	streamClient := &stubRemoteStreamClient{events: make(chan RuntimeEvent)}
 	adapter := newRemoteRuntimeAdapterWithClients(rpcClient, streamClient, time.Second, 1)
@@ -212,8 +223,7 @@ func TestRemoteRuntimeAdapterCancelActiveRunSendsGatewayCancel(t *testing.T) {
 				Action: gateway.FrameActionCancel,
 			},
 		},
-		notifications: make(chan gatewayRPCNotification),
-		methodCh:      methodCh,
+		methodCh: methodCh,
 	}
 	streamClient := &stubRemoteStreamClient{events: make(chan RuntimeEvent)}
 	adapter := newRemoteRuntimeAdapterWithClients(rpcClient, streamClient, time.Second, 1)

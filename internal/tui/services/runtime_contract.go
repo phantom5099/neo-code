@@ -155,6 +155,17 @@ type SessionSkillState struct {
 	Descriptor *skills.Descriptor
 }
 
+// SessionSkillEventPayload 描述技能事件载荷。
+type SessionSkillEventPayload struct {
+	SkillID string `json:"skill_id"`
+}
+
+// AvailableSkillState 描述可用技能状态。
+type AvailableSkillState struct {
+	Descriptor skills.Descriptor
+	Active     bool
+}
+
 // SessionLogEntry 描述日志查看器持久化条目。
 type SessionLogEntry struct {
 	Timestamp time.Time `json:"timestamp"`

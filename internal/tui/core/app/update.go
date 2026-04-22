@@ -1065,6 +1065,9 @@ var runtimeEventHandlerRegistry = map[tuiservices.EventType]func(*App, tuiservic
 	tuiservices.EventStopReasonDecided:                        runtimeEventStopReasonDecidedHandler,
 	tuiservices.EventTodoUpdated:                              runtimeEventTodoUpdatedHandler,
 	tuiservices.EventTodoConflict:                             runtimeEventTodoConflictHandler,
+	tuiservices.EventSkillActivated:                           runtimeEventSkillActivatedHandler,
+	tuiservices.EventSkillDeactivated:                         runtimeEventSkillDeactivatedHandler,
+	tuiservices.EventSkillMissing:                             runtimeEventSkillMissingHandler,
 }
 
 func runtimeEventPhaseChangedHandler(a *App, event tuiservices.RuntimeEvent) bool {
@@ -1162,6 +1165,71 @@ func runtimeEventTodoConflictHandler(a *App, event tuiservices.RuntimeEvent) boo
 	}
 	a.appendActivity("todo", "Todo conflict", reason, true)
 	return false
+}
+
+// runtimeEventSkillActivatedHandler 在 runtime 激活 skill 后同步活动日志。
+func runtimeEventSkillActivatedHandler(a *App, event tuiservices.RuntimeEvent) bool {
+	payload, ok := parseSessionSkillEventPayload(event.Payload)
+	if !ok {
+		return false
+	}
+	skillID := strings.TrimSpace(payload.SkillID)
+	if skillID == "" {
+		skillID = "(unknown)"
+	}
+	a.appendActivity("skills", "Skill activated", skillID, false)
+	return false
+}
+
+// runtimeEventSkillDeactivatedHandler 在 runtime 停用 skill 后同步活动日志。
+func runtimeEventSkillDeactivatedHandler(a *App, event tuiservices.RuntimeEvent) bool {
+	payload, ok := parseSessionSkillEventPayload(event.Payload)
+	if !ok {
+		return false
+	}
+	skillID := strings.TrimSpace(payload.SkillID)
+	if skillID == "" {
+		skillID = "(unknown)"
+	}
+	a.appendActivity("skills", "Skill deactivated", skillID, false)
+	return false
+}
+
+// runtimeEventSkillMissingHandler 在会话 skill 丢失时输出显式错误反馈，便于排查恢复问题。
+func runtimeEventSkillMissingHandler(a *App, event tuiservices.RuntimeEvent) bool {
+	payload, ok := parseSessionSkillEventPayload(event.Payload)
+	if !ok {
+		return false
+	}
+	skillID := strings.TrimSpace(payload.SkillID)
+	if skillID == "" {
+		skillID = "(unknown)"
+	}
+	a.appendActivity("skills", "Skill missing in registry", skillID, true)
+	return false
+}
+
+// parseSessionSkillEventPayload 解析 runtime skill 事件负载并兼容 map 结构。
+func parseSessionSkillEventPayload(payload any) (tuiservices.SessionSkillEventPayload, bool) {
+	switch typed := payload.(type) {
+	case tuiservices.SessionSkillEventPayload:
+		return typed, true
+	case *tuiservices.SessionSkillEventPayload:
+		if typed == nil {
+			return tuiservices.SessionSkillEventPayload{}, false
+		}
+		return *typed, true
+	case map[string]any:
+		if raw, ok := typed["skill_id"]; ok && raw != nil {
+			return tuiservices.SessionSkillEventPayload{SkillID: strings.TrimSpace(fmt.Sprintf("%v", raw))}, true
+		}
+		if raw, ok := typed["SkillID"]; ok && raw != nil {
+			return tuiservices.SessionSkillEventPayload{SkillID: strings.TrimSpace(fmt.Sprintf("%v", raw))}, true
+		}
+		return tuiservices.SessionSkillEventPayload{}, false
+	default:
+		return tuiservices.SessionSkillEventPayload{}, false
+	}
 }
 
 func parseTodoEventPayload(payload any) (tuiservices.TodoEventPayload, bool) {
@@ -1609,6 +1677,27 @@ func (a *App) appendInlineMessage(role string, message string) {
 	}
 
 	a.activeMessages = append(a.activeMessages, providertypes.Message{Role: role, Parts: []providertypes.ContentPart{providertypes.NewTextPart(content)}})
+}
+
+// applyInlineCommandError 统一写入命令错误并刷新转录区，确保错误提示立即可见。
+func (a *App) applyInlineCommandError(message string) {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return
+	}
+	a.state.ExecutionError = message
+	a.state.StatusText = message
+	a.appendInlineMessage(roleError, message)
+	a.rebuildTranscript()
+}
+
+// recordStaleSkillCommandResult 记录来自旧会话的技能命令结果，避免在会话切换后错误被静默丢弃。
+func (a *App) recordStaleSkillCommandResult(requestSessionID, activeSessionID string, runErr error) {
+	detail := fmt.Sprintf("result from session %q ignored after switching to %q", requestSessionID, activeSessionID)
+	if runErr != nil {
+		detail = fmt.Sprintf("%s; original error: %s", detail, runErr.Error())
+	}
+	a.appendActivity("skills", "Ignored stale skill command result", detail, runErr != nil)
 }
 
 func (a *App) appendActivity(kind string, title string, detail string, isError bool) {
@@ -2394,27 +2483,15 @@ func (a *App) handleImmediateSlashCommand(input string) (bool, tea.Cmd) {
 		return true, nil
 	case slashCommandCompact:
 		if strings.TrimSpace(rest) != "" {
-			errText := fmt.Sprintf("usage: %s", slashUsageCompact)
-			a.state.ExecutionError = errText
-			a.state.StatusText = errText
-			a.appendInlineMessage(roleError, errText)
-			a.rebuildTranscript()
+			a.applyInlineCommandError(fmt.Sprintf("usage: %s", slashUsageCompact))
 			return true, nil
 		}
 		if strings.TrimSpace(a.state.ActiveSessionID) == "" {
-			errText := "compact requires an existing session"
-			a.state.ExecutionError = errText
-			a.state.StatusText = errText
-			a.appendInlineMessage(roleError, errText)
-			a.rebuildTranscript()
+			a.applyInlineCommandError("compact requires an existing session")
 			return true, nil
 		}
 		if a.isBusy() {
-			errText := "compact is already running, please wait"
-			a.state.ExecutionError = errText
-			a.state.StatusText = errText
-			a.appendInlineMessage(roleError, errText)
-			a.rebuildTranscript()
+			a.applyInlineCommandError("compact is already running, please wait")
 			return true, nil
 		}
 		a.state.IsCompacting = true
