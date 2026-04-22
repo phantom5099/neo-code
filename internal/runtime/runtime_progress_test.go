@@ -23,6 +23,10 @@ func TestProgressStreakNoLongerStopsRun(t *testing.T) {
 		Providers:        []config.ProviderConfig{{Name: "test-progress", Driver: "test", BaseURL: "http://localhost", Model: "test", APIKeyEnv: "TEST_KEY"}},
 		SelectedProvider: "test-progress",
 		Workdir:          t.TempDir(),
+		Runtime: config.RuntimeConfig{
+			MaxNoProgressStreak:  3,
+			MaxRepeatCycleStreak: 6,
+		},
 	}
 
 	toolManager := &stubToolManager{

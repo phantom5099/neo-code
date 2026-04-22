@@ -641,8 +641,8 @@ func TestGatewayRPCClientAutoSpawnWhenGatewayUnavailable(t *testing.T) {
 				defer serverConn.Close()
 				decoder := json.NewDecoder(serverConn)
 				encoder := json.NewEncoder(serverConn)
-				request := readRPCRequestOrFail(t, decoder)
-				writeRPCResultOrFail(t, encoder, request.ID, gateway.MessageFrame{
+				request := readRPCRequestOrFail(decoder)
+				writeRPCResultOrFail(encoder, request.ID, gateway.MessageFrame{
 					Type:   gateway.FrameTypeAck,
 					Action: gateway.FrameActionPing,
 				})
@@ -1104,7 +1104,7 @@ func TestGatewayRPCClientAuthenticateLoadsTokenAfterGatewayAutoSpawn(t *testing.
 				decoder := json.NewDecoder(serverConn)
 				encoder := json.NewEncoder(serverConn)
 
-				request := readRPCRequestOrFail(t, decoder)
+				request := readRPCRequestOrFail(decoder)
 				if request.Method != protocol.MethodGatewayAuthenticate {
 					t.Fatalf("authenticate method = %q", request.Method)
 				}
@@ -1116,7 +1116,7 @@ func TestGatewayRPCClientAuthenticateLoadsTokenAfterGatewayAutoSpawn(t *testing.
 					t.Fatalf("expected non-empty authenticate token")
 				}
 
-				writeRPCResultOrFail(t, encoder, request.ID, gateway.MessageFrame{
+				writeRPCResultOrFail(encoder, request.ID, gateway.MessageFrame{
 					Type:   gateway.FrameTypeAck,
 					Action: gateway.FrameActionAuthenticate,
 				})
