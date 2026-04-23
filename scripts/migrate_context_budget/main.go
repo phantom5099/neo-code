@@ -49,9 +49,13 @@ func printMigrationResult(result config.ContextBudgetMigrationResult, dryRun boo
 
 // defaultBaseDir 返回当前用户目录下的默认 NeoCode 配置目录。
 func defaultBaseDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil || strings.TrimSpace(home) == "" {
-		return filepath.Join("~", defaultNeoCodeDirName)
+	home := strings.TrimSpace(os.Getenv("HOME"))
+	if !filepath.IsAbs(home) {
+		var err error
+		home, err = os.UserHomeDir()
+		if err != nil || !filepath.IsAbs(strings.TrimSpace(home)) {
+			return filepath.Join("~", defaultNeoCodeDirName)
+		}
 	}
 	return filepath.Join(home, defaultNeoCodeDirName)
 }

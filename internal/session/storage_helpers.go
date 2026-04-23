@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 )
 
+var evalSymlinks = filepath.EvalSymlinks
+
 // ensurePathWithinBase 校验目标路径位于指定基目录内，避免路径越界。
 func ensurePathWithinBase(baseDir string, target string) error {
 	baseResolved, err := resolvePathForContainment(baseDir)
@@ -36,25 +38,60 @@ func resolvePathForContainment(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve absolute path: %w", err)
 	}
-	resolved, err := filepath.EvalSymlinks(absPath)
+	resolved, err := evalSymlinks(absPath)
 	if err == nil {
 		return resolved, nil
 	}
 	if errors.Is(err, os.ErrPermission) {
+		allowed, inspectErr := canFallbackToAbsolutePathOnPermission(absPath)
+		if inspectErr != nil {
+			return "", inspectErr
+		}
+		if allowed {
+			return absPath, nil
+		}
 		return "", fmt.Errorf("eval symlinks: %w", err)
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		return "", fmt.Errorf("eval symlinks: %w", err)
 	}
 	parent := filepath.Dir(absPath)
-	resolvedParent, parentErr := filepath.EvalSymlinks(parent)
+	resolvedParent, parentErr := evalSymlinks(parent)
 	if parentErr == nil {
 		return filepath.Join(resolvedParent, filepath.Base(absPath)), nil
 	}
 	if errors.Is(parentErr, os.ErrPermission) {
+		allowed, inspectErr := canFallbackToAbsolutePathOnPermission(parent)
+		if inspectErr != nil {
+			return "", inspectErr
+		}
+		if allowed {
+			return absPath, nil
+		}
 		return "", fmt.Errorf("eval parent symlinks: %w", parentErr)
 	}
 	return "", fmt.Errorf("eval parent symlinks: %w", parentErr)
+}
+
+func canFallbackToAbsolutePathOnPermission(absPath string) (bool, error) {
+	current := filepath.Clean(absPath)
+	for {
+		info, err := os.Lstat(current)
+		if err == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return false, nil
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return false, fmt.Errorf("inspect path %q: %w", current, err)
+		}
+
+		parent := filepath.Dir(current)
+		if parent == current {
+			break
+		}
+		current = parent
+	}
+	return true, nil
 }
 
 // createTempFile 在目标目录中创建唯一临时文件。

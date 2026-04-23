@@ -26,6 +26,26 @@ func writeLoaderConfig(t *testing.T, loader *Loader, raw string) {
 	}
 }
 
+func TestDefaultBaseDirRejectsRelativeHomeEnv(t *testing.T) {
+	t.Setenv("HOME", ".")
+
+	got := defaultBaseDir()
+	if !filepath.IsAbs(got) && got != dirName {
+		t.Fatalf("defaultBaseDir() must resolve to absolute path or fallback dir name, got %q", got)
+	}
+}
+
+func TestDefaultBaseDirUsesAbsoluteHomeEnv(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	got := defaultBaseDir()
+	want := filepath.Join(home, dirName)
+	if got != want {
+		t.Fatalf("defaultBaseDir() = %q, want %q", got, want)
+	}
+}
+
 func saveCustomProviderWithModelsForTest(
 	baseDir string,
 	name string,

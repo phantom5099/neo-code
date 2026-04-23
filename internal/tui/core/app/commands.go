@@ -86,8 +86,6 @@ const (
 	statusDraft                = "New draft"
 	statusRunning              = "Running"
 	statusApplyingCommand      = "Applying local command"
-	statusRunningCommand       = "Running command"
-	statusCommandDone          = "Command finished"
 	statusCompacting           = "Compacting context"
 	statusChooseProvider       = "Choose a provider"
 	statusChooseModel          = "Choose a model"

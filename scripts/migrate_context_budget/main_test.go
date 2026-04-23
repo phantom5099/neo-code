@@ -75,6 +75,18 @@ func TestDefaultBaseDirUsesHome(t *testing.T) {
 	}
 }
 
+func TestDefaultBaseDirRejectsRelativeHome(t *testing.T) {
+	t.Setenv("HOME", ".")
+
+	got := defaultBaseDir()
+	if got == filepath.Join(".", defaultNeoCodeDirName) {
+		t.Fatalf("defaultBaseDir() should not trust relative HOME, got %q", got)
+	}
+	if !filepath.IsAbs(got) && got != filepath.Join("~", defaultNeoCodeDirName) {
+		t.Fatalf("defaultBaseDir() must resolve to absolute path or fallback, got %q", got)
+	}
+}
+
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 

@@ -133,7 +133,6 @@ Gateway 转发与自动拉起说明：
 - `/skill use <id>`：在当前会话启用 skill
 - `/skill off <id>`：在当前会话停用 skill
 - `/skill active`：查看当前会话已激活 skills
-- `& <command>`：在当前工作区执行本地命令
 
 示例输入：
 ```text

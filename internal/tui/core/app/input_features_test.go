@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -10,8 +9,6 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-
-	"neo-code/internal/config"
 )
 
 func TestTokenAndReferenceParsing(t *testing.T) {
@@ -423,59 +420,6 @@ func TestAddImageFromClipboardBranches(t *testing.T) {
 	}
 	if err := app.addImageFromClipboard(); err == nil {
 		t.Fatalf("expected save failure error")
-	}
-}
-
-func TestExecuteWorkspaceCommand(t *testing.T) {
-	app, _ := newTestApp(t)
-	original := workspaceCommandExecutor
-	workspaceCommandExecutor = func(ctx context.Context, cfg config.Config, workdir string, command string) (string, error) {
-		if command != "echo hi" {
-			t.Fatalf("unexpected command: %q", command)
-		}
-		return "ok", nil
-	}
-	defer func() { workspaceCommandExecutor = original }()
-
-	command, output, err := executeWorkspaceCommand(context.Background(), app.configManager, app.state.CurrentWorkdir, "& echo hi")
-	if err != nil {
-		t.Fatalf("executeWorkspaceCommand() error = %v", err)
-	}
-	if command != "echo hi" || output != "ok" {
-		t.Fatalf("unexpected execute result command=%q output=%q", command, output)
-	}
-
-	if _, _, err := executeWorkspaceCommand(context.Background(), app.configManager, app.state.CurrentWorkdir, "& "); err == nil {
-		t.Fatalf("expected invalid workspace command error")
-	}
-}
-
-func TestDefaultWorkspaceCommandExecutor(t *testing.T) {
-	cfg := config.Config{Workdir: t.TempDir(), Shell: "bash", ToolTimeoutSec: 1}
-	if _, err := defaultWorkspaceCommandExecutor(context.Background(), cfg, cfg.Workdir, ""); err == nil {
-		t.Fatalf("expected empty command to fail")
-	}
-}
-
-func TestRunWorkspaceCommandCmd(t *testing.T) {
-	app, _ := newTestApp(t)
-	original := workspaceCommandExecutor
-	workspaceCommandExecutor = func(ctx context.Context, cfg config.Config, workdir string, command string) (string, error) {
-		return "done", nil
-	}
-	defer func() { workspaceCommandExecutor = original }()
-
-	cmd := runWorkspaceCommand(app.configManager, app.state.CurrentWorkdir, "& echo hi")
-	if cmd == nil {
-		t.Fatalf("expected workspace command cmd")
-	}
-	msg := cmd()
-	result, ok := msg.(workspaceCommandResultMsg)
-	if !ok {
-		t.Fatalf("expected workspaceCommandResultMsg, got %T", msg)
-	}
-	if result.Command != "echo hi" || result.Output != "done" || result.Err != nil {
-		t.Fatalf("unexpected workspace result: %+v", result)
 	}
 }
 

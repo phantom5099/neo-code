@@ -248,24 +248,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.rebuildTranscript()
 		return a, tea.Batch(cmds...)
-	case workspaceCommandResultMsg:
-		if typed.Command == "" && typed.Err != nil {
-			a.state.ExecutionError = typed.Err.Error()
-			a.state.StatusText = typed.Err.Error()
-			a.appendActivity("command", "Workspace command failed", typed.Err.Error(), true)
-			return a, tea.Batch(cmds...)
-		}
-		result := formatWorkspaceCommandResult(typed.Command, typed.Output, typed.Err)
-		if typed.Err != nil {
-			a.state.ExecutionError = typed.Err.Error()
-			a.state.StatusText = fmt.Sprintf("Command failed: %s", typed.Command)
-			a.appendActivity("command", "Command failed", result, true)
-		} else {
-			a.state.ExecutionError = ""
-			a.state.StatusText = statusCommandDone
-			a.appendActivity("command", "Command finished", result, false)
-		}
-		return a, tea.Batch(cmds...)
 	case tea.MouseMsg:
 		if a.logViewerVisible && a.handleLogViewerMouse(typed) {
 			return a, tea.Batch(cmds...)
@@ -520,22 +502,6 @@ func (a App) updateInputPanel(msg tea.Msg, typed tea.KeyMsg, cmds []tea.Cmd) (te
 				cmds = append(cmds, runLocalCommand(a.configManager, a.providerSvc, a.currentStatusSnapshot(), input))
 				return a, tea.Batch(cmds...)
 			}
-			if isWorkspaceCommandInput(input) {
-				command, err := extractWorkspaceCommand(input)
-				if err != nil {
-					a.state.ExecutionError = err.Error()
-					a.state.StatusText = err.Error()
-					a.appendActivity("command", "Invalid workspace command", err.Error(), true)
-					return a, tea.Batch(cmds...)
-				}
-				a.clearActivities()
-				a.state.StatusText = statusRunningCommand
-				a.state.ExecutionError = ""
-				a.appendActivity("command", "Running command", command, false)
-				cmds = append(cmds, runWorkspaceCommand(a.configManager, a.state.CurrentWorkdir, input))
-				return a, tea.Batch(cmds...)
-			}
-
 			normalizedInput, absorbedImages, err := a.absorbInlineImageReferences(input)
 			if err != nil {
 				a.state.ExecutionError = err.Error()

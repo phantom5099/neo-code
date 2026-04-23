@@ -995,51 +995,6 @@ func TestExtractFencedCodeBlocks(t *testing.T) {
 	}
 }
 
-func TestIsWorkspaceCommandInput(t *testing.T) {
-	if !isWorkspaceCommandInput("& ls -la") {
-		t.Fatalf("expected workspace command prefix to be detected")
-	}
-	if isWorkspaceCommandInput("ls -la") {
-		t.Fatalf("expected non-workspace command to be false")
-	}
-}
-
-func TestExtractWorkspaceCommand(t *testing.T) {
-	command, err := extractWorkspaceCommand("& git status")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if command != "git status" {
-		t.Fatalf("expected command to be extracted, got %q", command)
-	}
-
-	if _, err := extractWorkspaceCommand("&"); err == nil {
-		t.Fatalf("expected error for empty command")
-	}
-	if _, err := extractWorkspaceCommand("git status"); err == nil {
-		t.Fatalf("expected error for missing prefix")
-	}
-}
-
-func TestFormatWorkspaceCommandResult(t *testing.T) {
-	output := "clean\n"
-	got := formatWorkspaceCommandResult("git status", output, nil)
-	if !strings.Contains(got, "Command: & git status") {
-		t.Fatalf("expected success header, got %q", got)
-	}
-	if !strings.Contains(got, "clean") {
-		t.Fatalf("expected output to be included")
-	}
-
-	errResult := formatWorkspaceCommandResult("git status", "", errors.New("boom"))
-	if !strings.Contains(errResult, "Command Failed: & git status") {
-		t.Fatalf("expected failure header, got %q", errResult)
-	}
-	if !strings.Contains(errResult, "boom") {
-		t.Fatalf("expected error message in result")
-	}
-}
-
 func TestTokenRangeFirstToken(t *testing.T) {
 	start, end, token, ok := tokenRange("  /help now", tokenSelectorFirst)
 	if !ok {
@@ -1071,29 +1026,6 @@ func TestCollectFileSuggestionMatches(t *testing.T) {
 	matches := collectFileSuggestionMatches("read", candidates, 2)
 	if len(matches) == 0 {
 		t.Fatalf("expected matches for read")
-	}
-}
-
-func TestShellArgsAndPowerShellUTF8(t *testing.T) {
-	args := shellArgs("bash", "echo hi")
-	if len(args) == 0 {
-		t.Fatalf("expected shell args to be returned")
-	}
-	utf8 := powershellUTF8Command("echo hi")
-	if utf8 == "" {
-		t.Fatalf("expected powershell utf8 command")
-	}
-}
-
-func TestSanitizeAndDecodeWorkspaceOutput(t *testing.T) {
-	raw := []byte("hello\u0000world")
-	sanitized := sanitizeWorkspaceOutput(raw)
-	if sanitized == "" {
-		t.Fatalf("expected sanitized output")
-	}
-	decoded := decodeWorkspaceOutput(raw)
-	if decoded == "" {
-		t.Fatalf("expected decoded output")
 	}
 }
 
@@ -1486,6 +1418,28 @@ func TestUpdateSendWithImageAttachmentsUsesPreparePipeline(t *testing.T) {
 	}
 	if len(runtime.runInputs) != 1 {
 		t.Fatalf("expected one runtime run input, got %+v", runtime.runInputs)
+	}
+}
+
+func TestUpdateSendAmpersandInputAsPlainText(t *testing.T) {
+	app, runtime := newTestApp(t)
+	app.input.SetValue("& git status")
+	app.state.InputText = "& git status"
+
+	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		_ = cmd()
+	}
+	app = model.(App)
+
+	if !app.state.IsAgentRunning {
+		t.Fatalf("expected ampersand-prefixed text to enter normal send flow")
+	}
+	if len(runtime.prepareInputs) != 1 {
+		t.Fatalf("expected one prepare input, got %+v", runtime.prepareInputs)
+	}
+	if runtime.prepareInputs[0].Text != "& git status" {
+		t.Fatalf("expected ampersand text to be forwarded unchanged, got %q", runtime.prepareInputs[0].Text)
 	}
 }
 
@@ -3059,24 +3013,6 @@ func TestUpdateLocalAndWorkspaceCommandResultBranches(t *testing.T) {
 	if app.state.StatusText != "ok" {
 		t.Fatalf("expected local command success notice")
 	}
-
-	model, _ = app.Update(workspaceCommandResultMsg{Command: "", Err: errors.New("workspace failed")})
-	app = model.(App)
-	if app.state.StatusText != "workspace failed" {
-		t.Fatalf("expected workspace empty command error status")
-	}
-
-	model, _ = app.Update(workspaceCommandResultMsg{Command: "git status", Err: errors.New("boom")})
-	app = model.(App)
-	if !strings.Contains(app.state.StatusText, "Command failed") {
-		t.Fatalf("expected workspace command failed status")
-	}
-
-	model, _ = app.Update(workspaceCommandResultMsg{Command: "git status", Output: "clean"})
-	app = model.(App)
-	if app.state.StatusText != statusCommandDone {
-		t.Fatalf("expected workspace success status, got %q", app.state.StatusText)
-	}
 }
 
 func TestUpdateLocalCommandProviderChangedRefreshErrors(t *testing.T) {
@@ -3193,26 +3129,6 @@ func TestUpdateInputPanelSlashAndWorkspaceBranches(t *testing.T) {
 		t.Fatalf("expected /provider add to open provider add form")
 	}
 
-	app.providerAddForm = nil
-	app.state.ActivePicker = pickerNone
-	app.input.SetValue("& echo hi")
-	app.state.InputText = "& echo hi"
-	model, cmd = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	app = model.(App)
-	if app.state.StatusText != statusRunningCommand {
-		t.Fatalf("expected workspace command running status, got %q", app.state.StatusText)
-	}
-	if cmd == nil {
-		t.Fatalf("expected workspace command to return async cmd")
-	}
-
-	app.input.SetValue("&")
-	app.state.InputText = "&"
-	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	app = model.(App)
-	if strings.TrimSpace(app.state.ExecutionError) == "" {
-		t.Fatalf("expected invalid workspace command error")
-	}
 }
 
 func TestNewWithMemoAndNewAppErrorBranches(t *testing.T) {

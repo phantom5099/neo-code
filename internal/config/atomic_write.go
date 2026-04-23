@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"syscall"
 )
 
@@ -13,6 +14,7 @@ var (
 	atomicCreateTemp = os.CreateTemp
 	atomicReadFile   = os.ReadFile
 	atomicRename     = os.Rename
+	atomicGOOS       = runtime.GOOS
 )
 
 // writeFileAtomically 通过同目录临时文件与原子替换写入目标文件，并在写后做回读校验。
@@ -66,6 +68,9 @@ func writeFileAtomically(path string, data []byte, perm os.FileMode) error {
 
 // fsyncDirectory 尝试同步目录元数据，确保 rename 后的目录项在支持的平台尽快落盘。
 func fsyncDirectory(dir string) error {
+	if atomicGOOS == "windows" {
+		return nil
+	}
 	handle, err := os.Open(dir)
 	if err != nil {
 		return err
