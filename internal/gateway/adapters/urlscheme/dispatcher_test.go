@@ -1179,6 +1179,366 @@ func TestDispatcherJSONRPCHelpers(t *testing.T) {
 	}
 }
 
+func TestDispatcherDispatchErrorFrameBranches(t *testing.T) {
+	t.Run("error frame missing error payload", func(t *testing.T) {
+		dispatcher := &Dispatcher{
+			resolveListenAddressFn: func(string) (string, error) { return "stub://gateway", nil },
+			dialFn: func(string) (net.Conn, error) {
+				return &stubDispatchConn{
+					readBuffer: bytes.NewBufferString(
+						`{"jsonrpc":"2.0","id":"wake-err-1","result":{"type":"error","action":"wake.openUrl","request_id":"wake-err-1"}}` + "\n",
+					),
+				}, nil
+			},
+			requestIDFn: func() string { return "wake-err-1" },
+		}
+
+		_, err := dispatcher.Dispatch(context.Background(), DispatchRequest{RawURL: "neocode://review?path=README.md"})
+		if err == nil || !strings.Contains(err.Error(), "missing error payload") {
+			t.Fatalf("expected missing error payload error, got %v", err)
+		}
+	})
+
+	t.Run("error frame propagates gateway code and message", func(t *testing.T) {
+		dispatcher := &Dispatcher{
+			resolveListenAddressFn: func(string) (string, error) { return "stub://gateway", nil },
+			dialFn: func(string) (net.Conn, error) {
+				return &stubDispatchConn{
+					readBuffer: bytes.NewBufferString(
+						`{"jsonrpc":"2.0","id":"wake-err-2","result":{"type":"error","action":"wake.openUrl","request_id":"wake-err-2","error":{"code":"unauthorized","message":"denied"}}}` + "\n",
+					),
+				}, nil
+			},
+			requestIDFn: func() string { return "wake-err-2" },
+		}
+
+		_, err := dispatcher.Dispatch(context.Background(), DispatchRequest{RawURL: "neocode://review?path=README.md"})
+		var dispatchErr *DispatchError
+		if !errors.As(err, &dispatchErr) {
+			t.Fatalf("error type = %T, want *DispatchError", err)
+		}
+		if dispatchErr.Code != "unauthorized" {
+			t.Fatalf("error code = %q, want %q", dispatchErr.Code, "unauthorized")
+		}
+		if dispatchErr.Message != "denied" {
+			t.Fatalf("error message = %q, want %q", dispatchErr.Message, "denied")
+		}
+	})
+}
+
+func TestDispatcherLaunchGatewayBranches(t *testing.T) {
+	t.Run("context canceled before launch", func(t *testing.T) {
+		dispatcher := &Dispatcher{}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		err := dispatcher.launchGateway(ctx, "stub://gateway", "wake-launch-1", "")
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("launchGateway error = %v, want context canceled", err)
+		}
+	})
+
+	t.Run("missing resolve launch function", func(t *testing.T) {
+		dispatcher := &Dispatcher{
+			startGatewayFn: func(launcher.LaunchSpec) error { return nil },
+		}
+
+		err := dispatcher.launchGateway(context.Background(), "stub://gateway", "wake-launch-2", "")
+		if err == nil || !strings.Contains(err.Error(), "launcher is unavailable") {
+			t.Fatalf("expected launcher unavailable error, got %v", err)
+		}
+	})
+
+	t.Run("missing start gateway function", func(t *testing.T) {
+		dispatcher := &Dispatcher{
+			resolveLaunchSpecFn: func() (launcher.LaunchSpec, error) {
+				return launcher.LaunchSpec{LaunchMode: launcher.LaunchModePathBinary, Executable: "/tmp/neocode-gateway"}, nil
+			},
+		}
+
+		err := dispatcher.launchGateway(context.Background(), "stub://gateway", "wake-launch-3", "")
+		if err == nil || !strings.Contains(err.Error(), "start function is unavailable") {
+			t.Fatalf("expected start function unavailable error, got %v", err)
+		}
+	})
+
+	t.Run("resolve launch spec failed and emits failure log", func(t *testing.T) {
+		buffer := &bytes.Buffer{}
+		dispatcher := &Dispatcher{
+			resolveLaunchSpecFn: func() (launcher.LaunchSpec, error) {
+				return launcher.LaunchSpec{}, errors.New("resolve failed")
+			},
+			startGatewayFn: func(launcher.LaunchSpec) error { return nil },
+			logger:         log.New(buffer, "", 0),
+		}
+
+		err := dispatcher.launchGateway(context.Background(), "stub://gateway", "wake-launch-4", "token")
+		if err == nil || !strings.Contains(err.Error(), "resolve failed") {
+			t.Fatalf("expected resolve failed error, got %v", err)
+		}
+		if !strings.Contains(buffer.String(), `"status":"launch_failed"`) {
+			t.Fatalf("expected launch_failed log, got %q", buffer.String())
+		}
+	})
+
+	t.Run("start gateway failed", func(t *testing.T) {
+		dispatcher := &Dispatcher{
+			resolveLaunchSpecFn: func() (launcher.LaunchSpec, error) {
+				return launcher.LaunchSpec{LaunchMode: launcher.LaunchModePathBinary, Executable: "/tmp/neocode-gateway"}, nil
+			},
+			startGatewayFn: func(launcher.LaunchSpec) error {
+				return errors.New("start failed")
+			},
+		}
+
+		err := dispatcher.launchGateway(context.Background(), "stub://gateway", "wake-launch-5", "")
+		if err == nil || !strings.Contains(err.Error(), "start failed") {
+			t.Fatalf("expected start failed error, got %v", err)
+		}
+	})
+}
+
+func TestDispatcherWaitGatewayReadyBranches(t *testing.T) {
+	t.Run("uses default now and sleep functions", func(t *testing.T) {
+		dispatcher := &Dispatcher{
+			dialFn: func(string) (net.Conn, error) {
+				return &stubDispatchConn{}, nil
+			},
+		}
+		if err := dispatcher.waitGatewayReady(context.Background(), "stub://gateway"); err != nil {
+			t.Fatalf("waitGatewayReady() error = %v", err)
+		}
+	})
+
+	t.Run("context deadline short-circuits retry window", func(t *testing.T) {
+		base := time.Unix(300, 0)
+		now := base
+		sleepCalls := 0
+		dispatcher := &Dispatcher{
+			dialFn: func(string) (net.Conn, error) {
+				return nil, errors.New("unreachable")
+			},
+			nowFn: func() time.Time {
+				current := now
+				now = now.Add(50 * time.Millisecond)
+				return current
+			},
+			sleepFn: func(time.Duration) {
+				sleepCalls++
+			},
+		}
+
+		ctx, cancel := context.WithDeadline(context.Background(), base.Add(40*time.Millisecond))
+		defer cancel()
+		err := dispatcher.waitGatewayReady(ctx, "stub://gateway")
+		if err == nil {
+			t.Fatal("expected timeout-related error")
+		}
+		if !strings.Contains(err.Error(), "did not become reachable") && !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("expected timeout-related error, got %v", err)
+		}
+		if sleepCalls != 0 {
+			t.Fatalf("sleepCalls = %d, want %d", sleepCalls, 0)
+		}
+	})
+
+	t.Run("retries once then succeeds and sleeps", func(t *testing.T) {
+		base := time.Unix(400, 0)
+		now := base
+		dialCalls := 0
+		sleepCalls := 0
+		dispatcher := &Dispatcher{
+			dialFn: func(string) (net.Conn, error) {
+				dialCalls++
+				if dialCalls == 1 {
+					return nil, errors.New("not ready")
+				}
+				return &stubDispatchConn{}, nil
+			},
+			nowFn: func() time.Time {
+				current := now
+				now = now.Add(10 * time.Millisecond)
+				return current
+			},
+			sleepFn: func(time.Duration) {
+				sleepCalls++
+			},
+		}
+
+		if err := dispatcher.waitGatewayReady(context.Background(), "stub://gateway"); err != nil {
+			t.Fatalf("waitGatewayReady() error = %v", err)
+		}
+		if dialCalls != 2 {
+			t.Fatalf("dialCalls = %d, want %d", dialCalls, 2)
+		}
+		if sleepCalls != 1 {
+			t.Fatalf("sleepCalls = %d, want %d", sleepCalls, 1)
+		}
+	})
+}
+
+func TestDispatcherCallRPCAdditionalBranches(t *testing.T) {
+	t.Run("context canceled before encode", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		dispatcher := &Dispatcher{}
+		_, err := dispatcher.callRPC(ctx, &stubDispatchConn{}, protocol.JSONRPCRequest{})
+		var dispatchErr *DispatchError
+		if !errors.As(err, &dispatchErr) {
+			t.Fatalf("error type = %T, want *DispatchError", err)
+		}
+		if dispatchErr.Code != ErrorCodeInternal {
+			t.Fatalf("error code = %q, want %q", dispatchErr.Code, ErrorCodeInternal)
+		}
+	})
+
+	t.Run("encode error with context canceled during write", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		conn := &cancelOnWriteErrorConn{cancel: cancel}
+		dispatcher := &Dispatcher{}
+
+		_, err := dispatcher.callRPC(ctx, conn, protocol.JSONRPCRequest{JSONRPC: protocol.JSONRPCVersion})
+		var dispatchErr *DispatchError
+		if !errors.As(err, &dispatchErr) {
+			t.Fatalf("error type = %T, want *DispatchError", err)
+		}
+		if dispatchErr.Code != ErrorCodeInternal {
+			t.Fatalf("error code = %q, want %q", dispatchErr.Code, ErrorCodeInternal)
+		}
+		if !strings.Contains(dispatchErr.Message, context.Canceled.Error()) {
+			t.Fatalf("error message = %q, want contains %q", dispatchErr.Message, context.Canceled.Error())
+		}
+	})
+
+	t.Run("context canceled after encode before decode", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		conn := &cancelAfterWriteConn{cancel: cancel}
+		dispatcher := &Dispatcher{}
+
+		_, err := dispatcher.callRPC(ctx, conn, protocol.JSONRPCRequest{JSONRPC: protocol.JSONRPCVersion})
+		var dispatchErr *DispatchError
+		if !errors.As(err, &dispatchErr) {
+			t.Fatalf("error type = %T, want *DispatchError", err)
+		}
+		if dispatchErr.Code != ErrorCodeInternal {
+			t.Fatalf("error code = %q, want %q", dispatchErr.Code, ErrorCodeInternal)
+		}
+		if !strings.Contains(dispatchErr.Message, context.Canceled.Error()) {
+			t.Fatalf("error message = %q, want contains %q", dispatchErr.Message, context.Canceled.Error())
+		}
+	})
+
+	t.Run("decode error with canceled context", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		conn := &cancelOnReadErrorConn{cancel: cancel}
+		dispatcher := &Dispatcher{}
+
+		_, err := dispatcher.callRPC(ctx, conn, protocol.JSONRPCRequest{JSONRPC: protocol.JSONRPCVersion})
+		var dispatchErr *DispatchError
+		if !errors.As(err, &dispatchErr) {
+			t.Fatalf("error type = %T, want *DispatchError", err)
+		}
+		if dispatchErr.Code != ErrorCodeInternal {
+			t.Fatalf("error code = %q, want %q", dispatchErr.Code, ErrorCodeInternal)
+		}
+	})
+}
+
+func TestDispatcherAuthenticateAdditionalBranches(t *testing.T) {
+	t.Run("auth response version mismatch", func(t *testing.T) {
+		dispatcher := &Dispatcher{
+			requestIDFn: func() string { return "wake-auth-extra-1" },
+		}
+		conn := &stubDispatchConn{
+			readBuffer: bytes.NewBufferString(`{"jsonrpc":"1.0","id":"wake-auth-extra-1-auth","result":{}}` + "\n"),
+		}
+
+		err := dispatcher.authenticate(context.Background(), conn, "token")
+		if err == nil || !strings.Contains(err.Error(), "jsonrpc version") {
+			t.Fatalf("expected auth version mismatch, got %v", err)
+		}
+	})
+
+	t.Run("auth id mismatch", func(t *testing.T) {
+		dispatcher := &Dispatcher{
+			requestIDFn: func() string { return "wake-auth-extra-2" },
+		}
+		conn := &stubDispatchConn{
+			readBuffer: bytes.NewBufferString(`{"jsonrpc":"2.0","id":"other-auth-id","result":{}}` + "\n"),
+		}
+
+		err := dispatcher.authenticate(context.Background(), conn, "token")
+		if err == nil || !strings.Contains(err.Error(), "auth id mismatch") {
+			t.Fatalf("expected auth id mismatch, got %v", err)
+		}
+	})
+
+	t.Run("decode auth response frame failed", func(t *testing.T) {
+		dispatcher := &Dispatcher{
+			requestIDFn: func() string { return "wake-auth-extra-3" },
+		}
+		conn := &stubDispatchConn{
+			readBuffer: bytes.NewBufferString(`{"jsonrpc":"2.0","id":"wake-auth-extra-3-auth","result":"bad-frame"}` + "\n"),
+		}
+
+		err := dispatcher.authenticate(context.Background(), conn, "token")
+		if err == nil || !strings.Contains(err.Error(), "decode auth response frame") {
+			t.Fatalf("expected decode auth frame failure, got %v", err)
+		}
+	})
+}
+
+func TestDispatcherEmitLaunchDecisionLogNilGuards(t *testing.T) {
+	var dispatcher *Dispatcher
+	dispatcher.emitLaunchDecisionLog(launchDecisionLogEntry{})
+
+	dispatcher = &Dispatcher{}
+	dispatcher.emitLaunchDecisionLog(launchDecisionLogEntry{})
+}
+
+type cancelOnWriteErrorConn struct {
+	stubDispatchConn
+	cancel context.CancelFunc
+}
+
+func (c *cancelOnWriteErrorConn) Write(_ []byte) (int, error) {
+	c.cancel()
+	return 0, errors.New("write failed")
+}
+
+func (c *cancelOnWriteErrorConn) Read(_ []byte) (int, error) {
+	return 0, io.EOF
+}
+
+type cancelAfterWriteConn struct {
+	stubDispatchConn
+	cancel context.CancelFunc
+}
+
+func (c *cancelAfterWriteConn) Write(payload []byte) (int, error) {
+	c.cancel()
+	return len(payload), nil
+}
+
+func (c *cancelAfterWriteConn) Read(_ []byte) (int, error) {
+	return 0, io.EOF
+}
+
+type cancelOnReadErrorConn struct {
+	stubDispatchConn
+	cancel context.CancelFunc
+}
+
+func (c *cancelOnReadErrorConn) Write(payload []byte) (int, error) {
+	return len(payload), nil
+}
+
+func (c *cancelOnReadErrorConn) Read(_ []byte) (int, error) {
+	c.cancel()
+	return 0, io.EOF
+}
+
 type stubDispatchConn struct {
 	readBuffer       *bytes.Buffer
 	writeErr         error
