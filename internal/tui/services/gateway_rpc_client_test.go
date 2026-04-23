@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -13,7 +15,6 @@ import (
 	"time"
 
 	"neo-code/internal/gateway"
-	gatewayauth "neo-code/internal/gateway/auth"
 	"neo-code/internal/gateway/protocol"
 )
 
@@ -30,27 +31,27 @@ func TestGatewayRPCClientAuthenticateCallAndNotification(t *testing.T) {
 				decoder := json.NewDecoder(serverConn)
 				encoder := json.NewEncoder(serverConn)
 
-				request := readRPCRequestOrFail(t, decoder)
+				request := readRPCRequestOrFail(decoder)
 				if request.Method != protocol.MethodGatewayAuthenticate {
-					t.Fatalf("authenticate method = %q", request.Method)
+					panicf("authenticate method = %q", request.Method)
 				}
 				var params protocol.AuthenticateParams
 				if err := json.Unmarshal(request.Params, &params); err != nil {
-					t.Fatalf("decode authenticate params: %v", err)
+					panicf("decode authenticate params: %v", err)
 				}
 				if params.Token != token {
-					t.Fatalf("authenticate token = %q, want %q", params.Token, token)
+					panicf("authenticate token = %q, want %q", params.Token, token)
 				}
-				writeRPCResultOrFail(t, encoder, request.ID, gateway.MessageFrame{
+				writeRPCResultOrFail(encoder, request.ID, gateway.MessageFrame{
 					Type:   gateway.FrameTypeAck,
 					Action: gateway.FrameActionAuthenticate,
 				})
 
-				request = readRPCRequestOrFail(t, decoder)
+				request = readRPCRequestOrFail(decoder)
 				if request.Method != protocol.MethodGatewayPing {
-					t.Fatalf("call method = %q, want %q", request.Method, protocol.MethodGatewayPing)
+					panicf("call method = %q, want %q", request.Method, protocol.MethodGatewayPing)
 				}
-				writeRPCNotificationOrFail(t, encoder, protocol.MethodGatewayEvent, gateway.MessageFrame{
+				writeRPCNotificationOrFail(encoder, protocol.MethodGatewayEvent, gateway.MessageFrame{
 					Type:      gateway.FrameTypeEvent,
 					Action:    gateway.FrameActionRun,
 					SessionID: "session-1",
@@ -60,7 +61,7 @@ func TestGatewayRPCClientAuthenticateCallAndNotification(t *testing.T) {
 						"payload":            "hello",
 					},
 				})
-				writeRPCResultOrFail(t, encoder, request.ID, gateway.MessageFrame{
+				writeRPCResultOrFail(encoder, request.ID, gateway.MessageFrame{
 					Type:      gateway.FrameTypeAck,
 					Action:    gateway.FrameActionPing,
 					SessionID: "session-1",
@@ -115,8 +116,8 @@ func TestGatewayRPCClientRetriesAfterTransportError(t *testing.T) {
 				defer serverConn.Close()
 				decoder := json.NewDecoder(serverConn)
 				encoder := json.NewEncoder(serverConn)
-				request := readRPCRequestOrFail(t, decoder)
-				writeRPCResultOrFail(t, encoder, request.ID, gateway.MessageFrame{
+				request := readRPCRequestOrFail(decoder)
+				writeRPCResultOrFail(encoder, request.ID, gateway.MessageFrame{
 					Type:   gateway.FrameTypeAck,
 					Action: gateway.FrameActionPing,
 				})
@@ -170,8 +171,8 @@ func TestGatewayRPCClientUsesDefaultRetryCountWhenOptionIsZero(t *testing.T) {
 				defer serverConn.Close()
 				decoder := json.NewDecoder(serverConn)
 				encoder := json.NewEncoder(serverConn)
-				request := readRPCRequestOrFail(t, decoder)
-				writeRPCResultOrFail(t, encoder, request.ID, gateway.MessageFrame{
+				request := readRPCRequestOrFail(decoder)
+				writeRPCResultOrFail(encoder, request.ID, gateway.MessageFrame{
 					Type:   gateway.FrameTypeAck,
 					Action: gateway.FrameActionPing,
 				})
@@ -225,10 +226,10 @@ func TestGatewayRPCClientHeartbeatSendsPingAndStopsAfterClose(t *testing.T) {
 						return
 					}
 					if request.Method != protocol.MethodGatewayPing {
-						t.Fatalf("unexpected method = %q", request.Method)
+						panicf("unexpected method = %q", request.Method)
 					}
 					atomic.AddInt32(&pingCount, 1)
-					writeRPCResultOrFail(t, encoder, request.ID, gateway.MessageFrame{
+					writeRPCResultOrFail(encoder, request.ID, gateway.MessageFrame{
 						Type:   gateway.FrameTypeAck,
 						Action: gateway.FrameActionPing,
 					})
@@ -290,9 +291,9 @@ func TestGatewayRPCClientHeartbeatDoesNotRedialAfterConnectionDrops(t *testing.T
 					return
 				}
 				if request.Method != protocol.MethodGatewayPing {
-					t.Fatalf("unexpected method = %q", request.Method)
+					panicf("unexpected method = %q", request.Method)
 				}
-				writeRPCResultOrFail(t, encoder, request.ID, gateway.MessageFrame{
+				writeRPCResultOrFail(encoder, request.ID, gateway.MessageFrame{
 					Type:   gateway.FrameTypeAck,
 					Action: gateway.FrameActionPing,
 				})
@@ -351,9 +352,9 @@ func TestGatewayRPCClientReadLoopSustainsBackpressureWhenNotificationsAreConsume
 				decoder := json.NewDecoder(serverConn)
 				encoder := json.NewEncoder(serverConn)
 
-				request := readRPCRequestOrFail(t, decoder)
+				request := readRPCRequestOrFail(decoder)
 				for idx := 0; idx < defaultGatewayNotificationQueue+defaultGatewayNotificationBuffer+128; idx++ {
-					writeRPCNotificationOrFail(t, encoder, protocol.MethodGatewayEvent, gateway.MessageFrame{
+					writeRPCNotificationOrFail(encoder, protocol.MethodGatewayEvent, gateway.MessageFrame{
 						Type:      gateway.FrameTypeEvent,
 						Action:    gateway.FrameActionRun,
 						SessionID: "session-1",
@@ -363,7 +364,7 @@ func TestGatewayRPCClientReadLoopSustainsBackpressureWhenNotificationsAreConsume
 						},
 					})
 				}
-				writeRPCResultOrFail(t, encoder, request.ID, gateway.MessageFrame{
+				writeRPCResultOrFail(encoder, request.ID, gateway.MessageFrame{
 					Type:   gateway.FrameTypeAck,
 					Action: gateway.FrameActionPing,
 				})
@@ -396,39 +397,59 @@ func TestGatewayRPCClientReadLoopSustainsBackpressureWhenNotificationsAreConsume
 func createTestAuthTokenFile(t *testing.T) (string, string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "auth.json")
-	manager, err := gatewayauth.NewManager(path)
-	if err != nil {
-		t.Fatalf("gatewayauth.NewManager() error = %v", err)
-	}
-	return path, manager.Token()
+	token := "test-token"
+	writeTestAuthTokenFile(t, path, token)
+	return path, token
 }
 
-func readRPCRequestOrFail(t *testing.T, decoder *json.Decoder) protocol.JSONRPCRequest {
+func writeTestAuthTokenFile(t *testing.T, path string, token string) {
 	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("create auth dir: %v", err)
+	}
+	payload := map[string]any{
+		"version":    1,
+		"token":      token,
+		"created_at": time.Now().UTC(),
+		"updated_at": time.Now().UTC(),
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal auth token: %v", err)
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write auth token: %v", err)
+	}
+}
+
+func readRPCRequestOrFail(decoder *json.Decoder) protocol.JSONRPCRequest {
 	var request protocol.JSONRPCRequest
 	if err := decoder.Decode(&request); err != nil {
-		t.Fatalf("decode rpc request: %v", err)
+		panicf("decode rpc request: %v", err)
 	}
 	return request
 }
 
-func writeRPCResultOrFail(t *testing.T, encoder *json.Encoder, id json.RawMessage, result any) {
-	t.Helper()
+func writeRPCResultOrFail(encoder *json.Encoder, id json.RawMessage, result any) {
 	response, rpcErr := protocol.NewJSONRPCResultResponse(id, result)
 	if rpcErr != nil {
-		t.Fatalf("build jsonrpc result: %+v", rpcErr)
+		panicf("build jsonrpc result: %+v", rpcErr)
 	}
 	if err := encoder.Encode(response); err != nil {
-		t.Fatalf("encode jsonrpc result: %v", err)
+		panicf("encode jsonrpc result: %v", err)
 	}
 }
 
-func writeRPCNotificationOrFail(t *testing.T, encoder *json.Encoder, method string, params any) {
-	t.Helper()
+func writeRPCNotificationOrFail(encoder *json.Encoder, method string, params any) {
 	notification := protocol.NewJSONRPCNotification(method, params)
 	if err := encoder.Encode(notification); err != nil {
-		t.Fatalf("encode notification: %v", err)
+		panicf("encode notification: %v", err)
 	}
+}
+
+func panicf(format string, args ...any) {
+	panic(fmt.Sprintf(format, args...))
 }
 
 func waitForCondition(t *testing.T, timeout time.Duration, condition func() bool, message string) {

@@ -133,7 +133,6 @@ Gateway 转发与自动拉起说明：
 - `/skill use <id>`：在当前会话启用 skill
 - `/skill off <id>`：在当前会话停用 skill
 - `/skill active`：查看当前会话已激活 skills
-- `& <command>`：在当前工作区执行本地命令
 
 示例输入：
 ```text
@@ -182,6 +181,7 @@ Gateway 转发与自动拉起说明：
 3. 完成开发并确保改动聚焦、边界清晰。
 4. 本地自检：
    ```bash
+   make docs-gateway-check
    gofmt -w ./cmd ./internal
    go test ./...
    go build ./...

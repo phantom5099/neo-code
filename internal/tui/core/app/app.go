@@ -57,7 +57,6 @@ type runFinishedMsg = tuistate.RunFinishedMsg
 type modelCatalogRefreshMsg = tuistate.ModelCatalogRefreshMsg
 type compactFinishedMsg = tuistate.CompactFinishedMsg
 type localCommandResultMsg = tuistate.LocalCommandResultMsg
-type workspaceCommandResultMsg = tuistate.WorkspaceCommandResultMsg
 type permissionResolutionFinishedMsg = tuistate.PermissionResolutionFinishedMsg
 
 type ProviderController interface {

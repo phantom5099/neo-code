@@ -84,22 +84,6 @@ func TestCommandMenuView(t *testing.T) {
 	}
 }
 
-func TestBuildCommandMenuItemsForWorkspaceCommand(t *testing.T) {
-	app, _ := newTestApp(t)
-	app.state.CurrentWorkdir = "/workspace/root"
-
-	items, meta := app.buildCommandMenuItems("&", 80)
-	if meta.Title != shellMenuTitle {
-		t.Fatalf("expected shell menu title, got %q", meta.Title)
-	}
-	if len(items) != 1 {
-		t.Fatalf("expected one item, got %d", len(items))
-	}
-	if !items[0].useReplaceRange || items[0].replacement != workspaceCommandPrefix+" " {
-		t.Fatalf("expected workspace replace range")
-	}
-}
-
 func TestBuildCommandMenuItemsForSlashCommands(t *testing.T) {
 	app, _ := newTestApp(t)
 

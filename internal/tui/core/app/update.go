@@ -248,24 +248,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.rebuildTranscript()
 		return a, tea.Batch(cmds...)
-	case workspaceCommandResultMsg:
-		if typed.Command == "" && typed.Err != nil {
-			a.state.ExecutionError = typed.Err.Error()
-			a.state.StatusText = typed.Err.Error()
-			a.appendActivity("command", "Workspace command failed", typed.Err.Error(), true)
-			return a, tea.Batch(cmds...)
-		}
-		result := formatWorkspaceCommandResult(typed.Command, typed.Output, typed.Err)
-		if typed.Err != nil {
-			a.state.ExecutionError = typed.Err.Error()
-			a.state.StatusText = fmt.Sprintf("Command failed: %s", typed.Command)
-			a.appendActivity("command", "Command failed", result, true)
-		} else {
-			a.state.ExecutionError = ""
-			a.state.StatusText = statusCommandDone
-			a.appendActivity("command", "Command finished", result, false)
-		}
-		return a, tea.Batch(cmds...)
 	case tea.MouseMsg:
 		if a.logViewerVisible && a.handleLogViewerMouse(typed) {
 			return a, tea.Batch(cmds...)
@@ -520,22 +502,6 @@ func (a App) updateInputPanel(msg tea.Msg, typed tea.KeyMsg, cmds []tea.Cmd) (te
 				cmds = append(cmds, runLocalCommand(a.configManager, a.providerSvc, a.currentStatusSnapshot(), input))
 				return a, tea.Batch(cmds...)
 			}
-			if isWorkspaceCommandInput(input) {
-				command, err := extractWorkspaceCommand(input)
-				if err != nil {
-					a.state.ExecutionError = err.Error()
-					a.state.StatusText = err.Error()
-					a.appendActivity("command", "Invalid workspace command", err.Error(), true)
-					return a, tea.Batch(cmds...)
-				}
-				a.clearActivities()
-				a.state.StatusText = statusRunningCommand
-				a.state.ExecutionError = ""
-				a.appendActivity("command", "Running command", command, false)
-				cmds = append(cmds, runWorkspaceCommand(a.configManager, a.state.CurrentWorkdir, input))
-				return a, tea.Batch(cmds...)
-			}
-
 			normalizedInput, absorbedImages, err := a.absorbInlineImageReferences(input)
 			if err != nil {
 				a.state.ExecutionError = err.Error()
@@ -1086,6 +1052,7 @@ var runtimeEventHandlerRegistry = map[tuiservices.EventType]func(*App, tuiservic
 	tuiservices.EventPermissionResolved:                       runtimeEventPermissionResolvedHandler,
 	tuiservices.EventCompactApplied:                           runtimeEventCompactDoneHandler,
 	tuiservices.EventCompactError:                             runtimeEventCompactErrorHandler,
+	tuiservices.EventTokenUsage:                               runtimeEventTokenUsageHandler,
 	tuiservices.EventPhaseChanged:                             runtimeEventPhaseChangedHandler,
 	tuiservices.EventStopReasonDecided:                        runtimeEventStopReasonDecidedHandler,
 	tuiservices.EventTodoUpdated:                              runtimeEventTodoUpdatedHandler,
@@ -1126,19 +1093,40 @@ func runtimeEventStopReasonDecidedHandler(a *App, event tuiservices.RuntimeEvent
 
 	reason := strings.ToLower(strings.TrimSpace(string(payload.Reason)))
 	switch reason {
-	case "success":
+	case strings.ToLower(string(tuiservices.StopReasonCompleted)):
 		if strings.TrimSpace(a.state.ExecutionError) == "" {
 			a.state.StatusText = statusReady
 		}
-	case "canceled":
+	case strings.ToLower(string(tuiservices.StopReasonUserInterrupt)):
 		a.state.ExecutionError = ""
 		a.state.StatusText = statusCanceled
 		a.appendActivity("run", "Canceled current run", "", false)
-	default:
+	case strings.ToLower(string(tuiservices.StopReasonBudgetExceeded)):
+		detail := strings.TrimSpace(payload.Detail)
+		if detail == "" {
+			detail = "Context budget exceeded"
+		}
+		a.state.ExecutionError = ""
+		a.state.StatusText = detail
+		a.appendActivity("run", "Context budget exceeded", detail, false)
+	case strings.ToLower(string(tuiservices.StopReasonMaxTurnsReached)):
+		detail := strings.TrimSpace(payload.Detail)
+		if detail == "" {
+			detail = "Max turns reached"
+		}
+		a.state.ExecutionError = ""
+		a.state.StatusText = detail
+		a.appendActivity("run", "Max turn limit reached", detail, false)
+	case strings.ToLower(string(tuiservices.StopReasonFatalError)):
 		detail := strings.TrimSpace(payload.Detail)
 		if detail == "" {
 			detail = "runtime stopped"
 		}
+		a.state.ExecutionError = detail
+		a.state.StatusText = detail
+		a.appendActivity("run", "Runtime stopped", detail, true)
+	default:
+		detail := "unknown stop reason: " + strings.TrimSpace(string(payload.Reason))
 		a.state.ExecutionError = detail
 		a.state.StatusText = detail
 		a.appendActivity("run", "Runtime stopped", detail, true)
@@ -1441,6 +1429,15 @@ func runtimeEventUsageHandler(a *App, event tuiservices.RuntimeEvent) bool {
 		return false
 	}
 	a.state.TokenUsage = tuiservices.MapUsagePayload(payload)
+	return false
+}
+
+func runtimeEventTokenUsageHandler(a *App, event tuiservices.RuntimeEvent) bool {
+	payload, ok := event.Payload.(tuiservices.TokenUsagePayload)
+	if !ok {
+		return false
+	}
+	a.state.TokenUsage = tuiservices.MapTokenUsagePayload(payload, a.state.TokenUsage)
 	return false
 }
 

@@ -1,29 +1,21 @@
 package tui
 
 import (
-	"context"
 	"fmt"
-	"path/filepath"
-	"strings"
-
-	tea "github.com/charmbracelet/bubbletea"
-
-	"neo-code/internal/config"
 	tuiinfra "neo-code/internal/tui/infra"
 	tuiservices "neo-code/internal/tui/services"
+	"path/filepath"
+	"strings"
 )
 
 const (
-	workspaceCommandPrefix = "&"
-	workspaceCommandUsage  = "& <command>"
-	fileReferencePrefix    = "@"
-	imageReferencePrefix   = "@image:"
-	imageReferenceUsage    = "@image:<path>"
-	fileMenuTitle          = "Files"
-	shellMenuTitle         = "Shell"
-	maxWorkspaceFiles      = 4000
-	maxFileSuggestions     = 6
-	maxImageAttachments    = 3
+	fileReferencePrefix  = "@"
+	imageReferencePrefix = "@image:"
+	imageReferenceUsage  = "@image:<path>"
+	fileMenuTitle        = "Files"
+	maxWorkspaceFiles    = 4000
+	maxFileSuggestions   = 6
+	maxImageAttachments  = 3
 )
 
 type tokenSelector int
@@ -33,89 +25,8 @@ const (
 	tokenSelectorLast
 )
 
-var workspaceCommandExecutor = defaultWorkspaceCommandExecutor
 var readClipboardImage = tuiinfra.ReadClipboardImage
 var saveClipboardImageToTempFile = tuiinfra.SaveImageToTempFile
-
-func isWorkspaceCommandInput(input string) bool {
-	return strings.HasPrefix(strings.TrimSpace(input), workspaceCommandPrefix)
-}
-
-func extractWorkspaceCommand(input string) (string, error) {
-	trimmed := strings.TrimSpace(input)
-	if !strings.HasPrefix(trimmed, workspaceCommandPrefix) {
-		return "", fmt.Errorf("usage: %s", workspaceCommandUsage)
-	}
-	command := strings.TrimSpace(strings.TrimPrefix(trimmed, workspaceCommandPrefix))
-	if command == "" {
-		return "", fmt.Errorf("usage: %s", workspaceCommandUsage)
-	}
-	return command, nil
-}
-
-func runWorkspaceCommand(configManager *config.Manager, workdir string, raw string) tea.Cmd {
-	return tuiservices.RunWorkspaceCommandCmd(
-		func(ctx context.Context) (string, string, error) {
-			return executeWorkspaceCommand(ctx, configManager, workdir, raw)
-		},
-		func(command string, output string, err error) tea.Msg {
-			return workspaceCommandResultMsg{
-				Command: command,
-				Output:  output,
-				Err:     err,
-			}
-		},
-	)
-}
-
-func executeWorkspaceCommand(ctx context.Context, configManager *config.Manager, workdir string, raw string) (string, string, error) {
-	command, err := extractWorkspaceCommand(raw)
-	if err != nil {
-		return "", "", err
-	}
-
-	cfg := configManager.Get()
-	output, execErr := workspaceCommandExecutor(ctx, cfg, workdir, command)
-	return command, output, execErr
-}
-
-func defaultWorkspaceCommandExecutor(ctx context.Context, cfg config.Config, workdir string, command string) (string, error) {
-	return tuiinfra.DefaultWorkspaceCommandExecutor(ctx, cfg, workdir, command)
-}
-
-func shellArgs(shell string, command string) []string {
-	return tuiinfra.ShellArgs(shell, command)
-}
-
-func powershellUTF8Command(command string) string {
-	return tuiinfra.PowerShellUTF8Command(command)
-}
-
-func formatWorkspaceCommandResult(command string, output string, err error) string {
-	header := "Command"
-	if err != nil {
-		header = "Command Failed"
-	}
-
-	body := strings.TrimSpace(output)
-	if body == "" && err != nil {
-		body = err.Error()
-	}
-	if body == "" {
-		body = "(no output)"
-	}
-
-	body = strings.ReplaceAll(body, "```", "` ` `")
-	return fmt.Sprintf("%s: & %s\n```text\n%s\n```", header, command, body)
-}
-
-func sanitizeWorkspaceOutput(raw []byte) string {
-	return tuiinfra.SanitizeWorkspaceOutput(raw)
-}
-
-func decodeWorkspaceOutput(raw []byte) string {
-	return tuiinfra.DecodeWorkspaceOutput(raw)
-}
 
 func (a *App) refreshFileCandidates() error {
 	candidates, err := collectWorkspaceFiles(a.state.CurrentWorkdir, maxWorkspaceFiles)

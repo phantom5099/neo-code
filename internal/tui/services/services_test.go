@@ -264,14 +264,6 @@ func TestCommandCmds(t *testing.T) {
 	if got, ok := localMsg.(string); !ok || got != "ok" {
 		t.Fatalf("expected local command notice msg, got %T %#v", localMsg, localMsg)
 	}
-
-	workspaceMsg := RunWorkspaceCommandCmd(
-		func(ctx context.Context) (string, string, error) { return "git status", "clean", nil },
-		func(command string, output string, err error) tea.Msg { return command + ":" + output },
-	)()
-	if got, ok := workspaceMsg.(string); !ok || got != "git status:clean" {
-		t.Fatalf("expected workspace command msg, got %T %#v", workspaceMsg, workspaceMsg)
-	}
 }
 
 func TestFileServices(t *testing.T) {

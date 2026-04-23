@@ -229,26 +229,6 @@ func (a App) buildCommandMenuItems(input string, width int) ([]commandMenuItem, 
 		return suggestions, tuistate.CommandMenuMeta{Title: fileMenuTitle}
 	}
 
-	// 3. 检查工作区命令 (如果 Slash 命令和文件建议都不匹配)
-	if isWorkspaceCommandInput(trimmed) {
-		replacement := trimmed
-		item := commandMenuItem{
-			title:       workspaceCommandUsage,
-			description: tuiutils.TrimMiddle(a.state.CurrentWorkdir, max(24, width-28)),
-			highlight:   true,
-			replacement: replacement,
-		}
-		if trimmed == workspaceCommandPrefix {
-			start, end, _, _ := tokenRange(input, tokenSelectorFirst)
-			item.replacement = workspaceCommandPrefix + " "
-			item.useReplaceRange = true
-			item.replaceStart = start
-			item.replaceEnd = end
-		}
-		return []commandMenuItem{item}, tuistate.CommandMenuMeta{Title: shellMenuTitle}
-	}
-
-	// 如果没有任何匹配的建议
 	return nil, tuistate.CommandMenuMeta{}
 }
 

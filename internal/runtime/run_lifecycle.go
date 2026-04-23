@@ -121,11 +121,6 @@ func isBaseLifecycleState(state controlplane.RunState) bool {
 	}
 }
 
-// transitionRunState 兼容旧调用入口，内部统一转为 base lifecycle 更新。
-func (s *Service) transitionRunState(ctx context.Context, state *runState, next controlplane.RunState) error {
-	return s.setBaseRunState(ctx, state, next)
-}
-
 // emitRunTermination 在 Run 退出时决议并发出唯一的 stop_reason_decided 事件。
 func (s *Service) emitRunTermination(ctx context.Context, input UserInput, state *runState, err error) {
 	runID := strings.TrimSpace(input.RunID)
@@ -148,12 +143,23 @@ func (s *Service) emitRunTermination(ctx context.Context, input UserInput, state
 	}
 
 	in := controlplane.StopInput{}
-	if err != nil {
-		switch {
-		case errors.Is(err, context.Canceled):
-			in.UserInterrupted = true
-		default:
-			in.FatalError = err
+	if state != nil && state.maxTurnsReached {
+		in.MaxTurnsReached = true
+		in.MaxTurnsLimit = state.maxTurnsLimit
+	} else if state != nil && state.budgetExceeded {
+		in.BudgetExceeded = true
+	} else if err != nil {
+		var maxTurnErr maxTurnLimitError
+		if errors.As(err, &maxTurnErr) {
+			in.MaxTurnsReached = true
+			in.MaxTurnsLimit = maxTurnErr.Limit()
+		} else {
+			switch {
+			case errors.Is(err, context.Canceled):
+				in.UserInterrupted = true
+			default:
+				in.FatalError = err
+			}
 		}
 	} else {
 		in.Completed = true

@@ -2,8 +2,6 @@ package runtime
 
 import (
 	"context"
-	"math"
-	"strconv"
 	"strings"
 
 	providertypes "neo-code/internal/provider/types"
@@ -39,15 +37,20 @@ func (s *Service) appendUserMessageAndSave(ctx context.Context, state *runState,
 func (s *Service) appendAssistantMessageAndSave(
 	ctx context.Context,
 	state *runState,
-	snapshot turnSnapshot,
+	snapshot TurnBudgetSnapshot,
 	assistant providertypes.Message,
 	inputTokens int,
 	outputTokens int,
 ) error {
-	metadataChanged := state.session.Provider != snapshot.providerConfig.Name || state.session.Model != snapshot.model
-	state.session.Provider = snapshot.providerConfig.Name
-	state.session.Model = snapshot.model
+	metadataChanged := state.session.Provider != snapshot.ProviderConfig.Name || state.session.Model != snapshot.Model
+	unknownUsageChanged := false
+	state.session.Provider = snapshot.ProviderConfig.Name
+	state.session.Model = snapshot.Model
+	previousUnknownUsage := state.session.HasUnknownUsage
 	state.recordUsage(inputTokens, outputTokens)
+	if state.session.HasUnknownUsage != previousUnknownUsage {
+		unknownUsageChanged = true
+	}
 
 	if !assistant.IsEmpty() {
 		state.session.Messages = append(state.session.Messages, assistant)
@@ -61,10 +64,11 @@ func (s *Service) appendAssistantMessageAndSave(
 			Workdir:          state.session.Workdir,
 			TokenInputDelta:  inputTokens,
 			TokenOutputDelta: outputTokens,
+			HasUnknownUsage:  state.session.HasUnknownUsage,
 		})
 	}
 
-	if metadataChanged || inputTokens != 0 || outputTokens != 0 {
+	if metadataChanged || unknownUsageChanged || inputTokens != 0 || outputTokens != 0 {
 		state.touchSession()
 		return s.sessionStore.UpdateSessionState(ctx, sessionStateInputFromSession(state.session))
 	}
@@ -83,12 +87,13 @@ func (s *Service) appendToolMessageAndSave(
 	state.session.Messages = append(state.session.Messages, toolMessage)
 	state.touchSession()
 	input := agentsession.AppendMessagesInput{
-		SessionID: state.session.ID,
-		Messages:  []providertypes.Message{toolMessage},
-		UpdatedAt: state.session.UpdatedAt,
-		Provider:  state.session.Provider,
-		Model:     state.session.Model,
-		Workdir:   state.session.Workdir,
+		SessionID:       state.session.ID,
+		Messages:        []providertypes.Message{toolMessage},
+		UpdatedAt:       state.session.UpdatedAt,
+		Provider:        state.session.Provider,
+		Model:           state.session.Model,
+		Workdir:         state.session.Workdir,
+		HasUnknownUsage: state.session.HasUnknownUsage,
 	}
 	state.mu.Unlock()
 	return s.sessionStore.AppendMessages(ctx, input)
@@ -132,175 +137,37 @@ func hasNonToolNameToolMetadata(metadata map[string]string) bool {
 
 // toolResultMarkedFailed 根据工具元数据中的 ok 字段判断是否应强制标记为失败。
 func toolResultMarkedFailed(metadata map[string]any) bool {
-	if len(metadata) == 0 {
-		return false
-	}
-	if raw, exists := metadata["ok"]; exists {
-		if ok, resolved := parseToolResultOK(raw); resolved {
-			return !ok
-		}
-	}
-	if rawExitCode, exists := metadata["exit_code"]; exists {
-		if exitCode, resolved := parseToolResultExitCode(rawExitCode); resolved {
-			return exitCode != 0
-		}
-	}
-	return false
-}
-
-// parseToolResultOK 解析工具元数据里的 ok 字段，兼容 bool/数字/字符串等常见序列化形态。
-func parseToolResultOK(raw any) (bool, bool) {
-	switch value := raw.(type) {
-	case bool:
-		return value, true
-	case string:
-		trimmed := strings.ToLower(strings.TrimSpace(value))
-		switch trimmed {
-		case "true", "1", "yes", "y":
-			return true, true
-		case "false", "0", "no", "n":
-			return false, true
-		default:
-			return false, false
-		}
-	case int:
-		return value != 0, true
-	case int8:
-		return value != 0, true
-	case int16:
-		return value != 0, true
-	case int32:
-		return value != 0, true
-	case int64:
-		return value != 0, true
-	case uint:
-		return value != 0, true
-	case uint8:
-		return value != 0, true
-	case uint16:
-		return value != 0, true
-	case uint32:
-		return value != 0, true
-	case uint64:
-		return value != 0, true
-	case float32:
-		return value != 0, true
-	case float64:
-		return value != 0, true
-	default:
-		return false, false
-	}
-}
-
-// parseToolResultExitCode 解析工具元数据里的 exit_code 字段，兼容数字和字符串。
-func parseToolResultExitCode(raw any) (int, bool) {
-	switch value := raw.(type) {
-	case int:
-		return value, true
-	case int8:
-		return int(value), true
-	case int16:
-		return int(value), true
-	case int32:
-		return int(value), true
-	case int64:
-		return int(value), true
-	case uint:
-		return int(value), true
-	case uint8:
-		return int(value), true
-	case uint16:
-		return int(value), true
-	case uint32:
-		return int(value), true
-	case uint64:
-		return int(value), true
-	case float32:
-		return parseFloatExitCode(float64(value))
-	case float64:
-		return parseFloatExitCode(value)
-	case string:
-		trimmed := strings.TrimSpace(value)
-		if trimmed == "" {
-			return 0, false
-		}
-		parsed, err := strconv.Atoi(trimmed)
-		if err != nil {
-			return 0, false
-		}
-		return parsed, true
-	default:
-		return 0, false
-	}
-}
-
-// parseFloatExitCode 将浮点退出码折叠为稳定整数，避免 0<|x|<1 被截断为 0。
-func parseFloatExitCode(value float64) (int, bool) {
-	if value == 0 {
-		return 0, true
-	}
-	if math.IsNaN(value) || math.IsInf(value, 0) {
-		return 0, false
-	}
-	parsed := int(value)
-	if parsed == 0 {
-		if value > 0 {
-			return 1, true
-		}
-		return -1, true
-	}
-	return parsed, true
+	return tools.ToolResultMetadataMarksFailure(metadata)
 }
 
 // createSessionInputFromSession 将运行态 session 转为建库时使用的会话头输入。
 func createSessionInputFromSession(session agentsession.Session) agentsession.CreateSessionInput {
 	return agentsession.CreateSessionInput{
-		ID:               session.ID,
-		Title:            session.Title,
-		CreatedAt:        session.CreatedAt,
-		UpdatedAt:        session.UpdatedAt,
-		Provider:         session.Provider,
-		Model:            session.Model,
-		Workdir:          session.Workdir,
-		TaskState:        session.TaskState.Clone(),
-		ActivatedSkills:  agentsessionCloneSkillActivations(session.ActivatedSkills),
-		Todos:            cloneTodosForPersistence(session.Todos),
-		TokenInputTotal:  session.TokenInputTotal,
-		TokenOutputTotal: session.TokenOutputTotal,
+		ID:        session.ID,
+		Title:     session.Title,
+		CreatedAt: session.CreatedAt,
+		UpdatedAt: session.UpdatedAt,
+		Head:      session.HeadSnapshot(),
 	}
 }
 
 // sessionStateInputFromSession 将运行态 session 映射为只更新会话头的持久化输入。
 func sessionStateInputFromSession(session agentsession.Session) agentsession.UpdateSessionStateInput {
 	return agentsession.UpdateSessionStateInput{
-		SessionID:        session.ID,
-		Title:            session.Title,
-		UpdatedAt:        session.UpdatedAt,
-		Provider:         session.Provider,
-		Model:            session.Model,
-		Workdir:          session.Workdir,
-		TaskState:        session.TaskState.Clone(),
-		ActivatedSkills:  agentsessionCloneSkillActivations(session.ActivatedSkills),
-		Todos:            cloneTodosForPersistence(session.Todos),
-		TokenInputTotal:  session.TokenInputTotal,
-		TokenOutputTotal: session.TokenOutputTotal,
+		SessionID: session.ID,
+		Title:     session.Title,
+		UpdatedAt: session.UpdatedAt,
+		Head:      session.HeadSnapshot(),
 	}
 }
 
 // replaceTranscriptInputFromSession 将完整 session 映射为 transcript 原子替换输入。
 func replaceTranscriptInputFromSession(session agentsession.Session) agentsession.ReplaceTranscriptInput {
 	return agentsession.ReplaceTranscriptInput{
-		SessionID:        session.ID,
-		Messages:         cloneMessagesForPersistence(session.Messages),
-		UpdatedAt:        session.UpdatedAt,
-		Provider:         session.Provider,
-		Model:            session.Model,
-		Workdir:          session.Workdir,
-		TaskState:        session.TaskState.Clone(),
-		ActivatedSkills:  agentsessionCloneSkillActivations(session.ActivatedSkills),
-		Todos:            cloneTodosForPersistence(session.Todos),
-		TokenInputTotal:  session.TokenInputTotal,
-		TokenOutputTotal: session.TokenOutputTotal,
+		SessionID: session.ID,
+		Messages:  cloneMessagesForPersistence(session.Messages),
+		UpdatedAt: session.UpdatedAt,
+		Head:      session.HeadSnapshot(),
 	}
 }
 
