@@ -542,6 +542,9 @@ func (s *Service) evaluateTurnBudget(
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return controlplane.TurnBudgetDecision{}, err
 		}
+		if !shouldBypassEstimateFailure(err) {
+			return controlplane.TurnBudgetDecision{}, fmt.Errorf("runtime: estimate input tokens: %w", err)
+		}
 		s.emitRunScoped(ctx, EventBudgetEstimateFailed, state, newBudgetEstimateFailedPayload(snapshot.ID, err))
 		decision := controlplane.TurnBudgetDecision{
 			ID:                 snapshot.ID,
@@ -561,6 +564,12 @@ func (s *Service) evaluateTurnBudget(
 	)
 	s.emitRunScoped(ctx, EventBudgetChecked, state, newBudgetCheckedPayload(decision))
 	return decision, nil
+}
+
+// shouldBypassEstimateFailure 判断估算失败是否允许降级放行，仅对可恢复 provider 错误放行。
+func shouldBypassEstimateFailure(err error) bool {
+	var providerErr *provider.ProviderError
+	return errors.As(err, &providerErr) && providerErr.Retryable
 }
 
 // reconcileLedger 根据 observed usage 或发送前 estimate 生成本轮账本写入结果。
