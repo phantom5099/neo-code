@@ -176,6 +176,28 @@ func TestVersionCommandSkipsComparisonForNonSemver(t *testing.T) {
 	}
 }
 
+func TestVersionCommandPropagatesRunnerError(t *testing.T) {
+	originalRunner := runVersionCommand
+	originalPreload := runGlobalPreload
+	originalSilentCheck := runSilentUpdateCheck
+	t.Cleanup(func() { runVersionCommand = originalRunner })
+	t.Cleanup(func() { runGlobalPreload = originalPreload })
+	t.Cleanup(func() { runSilentUpdateCheck = originalSilentCheck })
+
+	runGlobalPreload = func(context.Context) error { return nil }
+	runSilentUpdateCheck = func(context.Context) {}
+	runVersionCommand = func(context.Context, versionCommandOptions) (versionCommandResult, error) {
+		return versionCommandResult{}, errors.New("runner failed")
+	}
+
+	command := NewRootCommand()
+	command.SetArgs([]string{"version"})
+	err := command.ExecuteContext(context.Background())
+	if err == nil || err.Error() != "runner failed" {
+		t.Fatalf("ExecuteContext() error = %v, want runner failed", err)
+	}
+}
+
 func TestDefaultVersionCommandRunnerUsesProbeOptions(t *testing.T) {
 	originalProbe := runReleaseProbe
 	originalReader := readCurrentVersion
@@ -217,4 +239,81 @@ func TestDefaultVersionCommandRunnerUsesProbeOptions(t *testing.T) {
 	if !result.HasUpdate || result.LatestVersion != "v1.1.0" {
 		t.Fatalf("unexpected result: %+v", result)
 	}
+}
+
+func TestDefaultVersionCommandRunnerCheckFailureReturnsResultWithoutError(t *testing.T) {
+	originalProbe := runReleaseProbe
+	originalReader := readCurrentVersion
+	t.Cleanup(func() { runReleaseProbe = originalProbe })
+	t.Cleanup(func() { readCurrentVersion = originalReader })
+
+	readCurrentVersion = func() string { return "v1.0.0" }
+	runReleaseProbe = func(context.Context, string, bool, time.Duration) (updater.CheckResult, error) {
+		return updater.CheckResult{}, errors.New("probe failed")
+	}
+
+	result, err := defaultVersionCommandRunner(context.Background(), versionCommandOptions{})
+	if err != nil {
+		t.Fatalf("defaultVersionCommandRunner() error = %v", err)
+	}
+	if result.CheckErr == nil || result.CheckErr.Error() != "probe failed" {
+		t.Fatalf("unexpected CheckErr: %v", result.CheckErr)
+	}
+}
+
+func TestDefaultVersionCommandRunnerTrimsLatestVersionAndSkipsNonSemverCompare(t *testing.T) {
+	originalProbe := runReleaseProbe
+	originalReader := readCurrentVersion
+	t.Cleanup(func() { runReleaseProbe = originalProbe })
+	t.Cleanup(func() { readCurrentVersion = originalReader })
+
+	readCurrentVersion = func() string { return "dev" }
+	runReleaseProbe = func(context.Context, string, bool, time.Duration) (updater.CheckResult, error) {
+		return updater.CheckResult{
+			LatestVersion: "  v1.2.0  ",
+			HasUpdate:     true,
+		}, nil
+	}
+
+	result, err := defaultVersionCommandRunner(context.Background(), versionCommandOptions{})
+	if err != nil {
+		t.Fatalf("defaultVersionCommandRunner() error = %v", err)
+	}
+	if result.LatestVersion != "v1.2.0" {
+		t.Fatalf("LatestVersion = %q, want %q", result.LatestVersion, "v1.2.0")
+	}
+	if result.HasUpdate {
+		t.Fatalf("HasUpdate = true, want false for non-semver current version")
+	}
+}
+
+func TestPrintVersionCommandResultBranches(t *testing.T) {
+	t.Run("prerelease label and unknown latest", func(t *testing.T) {
+		var out bytes.Buffer
+		printVersionCommandResult(&out, versionCommandResult{
+			CurrentVersion:    "v1.0.0",
+			LatestVersion:     "",
+			Comparable:        true,
+			IncludePrerelease: true,
+		})
+		text := out.String()
+		if !strings.Contains(text, "Latest version (including prerelease): unknown") {
+			t.Fatalf("output = %q, want prerelease latest label", text)
+		}
+		if !strings.Contains(text, "Update status: unknown (latest version unavailable).") {
+			t.Fatalf("output = %q, want unknown update status", text)
+		}
+	})
+
+	t.Run("check error uses prerelease label", func(t *testing.T) {
+		var out bytes.Buffer
+		printVersionCommandResult(&out, versionCommandResult{
+			CurrentVersion:    "v1.0.0",
+			CheckErr:          errors.New("network"),
+			IncludePrerelease: true,
+		})
+		if !strings.Contains(out.String(), "Latest version (including prerelease): check failed (network)") {
+			t.Fatalf("output = %q, want prerelease check failure", out.String())
+		}
+	})
 }

@@ -142,6 +142,13 @@ func (a stubSourceAsset) GetName() string               { return a.name }
 func (a stubSourceAsset) GetSize() int                  { return a.size }
 func (a stubSourceAsset) GetBrowserDownloadURL() string { return "https://example.com/asset" }
 
+type blankSourceAsset struct{}
+
+func (blankSourceAsset) GetID() int64                  { return 0 }
+func (blankSourceAsset) GetName() string               { return " " }
+func (blankSourceAsset) GetSize() int                  { return 0 }
+func (blankSourceAsset) GetBrowserDownloadURL() string { return " " }
+
 func TestResolveAssetTarget(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -970,5 +977,239 @@ func TestNewClientFactory(t *testing.T) {
 	}
 	if client == nil {
 		t.Fatalf("expected non-nil client")
+	}
+}
+
+func TestParseReleaseVersionBranches(t *testing.T) {
+	tests := []struct {
+		name string
+		tag  string
+		ok   bool
+	}{
+		{name: "empty", tag: " ", ok: false},
+		{name: "no semver", tag: "release-latest", ok: false},
+		{name: "with prefix", tag: "release/v1.2.3", ok: true},
+		{name: "prerelease build", tag: "v1.2.3-rc.1+build.7", ok: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ver, ok := parseReleaseVersion(tt.tag)
+			if ok != tt.ok {
+				t.Fatalf("parseReleaseVersion(%q) ok = %v, want %v", tt.tag, ok, tt.ok)
+			}
+			if ok && ver == nil {
+				t.Fatalf("parseReleaseVersion(%q) returned nil version", tt.tag)
+			}
+		})
+	}
+}
+
+func TestAliasPatternHelpers(t *testing.T) {
+	if got := platformAliasPattern("windows"); got != `(?:windows|win)` {
+		t.Fatalf("platformAliasPattern(windows) = %q", got)
+	}
+	if got := platformAliasPattern("darwin"); got != `(?:darwin|macos)` {
+		t.Fatalf("platformAliasPattern(darwin) = %q", got)
+	}
+	if got := platformAliasPattern(" Linux "); got != `linux` {
+		t.Fatalf("platformAliasPattern(linux) = %q, want linux", got)
+	}
+
+	if got := archAliasPattern("x86_64"); got != `(?:x86_64|x86-64|amd64)` {
+		t.Fatalf("archAliasPattern(x86_64) = %q", got)
+	}
+	if got := archAliasPattern("arm64"); got != `(?:arm64|aarch64)` {
+		t.Fatalf("archAliasPattern(arm64) = %q", got)
+	}
+	if got := archAliasPattern(" riscv64 "); got != `riscv64` {
+		t.Fatalf("archAliasPattern(riscv64) = %q, want riscv64", got)
+	}
+}
+
+func TestBuildReleaseSnapshotFilters(t *testing.T) {
+	matcher := regexp.MustCompile(`^neocode[-_]linux[-_](?:x86_64|amd64)(?:\.tar\.gz|\.tgz)$`)
+
+	if _, ok := buildReleaseSnapshot(nil, false, matcher); ok {
+		t.Fatal("expected nil release to be filtered")
+	}
+
+	draft := stubSourceRelease{draft: true, tagName: "v1.2.3"}
+	if _, ok := buildReleaseSnapshot(draft, false, matcher); ok {
+		t.Fatal("expected draft release to be filtered")
+	}
+
+	pre := stubSourceRelease{prerelease: true, tagName: "v1.2.3"}
+	if _, ok := buildReleaseSnapshot(pre, false, matcher); ok {
+		t.Fatal("expected prerelease to be filtered when includePrerelease=false")
+	}
+
+	invalidTag := stubSourceRelease{tagName: "latest"}
+	if _, ok := buildReleaseSnapshot(invalidTag, true, matcher); ok {
+		t.Fatal("expected non-semver tag to be filtered")
+	}
+
+	release := stubSourceRelease{
+		tagName: "v1.2.3",
+		assets: []selfupdate.SourceAsset{
+			stubSourceAsset{name: "neocode_linux_amd64.tar.gz"},
+			stubSourceAsset{name: "checksums.txt"},
+		},
+	}
+	snapshot, ok := buildReleaseSnapshot(release, true, matcher)
+	if !ok || snapshot == nil {
+		t.Fatal("expected valid snapshot")
+	}
+	if len(snapshot.MatchedAssets) != 1 {
+		t.Fatalf("len(MatchedAssets) = %d, want 1", len(snapshot.MatchedAssets))
+	}
+}
+
+func TestSelfupdateClientProbeLatestNoMatchedAssetReturnsEligibleDiagnostic(t *testing.T) {
+	source := stubSource{
+		releases: []selfupdate.SourceRelease{
+			stubSourceRelease{
+				id:      1,
+				tagName: "v1.8.0",
+				assets: []selfupdate.SourceAsset{
+					stubSourceAsset{id: 1, name: "checksums.txt", size: 1},
+					stubSourceAsset{id: 2, name: "readme.txt", size: 1},
+				},
+			},
+		},
+	}
+
+	updater, err := selfupdate.NewUpdater(selfupdate.Config{
+		Source: source,
+		OS:     "linux",
+		Arch:   "x86_64",
+	})
+	if err != nil {
+		t.Fatalf("NewUpdater() error = %v", err)
+	}
+
+	client := selfupdateClient{
+		updater: updater,
+		source:  source,
+		config: selfupdate.Config{
+			Source: source,
+			OS:     "linux",
+			Arch:   "x86_64",
+		},
+	}
+	target := assetTarget{
+		OSToken:   "linux",
+		ArchToken: "x86_64",
+		Ext:       "tar.gz",
+	}
+
+	probe, err := client.ProbeLatest(context.Background(), selfupdate.NewRepositorySlug(repositoryOwner, repositoryName), target)
+	if err != nil {
+		t.Fatalf("ProbeLatest() error = %v", err)
+	}
+	if probe.Status != probeStatusNoCandidate {
+		t.Fatalf("Status = %v, want no-candidate", probe.Status)
+	}
+	if probe.LatestVersion != "1.8.0" {
+		t.Fatalf("LatestVersion = %q, want %q", probe.LatestVersion, "1.8.0")
+	}
+	if probe.AvailableAssetsCount != 2 {
+		t.Fatalf("AvailableAssetsCount = %d, want 2", probe.AvailableAssetsCount)
+	}
+	if len(probe.CandidateAssets) != 2 {
+		t.Fatalf("len(CandidateAssets) = %d, want 2", len(probe.CandidateAssets))
+	}
+}
+
+func TestSelfupdateClientProbeLatestListReleasesError(t *testing.T) {
+	client := selfupdateClient{
+		source: stubSource{listErr: errors.New("list failed")},
+		config: selfupdate.Config{OS: "linux", Arch: "x86_64"},
+	}
+
+	target := assetTarget{OSToken: "linux", ArchToken: "x86_64", Ext: "tar.gz"}
+	_, err := client.ProbeLatest(context.Background(), selfupdate.NewRepositorySlug(repositoryOwner, repositoryName), target)
+	if err == nil || err.Error() != "list failed" {
+		t.Fatalf("ProbeLatest() error = %v, want list failed", err)
+	}
+}
+
+func TestDetectReleaseByTagAndAssetBranches(t *testing.T) {
+	source := stubSource{
+		releases: []selfupdate.SourceRelease{
+			stubSourceRelease{
+				id:      1,
+				tagName: "v1.0.0",
+				assets: []selfupdate.SourceAsset{
+					stubSourceAsset{id: 1, name: "neocode_linux_x86_64.tar.gz", size: 1},
+				},
+			},
+		},
+	}
+	client := selfupdateClient{
+		source: source,
+		config: selfupdate.Config{
+			Source: source,
+			OS:     "linux",
+			Arch:   "x86_64",
+		},
+	}
+
+	repository := selfupdate.NewRepositorySlug(repositoryOwner, repositoryName)
+	target := assetTarget{OSToken: "linux", ArchToken: "x86_64", Ext: "tar.gz"}
+
+	rel, found, err := client.detectReleaseByTagAndAsset(context.Background(), repository, " ", "asset", target)
+	if err != nil || found || rel != nil {
+		t.Fatalf("empty tag result = (%v, %v, %v), want (nil, false, nil)", rel, found, err)
+	}
+
+	rel, found, err = client.detectReleaseByTagAndAsset(context.Background(), repository, "v1.0.0", " ", target)
+	if err != nil || found || rel != nil {
+		t.Fatalf("empty asset result = (%v, %v, %v), want (nil, false, nil)", rel, found, err)
+	}
+
+	errClient := selfupdateClient{
+		source: stubSource{listErr: errors.New("list failed")},
+		config: selfupdate.Config{
+			Source: stubSource{listErr: errors.New("list failed")},
+			OS:     "linux",
+			Arch:   "x86_64",
+		},
+	}
+	_, _, err = errClient.detectReleaseByTagAndAsset(
+		context.Background(),
+		repository,
+		"v1.0.0",
+		"neocode_linux_x86_64.tar.gz",
+		target,
+	)
+	if err == nil || err.Error() != "list failed" {
+		t.Fatalf("detectReleaseByTagAndAsset() error = %v, want list failed", err)
+	}
+}
+
+func TestAssetDiagnosticHelperBranches(t *testing.T) {
+	names := collectAssetNames([]selfupdate.SourceAsset{
+		stubSourceAsset{name: "z-last"},
+		blankSourceAsset{},
+		stubSourceAsset{name: "a-first"},
+	})
+	if len(names) != 2 || names[0] != "a-first" || names[1] != "z-last" {
+		t.Fatalf("collectAssetNames() = %v", names)
+	}
+
+	if got := trimDiagnosticAssetName(" "); got != "" {
+		t.Fatalf("trimDiagnosticAssetName(blank) = %q, want empty", got)
+	}
+
+	if got := firstNonEmptyAssetName([]selfupdate.SourceAsset{blankSourceAsset{}}); got != "" {
+		t.Fatalf("firstNonEmptyAssetName() = %q, want empty", got)
+	}
+
+	if got := assetName(nil); got != "" {
+		t.Fatalf("assetName(nil) = %q, want empty", got)
+	}
+	if got := assetName(blankSourceAsset{}); got != "" {
+		t.Fatalf("assetName(blankSourceAsset) = %q, want empty", got)
 	}
 }

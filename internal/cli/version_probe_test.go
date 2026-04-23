@@ -54,3 +54,22 @@ func TestDefaultReleaseProbeReturnsContextTimeoutError(t *testing.T) {
 		t.Fatalf("defaultReleaseProbe() error = %v, want context deadline exceeded", err)
 	}
 }
+
+func TestDefaultReleaseProbeWithoutTimeoutUsesOriginalContext(t *testing.T) {
+	originalCheckLatest := checkLatestRelease
+	t.Cleanup(func() { checkLatestRelease = originalCheckLatest })
+
+	var hasDeadline bool
+	checkLatestRelease = func(ctx context.Context, options updater.CheckOptions) (updater.CheckResult, error) {
+		_, hasDeadline = ctx.Deadline()
+		return updater.CheckResult{CurrentVersion: options.CurrentVersion}, nil
+	}
+
+	_, err := defaultReleaseProbe(context.Background(), "v1.0.0", false, 0)
+	if err != nil {
+		t.Fatalf("defaultReleaseProbe() error = %v", err)
+	}
+	if hasDeadline {
+		t.Fatal("expected original context without deadline when timeout <= 0")
+	}
+}
