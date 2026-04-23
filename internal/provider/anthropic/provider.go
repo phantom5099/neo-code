@@ -98,9 +98,11 @@ func (p *Provider) Generate(ctx context.Context, req providertypes.GenerateReque
 		case anthropic.MessageStartEvent:
 			if variant.Message.Usage.InputTokens > 0 {
 				usage.InputTokens = int(variant.Message.Usage.InputTokens)
+				usage.InputObserved = true
 			}
 			if variant.Message.Usage.OutputTokens > 0 {
 				usage.OutputTokens = int(variant.Message.Usage.OutputTokens)
+				usage.OutputObserved = true
 			}
 		case anthropic.ContentBlockStartEvent:
 			switch block := variant.ContentBlock.AsAny().(type) {
@@ -167,9 +169,11 @@ func (p *Provider) Generate(ctx context.Context, req providertypes.GenerateReque
 			}
 			if variant.Usage.OutputTokens > 0 {
 				usage.OutputTokens = int(variant.Usage.OutputTokens)
+				usage.OutputObserved = true
 			}
 			if variant.Usage.InputTokens > 0 {
 				usage.InputTokens = int(variant.Usage.InputTokens)
+				usage.InputObserved = true
 			}
 		}
 	}
@@ -193,8 +197,11 @@ func (p *Provider) Generate(ctx context.Context, req providertypes.GenerateReque
 			return fmt.Errorf("%sinvalid tool_use stream at index %d: missing tool name", errorPrefix, index)
 		}
 	}
-	if usage.TotalTokens <= 0 {
+	if usage.TotalTokens <= 0 && (usage.InputObserved || usage.OutputObserved) {
 		usage.TotalTokens = usage.InputTokens + usage.OutputTokens
+	}
+	if !usage.InputObserved && !usage.OutputObserved {
+		return provider.EmitMessageDone(ctx, events, finishReason, nil)
 	}
 	return provider.EmitMessageDone(ctx, events, finishReason, &usage)
 }

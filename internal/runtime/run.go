@@ -445,7 +445,8 @@ func (s *Service) callProviderWithRetry(
 				snapshot.ID,
 				streamOutcome.inputTokens,
 				streamOutcome.outputTokens,
-				streamOutcome.usagePresent,
+				streamOutcome.inputObserved,
+				streamOutcome.outputObserved,
 			),
 		}, nil
 	}
@@ -572,18 +573,23 @@ func (s *Service) reconcileLedger(
 		return ledgerReconcileResult{}, fmt.Errorf("runtime: turn budget id mismatch between decision and usage observation")
 	}
 	reconciled := ledgerReconcileResult{
-		inputTokens:  observation.InputTokens,
-		inputSource:  usageSourceObserved,
-		outputTokens: observation.OutputTokens,
-		outputSource: usageSourceObserved,
+		inputSource:  usageSourceUnknown,
+		outputSource: usageSourceUnknown,
+	}
+	if observation.InputObserved {
+		reconciled.inputTokens = observation.InputTokens
+		reconciled.inputSource = usageSourceObserved
+	} else {
+		reconciled.inputTokens = decision.EstimatedInputTokens
+		reconciled.inputSource = usageSourceEstimated
+	}
+	if observation.OutputObserved {
+		reconciled.outputTokens = observation.OutputTokens
+		reconciled.outputSource = usageSourceObserved
 	}
 	if observation.InputObserved && observation.OutputObserved {
 		return reconciled, nil
 	}
-	reconciled.inputTokens = decision.EstimatedInputTokens
-	reconciled.inputSource = usageSourceEstimated
-	reconciled.outputTokens = 0
-	reconciled.outputSource = usageSourceUnknown
 	reconciled.hasUnknownUsage = true
 	if state != nil {
 		state.session.HasUnknownUsage = true

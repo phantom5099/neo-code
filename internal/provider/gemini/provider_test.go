@@ -80,6 +80,9 @@ func TestProviderGenerate(t *testing.T) {
 			if payload.Usage == nil || payload.Usage.TotalTokens != 7 {
 				t.Fatalf("expected usage total tokens 7, got %+v", payload.Usage)
 			}
+			if !payload.Usage.InputObserved || !payload.Usage.OutputObserved {
+				t.Fatalf("expected usage observed flags true, got %+v", payload.Usage)
+			}
 			if payload.FinishReason != "stop" {
 				t.Fatalf("expected finish reason stop, got %q", payload.FinishReason)
 			}
@@ -87,6 +90,58 @@ func TestProviderGenerate(t *testing.T) {
 	}
 	if !foundText || !foundToolStart || !foundToolDelta || !foundDone {
 		t.Fatalf("expected text/tool_start/tool_delta/done events, got %+v", drained)
+	}
+}
+
+func TestProviderGenerateOmitsUsageWhenProviderDidNotReturnUsage(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"candidates\":[{\"index\":0,\"content\":{\"parts\":[{\"text\":\"Hello \"}]}}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"candidates\":[{\"index\":0,\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"text\":\"done\"}]}}]}\n\n")
+	}))
+	defer server.Close()
+
+	p, err := New(provider.RuntimeConfig{
+		Driver:         provider.DriverGemini,
+		BaseURL:        server.URL,
+		DefaultModel:   "gemini-2.5-flash",
+		APIKeyEnv:      "GEMINI_TEST_KEY",
+		APIKeyResolver: provider.StaticAPIKeyResolver("test-key"),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	events := make(chan providertypes.StreamEvent, 8)
+	if err := p.Generate(context.Background(), providertypes.GenerateRequest{
+		Messages: []providertypes.Message{{
+			Role:  providertypes.RoleUser,
+			Parts: []providertypes.ContentPart{providertypes.NewTextPart("hi")},
+		}},
+	}, events); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	drained := drainEvents(events)
+	var done *providertypes.MessageDonePayload
+	for i := range drained {
+		if drained[i].Type != providertypes.StreamEventMessageDone {
+			continue
+		}
+		payload, payloadErr := drained[i].MessageDoneValue()
+		if payloadErr != nil {
+			t.Fatalf("MessageDoneValue() error = %v", payloadErr)
+		}
+		done = &payload
+		break
+	}
+	if done == nil {
+		t.Fatalf("expected message_done event, got %+v", drained)
+	}
+	if done.Usage != nil {
+		t.Fatalf("expected nil usage when provider does not report usage, got %+v", done.Usage)
 	}
 }
 

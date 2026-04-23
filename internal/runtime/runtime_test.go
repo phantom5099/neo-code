@@ -3823,6 +3823,8 @@ func TestServiceRunPersistsAndRestoresTokenUsage(t *testing.T) {
 			usage.InputTokens = 25
 			usage.OutputTokens = 10
 		}
+		usage.InputObserved = true
+		usage.OutputObserved = true
 
 		select {
 		case events <- providertypes.NewTextDeltaStreamEvent("assistant reply"):
@@ -4917,8 +4919,10 @@ func TestTokenUsageRecordedOnMessageDone(t *testing.T) {
 
 	// Create a MessageDone stream event with token usage
 	messageDoneEvent := providertypes.NewMessageDoneStreamEvent("stop", &providertypes.Usage{
-		InputTokens:  100,
-		OutputTokens: 50,
+		InputTokens:    100,
+		OutputTokens:   50,
+		InputObserved:  true,
+		OutputObserved: true,
 	})
 
 	// 使用与运行时相同的流式事件处理器验证 usage 累积行为。

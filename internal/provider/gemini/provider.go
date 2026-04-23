@@ -157,6 +157,9 @@ func (p *Provider) Generate(ctx context.Context, req providertypes.GenerateReque
 	if !hasPayload {
 		return fmt.Errorf("%w: empty gemini stream payload", provider.ErrStreamInterrupted)
 	}
+	if !usage.InputObserved && !usage.OutputObserved {
+		return provider.EmitMessageDone(ctx, events, finishReason, nil)
+	}
 	return provider.EmitMessageDone(ctx, events, finishReason, &usage)
 }
 
@@ -209,6 +212,8 @@ func extractUsage(usage *providertypes.Usage, raw *genai.GenerateContentResponse
 	usage.InputTokens = int(raw.PromptTokenCount)
 	usage.OutputTokens = int(raw.CandidatesTokenCount)
 	usage.TotalTokens = int(raw.TotalTokenCount)
+	usage.InputObserved = true
+	usage.OutputObserved = true
 }
 
 // encodeArguments 将函数参数对象编码为 JSON 字符串，供统一 tool_call_delta 事件复用。
