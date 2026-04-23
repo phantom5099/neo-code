@@ -96,11 +96,11 @@ func (p *Provider) Generate(ctx context.Context, req providertypes.GenerateReque
 		event := streamReader.Current()
 		switch variant := event.AsAny().(type) {
 		case anthropic.MessageStartEvent:
-			if variant.Message.Usage.InputTokens > 0 {
+			if variant.Message.Usage.JSON.InputTokens.Valid() {
 				usage.InputTokens = int(variant.Message.Usage.InputTokens)
 				usage.InputObserved = true
 			}
-			if variant.Message.Usage.OutputTokens > 0 {
+			if variant.Message.Usage.JSON.OutputTokens.Valid() {
 				usage.OutputTokens = int(variant.Message.Usage.OutputTokens)
 				usage.OutputObserved = true
 			}
@@ -167,11 +167,11 @@ func (p *Provider) Generate(ctx context.Context, req providertypes.GenerateReque
 			if reason := strings.TrimSpace(string(variant.Delta.StopReason)); reason != "" {
 				finishReason = reason
 			}
-			if variant.Usage.OutputTokens > 0 {
+			if variant.Usage.JSON.OutputTokens.Valid() {
 				usage.OutputTokens = int(variant.Usage.OutputTokens)
 				usage.OutputObserved = true
 			}
-			if variant.Usage.InputTokens > 0 {
+			if variant.Usage.JSON.InputTokens.Valid() {
 				usage.InputTokens = int(variant.Usage.InputTokens)
 				usage.InputObserved = true
 			}

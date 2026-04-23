@@ -102,6 +102,70 @@ func TestProviderGenerate(t *testing.T) {
 	}
 }
 
+func TestProviderGenerateMarksZeroUsageAsObserved(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "event: message_start\n")
+		_, _ = fmt.Fprint(w, "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n")
+		_, _ = fmt.Fprint(w, "event: content_block_start\n")
+		_, _ = fmt.Fprint(w, "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"ok\"}}\n\n")
+		_, _ = fmt.Fprint(w, "event: message_delta\n")
+		_, _ = fmt.Fprint(w, "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}\n\n")
+		_, _ = fmt.Fprint(w, "event: message_stop\n")
+		_, _ = fmt.Fprint(w, "data: {\"type\":\"message_stop\"}\n\n")
+	}))
+	defer server.Close()
+
+	p, err := New(provider.RuntimeConfig{
+		Driver:         provider.DriverAnthropic,
+		BaseURL:        server.URL,
+		DefaultModel:   "claude-3-7-sonnet",
+		APIKeyEnv:      "ANTHROPIC_TEST_KEY",
+		APIKeyResolver: provider.StaticAPIKeyResolver("test-key"),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	events := make(chan providertypes.StreamEvent, 8)
+	if err := p.Generate(context.Background(), providertypes.GenerateRequest{
+		Messages: []providertypes.Message{{
+			Role:  providertypes.RoleUser,
+			Parts: []providertypes.ContentPart{providertypes.NewTextPart("hi")},
+		}},
+	}, events); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	drained := drainEvents(events)
+	var done *providertypes.MessageDonePayload
+	for i := range drained {
+		if drained[i].Type != providertypes.StreamEventMessageDone {
+			continue
+		}
+		payload, payloadErr := drained[i].MessageDoneValue()
+		if payloadErr != nil {
+			t.Fatalf("MessageDoneValue() error = %v", payloadErr)
+		}
+		done = &payload
+		break
+	}
+	if done == nil {
+		t.Fatalf("expected message_done event, got %+v", drained)
+	}
+	if done.Usage == nil {
+		t.Fatalf("expected usage to be present when zero usage is observed")
+	}
+	if !done.Usage.InputObserved || !done.Usage.OutputObserved {
+		t.Fatalf("expected observed flags true, got %+v", done.Usage)
+	}
+	if done.Usage.InputTokens != 0 || done.Usage.OutputTokens != 0 || done.Usage.TotalTokens != 0 {
+		t.Fatalf("expected zero usage, got %+v", done.Usage)
+	}
+}
+
 func TestProviderGenerateOmitsUsageWhenProviderDidNotReturnUsage(t *testing.T) {
 	t.Parallel()
 

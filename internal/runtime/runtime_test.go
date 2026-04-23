@@ -4727,7 +4727,12 @@ func TestServiceRunBypassesBudgetGateWhenEstimateFails(t *testing.T) {
 		estimateFn: func(ctx context.Context, req providertypes.GenerateRequest) (providertypes.BudgetEstimate, error) {
 			_ = ctx
 			_ = req
-			return providertypes.BudgetEstimate{}, errors.New("estimate unavailable")
+			return providertypes.BudgetEstimate{}, &provider.ProviderError{
+				StatusCode: 503,
+				Code:       provider.ErrorCodeServer,
+				Message:    "estimate unavailable",
+				Retryable:  true,
+			}
 		},
 		responses: []scriptedResponse{
 			{
@@ -4797,6 +4802,45 @@ func TestServiceRunBypassesBudgetGateWhenEstimateFails(t *testing.T) {
 		t.Fatalf("expected stop reason %q, got %q", controlplane.StopReasonCompleted, stopPayload.Reason)
 	}
 	assertNoEventType(t, events, EventError)
+}
+
+func TestServiceRunFailsWhenEstimateFailsWithDeterministicError(t *testing.T) {
+	t.Parallel()
+
+	manager := newRuntimeConfigManager(t)
+	if err := manager.Update(context.Background(), func(cfg *config.Config) error {
+		cfg.Context.Budget.PromptBudget = 10
+		cfg.Context.Budget.FallbackPromptBudget = 10
+		return nil
+	}); err != nil {
+		t.Fatalf("update config: %v", err)
+	}
+
+	store := newMemoryStore()
+	registry := tools.NewRegistry()
+	scripted := &scriptedProvider{
+		estimateFn: func(ctx context.Context, req providertypes.GenerateRequest) (providertypes.BudgetEstimate, error) {
+			_ = ctx
+			_ = req
+			return providertypes.BudgetEstimate{}, errors.New("invalid provider config")
+		},
+	}
+
+	service := NewWithFactory(manager, registry, store, &scriptedProviderFactory{provider: scripted}, &stubContextBuilder{})
+	err := service.Run(context.Background(), UserInput{
+		RunID: "run-budget-estimate-failed-hard-stop",
+		Parts: []providertypes.ContentPart{providertypes.NewTextPart("continue")},
+	})
+	if err == nil || !containsError(err, "estimate input tokens") {
+		t.Fatalf("expected estimate input tokens error, got %v", err)
+	}
+	if scripted.callCount != 0 {
+		t.Fatalf("expected provider Generate not to be called, got %d calls", scripted.callCount)
+	}
+
+	events := collectRuntimeEvents(service.Events())
+	assertNoEventType(t, events, EventBudgetEstimateFailed)
+	assertNoEventType(t, events, EventBudgetChecked)
 }
 
 func TestServiceRunFailsWhenEstimateContextCanceled(t *testing.T) {
