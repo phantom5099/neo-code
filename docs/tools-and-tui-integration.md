@@ -28,7 +28,7 @@
 - 不新增 `git_*` 工具，Git 能力统一走 `bash`，并在工具层执行前做语义解析。
 - `bash` 调用会被归类为：`read_only`、`local_mutation`、`remote_op`、`destructive`、`unknown`。
 - 推荐策略默认：
-  - `bash_git_read_only` 默认自动放行（仍受语义解析与高风险拦截约束）。
+  - `bash_git_read_only` 默认自动放行，但仅限安全白名单子命令（`status` / `rev-parse` / `describe`）。
   - `bash_git_remote_op`、`bash_git_destructive`、`bash_git_local_mutation`、`bash_git_unknown` 统一走审批。
   - 非 Git 或无法判定语义的 `bash` 命令走兜底审批。
 - Session 级权限记忆基于 `permission_fingerprint`，同义写法可复用授权；`remote_op` 不复用 `allow_session`，每次都要求审批。

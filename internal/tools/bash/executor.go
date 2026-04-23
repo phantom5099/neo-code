@@ -50,6 +50,12 @@ type defaultSecurityExecutor struct {
 	runner  commandRunner
 }
 
+var hardenedGitReadOnlySubcommands = map[string]struct{}{
+	"status":    {},
+	"rev-parse": {},
+	"describe":  {},
+}
+
 // NewDefaultSecurityExecutor returns the default secure bash executor.
 func NewDefaultSecurityExecutor(root string, shell string, timeout time.Duration) SecurityExecutor {
 	return &defaultSecurityExecutor{
@@ -154,6 +160,9 @@ func buildCommandEnv(intent tools.BashSemanticIntent) ([]string, bool, error) {
 	if !shouldHardenGitReadOnlyExecution(intent) {
 		return os.Environ(), false, nil
 	}
+	if !isHardenedGitReadOnlySubcommand(intent.Subcommand) {
+		return nil, false, fmt.Errorf("bash: git read-only subcommand %q is not allowed for auto execution", intent.Subcommand)
+	}
 	if intent.ParseError || intent.Composite || strings.TrimSpace(intent.Subcommand) == "" {
 		return nil, false, errors.New("bash: cannot safely classify git read-only command")
 	}
@@ -167,6 +176,13 @@ func buildCommandEnv(intent tools.BashSemanticIntent) ([]string, bool, error) {
 // shouldHardenGitReadOnlyExecution 判断是否应对当前命令启用 Git 只读环境隔离。
 func shouldHardenGitReadOnlyExecution(intent tools.BashSemanticIntent) bool {
 	return intent.IsGit && strings.TrimSpace(intent.Classification) == tools.BashIntentClassificationReadOnly
+}
+
+// isHardenedGitReadOnlySubcommand 校验自动放行的 Git 只读子命令白名单。
+func isHardenedGitReadOnlySubcommand(subcommand string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(subcommand))
+	_, ok := hardenedGitReadOnlySubcommands[normalized]
+	return ok
 }
 
 // sanitizeGitReadOnlyEnv 清洗并重建环境变量，降低 Git 配置触发外部程序的风险。

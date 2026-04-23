@@ -28,6 +28,27 @@ func TestAnalyzeBashCommandClassifiesGitCommand(t *testing.T) {
 			wantSubCmd: "status",
 		},
 		{
+			name:       "git log is gated as unknown for safety",
+			command:    "git log --oneline -5",
+			wantIsGit:  true,
+			wantClass:  BashIntentClassificationUnknown,
+			wantSubCmd: "log",
+		},
+		{
+			name:       "git show is gated as unknown for safety",
+			command:    "git show HEAD~1",
+			wantIsGit:  true,
+			wantClass:  BashIntentClassificationUnknown,
+			wantSubCmd: "show",
+		},
+		{
+			name:       "git diff is gated as unknown for safety",
+			command:    "git diff --name-only",
+			wantIsGit:  true,
+			wantClass:  BashIntentClassificationUnknown,
+			wantSubCmd: "diff",
+		},
+		{
 			name:       "git cat-file is unknown and must require approval",
 			command:    "git cat-file -p HEAD:.env",
 			wantIsGit:  true,
@@ -101,10 +122,10 @@ func TestAnalyzeBashCommandClassifiesGitCommand(t *testing.T) {
 		},
 		{
 			name:       "uppercase C does not become risky config",
-			command:    "git -C /tmp log",
+			command:    "git -C /tmp status",
 			wantIsGit:  true,
 			wantClass:  BashIntentClassificationReadOnly,
-			wantSubCmd: "log",
+			wantSubCmd: "status",
 		},
 	}
 

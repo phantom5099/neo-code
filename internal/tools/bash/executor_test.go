@@ -179,11 +179,24 @@ func TestBuildCommandEnvRejectsUnstableReadOnlyIntent(t *testing.T) {
 	_, _, err := buildCommandEnv(tools.BashSemanticIntent{
 		IsGit:          true,
 		Classification: tools.BashIntentClassificationReadOnly,
-		Subcommand:     "log",
+		Subcommand:     "status",
 		ParseError:     true,
 	})
 	if err == nil || !strings.Contains(err.Error(), "cannot safely classify git read-only command") {
 		t.Fatalf("buildCommandEnv() error = %v, want unstable classification error", err)
+	}
+}
+
+func TestBuildCommandEnvRejectsUnsupportedReadOnlySubcommand(t *testing.T) {
+	t.Parallel()
+
+	_, _, err := buildCommandEnv(tools.BashSemanticIntent{
+		IsGit:          true,
+		Classification: tools.BashIntentClassificationReadOnly,
+		Subcommand:     "show",
+	})
+	if err == nil || !strings.Contains(err.Error(), "is not allowed for auto execution") {
+		t.Fatalf("buildCommandEnv() error = %v, want unsupported subcommand error", err)
 	}
 }
 

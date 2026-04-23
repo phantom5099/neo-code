@@ -32,12 +32,8 @@ type BashSemanticIntent struct {
 
 var gitReadOnlySubcommands = map[string]struct{}{
 	"status":    {},
-	"diff":      {},
-	"log":       {},
-	"show":      {},
 	"rev-parse": {},
 	"describe":  {},
-	"blame":     {},
 }
 
 var gitRemoteSubcommands = map[string]struct{}{

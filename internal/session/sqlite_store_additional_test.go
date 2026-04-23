@@ -741,7 +741,7 @@ func TestCleanupExpiredSessionAssetsStopsOnCanceledContext(t *testing.T) {
 	}
 }
 
-func TestBuildSessionFromRowMigratesMissingExecutorFromOwnerType(t *testing.T) {
+func TestBuildSessionFromRowDefaultsMissingExecutorToAgent(t *testing.T) {
 	t.Parallel()
 
 	nowMS := toUnixMillis(time.Now().UTC())
@@ -755,18 +755,15 @@ func TestBuildSessionFromRowMigratesMissingExecutorFromOwnerType(t *testing.T) {
 		TodosJSON:     `[{"id":"todo-1","content":"legacy subagent","status":"in_progress","owner_type":"subagent","revision":1}]`,
 	}
 
-	session, migratedCount, err := buildSessionFromRow(row, nil)
+	session, err := buildSessionFromRow(row, nil)
 	if err != nil {
 		t.Fatalf("expected missing executor to default, got session=%+v err=%v", session, err)
-	}
-	if migratedCount != 1 {
-		t.Fatalf("migrated count = %d, want 1", migratedCount)
 	}
 	if len(session.Todos) != 1 {
 		t.Fatalf("todos len = %d, want 1", len(session.Todos))
 	}
-	if session.Todos[0].Executor != TodoExecutorSubAgent {
-		t.Fatalf("legacy todo executor = %q, want %q", session.Todos[0].Executor, TodoExecutorSubAgent)
+	if session.Todos[0].Executor != TodoExecutorAgent {
+		t.Fatalf("legacy todo executor = %q, want %q", session.Todos[0].Executor, TodoExecutorAgent)
 	}
 	if session.TodoVersion != CurrentTodoVersion {
 		t.Fatalf("todo_version = %d, want %d", session.TodoVersion, CurrentTodoVersion)
@@ -791,12 +788,9 @@ func TestBuildSessionFromRowDefaultsRetryTodoMissingExecutorToAgent(t *testing.T
 ]`,
 	}
 
-	session, migratedCount, err := buildSessionFromRow(row, nil)
+	session, err := buildSessionFromRow(row, nil)
 	if err != nil {
 		t.Fatalf("expected retry todo missing executor to default, got session=%+v err=%v", session, err)
-	}
-	if migratedCount != 1 {
-		t.Fatalf("migrated count = %d, want 1", migratedCount)
 	}
 	if len(session.Todos) != 1 {
 		t.Fatalf("todos len = %d, want 1", len(session.Todos))
@@ -806,7 +800,7 @@ func TestBuildSessionFromRowDefaultsRetryTodoMissingExecutorToAgent(t *testing.T
 	}
 }
 
-func TestLoadSessionMigratesLegacyExecutorAndPersists(t *testing.T) {
+func TestLoadSessionDoesNotPersistLegacyExecutorInference(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -850,15 +844,15 @@ INSERT INTO sessions (
 	if len(session.Todos) != 1 {
 		t.Fatalf("todos len = %d, want 1", len(session.Todos))
 	}
-	if session.Todos[0].Executor != TodoExecutorSubAgent {
-		t.Fatalf("loaded executor = %q, want %q", session.Todos[0].Executor, TodoExecutorSubAgent)
+	if session.Todos[0].Executor != TodoExecutorAgent {
+		t.Fatalf("loaded executor = %q, want %q", session.Todos[0].Executor, TodoExecutorAgent)
 	}
 
 	var persistedTodosJSON string
 	if err := db.QueryRowContext(ctx, `SELECT todos_json FROM sessions WHERE id = ?`, session.ID).Scan(&persistedTodosJSON); err != nil {
-		t.Fatalf("query migrated todos_json: %v", err)
+		t.Fatalf("query persisted todos_json: %v", err)
 	}
-	if !strings.Contains(persistedTodosJSON, `"executor":"subagent"`) {
-		t.Fatalf("persisted todos_json = %q, want explicit subagent executor", persistedTodosJSON)
+	if strings.Contains(persistedTodosJSON, `"executor":`) {
+		t.Fatalf("persisted todos_json = %q, want legacy payload unchanged during load", persistedTodosJSON)
 	}
 }
