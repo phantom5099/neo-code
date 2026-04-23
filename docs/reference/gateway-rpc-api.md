@@ -720,7 +720,7 @@ Response Schema（通知完整 payload）：
         "turn": 3,
         "phase": "reasoning",
         "timestamp": "2026-04-22T09:01:02.123456789Z",
-        "payload_version": 2,
+        "payload_version": 4,
         "payload": {}
       }
     }
