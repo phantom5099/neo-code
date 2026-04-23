@@ -107,7 +107,7 @@ func newGatewayCommand() *cobra.Command {
 	return newGatewayServerCommand("gateway", "Start local gateway server", mustReadInheritedWorkdir)
 }
 
-// NewGatewayStandaloneCommand 鍒涘缓 gateway-only 鐙珛鍏ュ彛鍛戒护锛岀‘淇濅粎鏆撮湶缃戝叧鏈嶅姟璇箟銆?
+// NewGatewayStandaloneCommand 创建 gateway-only 独立入口命令，确保仅暴露网关服务语义。
 func NewGatewayStandaloneCommand() *cobra.Command {
 	standaloneWorkdir := ""
 	command := newGatewayServerCommand("neocode-gateway", "Start NeoCode gateway-only server", func(*cobra.Command) string {
@@ -117,7 +117,7 @@ func NewGatewayStandaloneCommand() *cobra.Command {
 	return command
 }
 
-// newGatewayServerCommand 鏋勫缓缃戝叧鍚姩鍛戒护锛屽苟澶嶇敤缁熶竴鍙傛暟褰掍竴鍖栦笌鎵ц璺緞銆?
+// newGatewayServerCommand 构建网关启动命令，并复用统一参数归一化与执行路径。
 func newGatewayServerCommand(use, short string, readWorkdir func(*cobra.Command) string) *cobra.Command {
 	options := &gatewayCommandOptions{}
 
@@ -195,7 +195,7 @@ func newGatewayServerCommand(use, short string, readWorkdir func(*cobra.Command)
 	return cmd
 }
 
-// normalizeGatewayLogLevel 瀵圭綉鍏虫棩蹇楃骇鍒仛褰掍竴鍖栧苟鏍￠獙鍚堟硶鍊笺€?
+// normalizeGatewayLogLevel 对网关日志级别做归一化并校验合法值。
 func normalizeGatewayLogLevel(logLevel string) (string, error) {
 	normalized := strings.ToLower(strings.TrimSpace(logLevel))
 	switch normalized {
@@ -206,7 +206,7 @@ func normalizeGatewayLogLevel(logLevel string) (string, error) {
 	}
 }
 
-// mustReadInheritedWorkdir 鍦ㄥ瓙鍛戒护涓畨鍏ㄨ鍙栫户鎵跨殑 --workdir锛岃鍙栧け璐ユ椂鍥為€€涓虹┖鍊笺€?
+// mustReadInheritedWorkdir 在子命令中安全读取继承的 --workdir，读取失败时回退为空值。
 func mustReadInheritedWorkdir(cmd *cobra.Command) string {
 	if cmd == nil {
 		return ""
@@ -218,7 +218,7 @@ func mustReadInheritedWorkdir(cmd *cobra.Command) string {
 	return workdir
 }
 
-// defaultGatewayCommandRunner 浣跨敤缃戝叧鏈嶅姟楠ㄦ灦鍚姩鏈湴 IPC 鐩戝惉骞跺鐞嗕俊鍙烽€€鍑恒€?
+// defaultGatewayCommandRunner 使用网关服务骨架启动本地 IPC 监听并处理中断退出。
 func defaultGatewayCommandRunner(ctx context.Context, options gatewayCommandOptions) error {
 	logger := log.New(os.Stderr, "neocode-gateway: ", log.LstdFlags)
 	logger.Printf("starting gateway (log-level=%s)", options.LogLevel)
@@ -341,7 +341,7 @@ type gatewayIdleShutdownController struct {
 	timer *time.Timer
 }
 
-// newGatewayIdleShutdownController 鍒涘缓缃戝叧绌洪棽鑷€€鎺у埗鍣細杩炴帴鏁板綊闆跺悗寤惰繜閫€鍑猴紝鏈夎繛鎺ユ仮澶嶅垯鍙栨秷閫€鍑恒€?
+// newGatewayIdleShutdownController 创建网关空闲退出控制器：连接归零后延迟退出，连接恢复则取消退出。
 func newGatewayIdleShutdownController(logger *log.Logger, cancel context.CancelFunc) *gatewayIdleShutdownController {
 	return &gatewayIdleShutdownController{
 		logger:      logger,
@@ -350,7 +350,7 @@ func newGatewayIdleShutdownController(logger *log.Logger, cancel context.CancelF
 	}
 }
 
-// observe 鎺ユ敹 IPC 娲昏穬杩炴帴鏁板揩鐓у苟缁存姢绌洪棽閫€鍑鸿鏃跺櫒銆?
+// observe 接收 IPC 活跃连接数快照并维护空闲退出计时器。
 func (c *gatewayIdleShutdownController) observe(active int) {
 	if c == nil {
 		return
@@ -391,7 +391,7 @@ func (c *gatewayIdleShutdownController) observe(active int) {
 	})
 }
 
-// close 閲婃斁绌洪棽閫€鍑烘帶鍒跺櫒鎸佹湁鐨勮鏃跺櫒璧勬簮銆?
+// close 释放空闲退出控制器持有的计时器资源。
 func (c *gatewayIdleShutdownController) close() {
 	if c == nil {
 		return
@@ -404,7 +404,7 @@ func (c *gatewayIdleShutdownController) close() {
 	}
 }
 
-// buildGatewayControlPlaneACL 鍩轰簬閰嶇疆鏋勯€犳帶鍒堕潰 ACL 绛栫暐锛屾湭鐭ユā寮忕洿鎺ユ嫆缁濆惎鍔ㄣ€?
+// buildGatewayControlPlaneACL 基于配置构造控制面 ACL 策略，未知模式直接拒绝启动。
 func buildGatewayControlPlaneACL(aclMode string) (*gateway.ControlPlaneACL, error) {
 	normalizedACLMode := strings.ToLower(strings.TrimSpace(aclMode))
 	if normalizedACLMode == "" {
@@ -418,7 +418,7 @@ func buildGatewayControlPlaneACL(aclMode string) (*gateway.ControlPlaneACL, erro
 	}
 }
 
-// applyGatewayFlagOverrides 灏?CLI flags 瑕嗙洊鍒扮綉鍏抽厤缃紝浼樺厛绾ч珮浜?config.yaml銆?
+// applyGatewayFlagOverrides 将 CLI flags 覆盖到网关配置，优先级高于 config.yaml。
 func applyGatewayFlagOverrides(gatewayConfig *config.GatewayConfig, options gatewayCommandOptions) {
 	if gatewayConfig == nil {
 		return
@@ -459,17 +459,17 @@ func applyGatewayFlagOverrides(gatewayConfig *config.GatewayConfig, options gate
 	}
 }
 
-// defaultNewGatewayServer 鍒涘缓榛樿缃戝叧鏈嶅姟瀹炰緥锛屼緵鍛戒护灞傚惎鍔ㄦ祦绋嬭皟鐢ㄣ€?
+// defaultNewGatewayServer 创建默认网关服务实例，供命令层启动流程调用。
 func defaultNewGatewayServer(options gateway.ServerOptions) (gatewayServer, error) {
 	return gateway.NewServer(options)
 }
 
-// defaultNewGatewayNetworkServer 鍒涘缓榛樿缃戝叧缃戠粶璁块棶闈㈡湇鍔″疄渚嬶紝渚涘懡浠ゅ眰鍚姩娴佺▼璋冪敤銆?
+// defaultNewGatewayNetworkServer 创建默认网关网络访问服务实例，供命令层启动流程调用。
 func defaultNewGatewayNetworkServer(options gateway.NetworkServerOptions) (gatewayNetworkServer, error) {
 	return gateway.NewNetworkServer(options)
 }
 
-// newURLDispatchCommand 鍒涘缓 URL Scheme 娲惧彂瀛愬懡浠ら鏋讹紝浠呭仛鍙傛暟鏀舵暃涓庤皟鐢ㄨ浆鍙戙€?
+// newURLDispatchCommand 创建 URL Scheme 派发子命令骨架，仅做参数收敛与调用转发。
 func newURLDispatchCommand() *cobra.Command {
 	options := &urlDispatchCommandOptions{}
 
@@ -512,7 +512,7 @@ func newURLDispatchCommand() *cobra.Command {
 	return cmd
 }
 
-// defaultURLDispatchCommandRunner 鎵ц URL 鍞ら啋璇锋眰骞跺皢缁撴灉浠ョ粨鏋勫寲 JSON 杈撳嚭銆?
+// defaultURLDispatchCommandRunner 执行 URL 唤醒请求并将结果以结构化 JSON 输出。
 func defaultURLDispatchCommandRunner(ctx context.Context, options urlDispatchCommandOptions) error {
 	authToken, authErr := loadAuthToken(options.TokenFile)
 	if authErr != nil {
@@ -549,7 +549,7 @@ func defaultURLDispatchCommandRunner(ctx context.Context, options urlDispatchCom
 	return nil
 }
 
-// loadGatewayAuthToken 璇诲彇闈欓粯璁よ瘉 token锛涜嫢鏂囦欢涓嶅瓨鍦ㄥ垯鍥為€€涓虹┖浠ュ吋瀹规棤閴存潈妯″紡銆?
+// loadGatewayAuthToken 读取默认认证 token；若文件不存在则回退为空以兼容无鉴权模式。
 func loadGatewayAuthToken(path string) (string, error) {
 	token, err := gatewayauth.LoadTokenFromFile(path)
 	if err == nil {
@@ -564,7 +564,7 @@ func loadGatewayAuthToken(path string) (string, error) {
 	return "", err
 }
 
-// normalizeDispatchURL 瀵?url-dispatch 杈撳叆鍋氭渶灏忓綊涓€鍖栵紝璇︾粏鏍￠獙浜ょ敱 dispatcher 瀹屾垚銆?
+// normalizeDispatchURL 对 url-dispatch 输入做最小归一化，详细校验交由 dispatcher 完成。
 func normalizeDispatchURL(rawURL string) (string, error) {
 	normalized := strings.TrimSpace(rawURL)
 	if normalized == "" {
@@ -573,7 +573,7 @@ func normalizeDispatchURL(rawURL string) (string, error) {
 	return normalized, nil
 }
 
-// writeURLDispatchSuccessOutput 灏?url-dispatch 鎴愬姛缁撴灉杈撳嚭涓虹粨鏋勫寲 JSON銆?
+// writeURLDispatchSuccessOutput 将 url-dispatch 成功结果输出为结构化 JSON。
 func writeURLDispatchSuccessOutput(writer io.Writer, result urlscheme.DispatchResult) error {
 	return encodeJSONLine(writer, urlDispatchSuccessOutput{
 		Status:        "ok",
@@ -584,7 +584,7 @@ func writeURLDispatchSuccessOutput(writer io.Writer, result urlscheme.DispatchRe
 	})
 }
 
-// writeURLDispatchErrorOutput 灏?url-dispatch 閿欒缁撴灉杈撳嚭涓虹粨鏋勫寲 JSON銆?
+// writeURLDispatchErrorOutput 将 url-dispatch 错误结果输出为结构化 JSON。
 func writeURLDispatchErrorOutput(writer io.Writer, err error) error {
 	code := "internal_error"
 	message := err.Error()
@@ -602,13 +602,13 @@ func writeURLDispatchErrorOutput(writer io.Writer, err error) error {
 	})
 }
 
-// writeURLDispatchFallbackErrorOutput 鍦ㄧ粨鏋勫寲閿欒杈撳嚭澶辫触鏃舵彁渚涘厹搴?JSON锛岄伩鍏嶅懡浠ら潤榛橀€€鍑恒€?
+// writeURLDispatchFallbackErrorOutput 在结构化错误输出失败时提供兜底 JSON，避免命令静默退出。
 func writeURLDispatchFallbackErrorOutput(writer io.Writer) error {
 	_, err := fmt.Fprintln(writer, fallbackDispatchErrorJSON)
 	return err
 }
 
-// encodeJSONLine 灏嗗璞＄紪鐮佷负鍗曡 JSON锛屽苟鍐欏叆鐩爣杈撳嚭娴併€?
+// encodeJSONLine 将对象编码为单行 JSON，并写入目标输出流。
 func encodeJSONLine(writer io.Writer, payload any) error {
 	encoder := json.NewEncoder(writer)
 	encoder.SetEscapeHTML(false)
