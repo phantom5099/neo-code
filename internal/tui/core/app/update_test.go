@@ -1341,27 +1341,12 @@ func TestNewWithBootstrapMissingDependencies(t *testing.T) {
 	}
 }
 
-func TestStartupScreenIsStaticByDefault(t *testing.T) {
-	app, _ := newTestApp(t)
-	if app.startupIntroActive {
-		t.Fatalf("expected startup intro animation to be disabled by default")
-	}
-}
-
 func TestStartupScreenTickDoesNotAnimateLogo(t *testing.T) {
 	app, _ := newTestApp(t)
 	app.startupScreenLocked = true
-	app.startupIntroFrame = 7
-	app.startupLoopFrame = 11
 
 	model, cmd := app.Update(tickMsg(time.Unix(1_700_000_000, 0)))
 	app = model.(App)
-	if app.startupIntroFrame != 7 {
-		t.Fatalf("expected static startup intro frame, got %d", app.startupIntroFrame)
-	}
-	if app.startupLoopFrame != 11 {
-		t.Fatalf("expected static startup loop frame, got %d", app.startupLoopFrame)
-	}
 	if cmd != nil {
 		t.Fatalf("expected no follow-up tick when only startup screen is visible")
 	}
