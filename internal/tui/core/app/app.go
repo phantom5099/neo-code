@@ -122,6 +122,7 @@ type appRuntimeState struct {
 	runProgressLabel        string
 	lastUserMessageRunID    string
 	pendingPermission       *permissionPromptState
+	pendingAutoPermission   *autoPermissionApprovalState
 	pendingFullAccessPrompt *fullAccessPromptState
 	fullAccessModeEnabled   bool
 	pendingImageAttachments []pendingImageAttachment

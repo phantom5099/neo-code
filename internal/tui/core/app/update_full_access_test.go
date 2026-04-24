@@ -1,12 +1,27 @@
 package tui
 
 import (
+	"errors"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	agentruntime "neo-code/internal/tui/services"
 )
+
+func expectPermissionResolutionFinishedMsg(t *testing.T, cmd tea.Cmd) permissionResolutionFinishedMsg {
+	t.Helper()
+	if cmd == nil {
+		t.Fatalf("expected non-nil command")
+	}
+
+	msg := cmd()
+	done, ok := msg.(permissionResolutionFinishedMsg)
+	if !ok {
+		t.Fatalf("expected permissionResolutionFinishedMsg, got %T", msg)
+	}
+	return done
+}
 
 func TestToggleFullAccessModeOpensPromptAndDisables(t *testing.T) {
 	app := newPermissionTestApp(&permissionTestRuntime{})
@@ -55,11 +70,7 @@ func TestUpdatePendingFullAccessPromptInputEnableAutoApprovesPendingPermission(t
 		t.Fatalf("expected full access prompt to be cleared after approval")
 	}
 
-	msg := cmd()
-	done, ok := msg.(permissionResolutionFinishedMsg)
-	if !ok {
-		t.Fatalf("expected permissionResolutionFinishedMsg, got %T", msg)
-	}
+	done := expectPermissionResolutionFinishedMsg(t, cmd)
 	if done.RequestID != "perm-full-access" || done.Decision != string(agentruntime.DecisionAllowSession) {
 		t.Fatalf("unexpected auto-approval payload: %+v", done)
 	}
@@ -87,19 +98,52 @@ func TestRuntimePermissionRequestHandlerAutoApprovesWhenFullAccessEnabled(t *tes
 	if app.pendingPermission != nil {
 		t.Fatalf("expected no pending permission prompt in full access mode")
 	}
+	if app.pendingAutoPermission == nil || app.pendingAutoPermission.Request.RequestID != "perm-auto" {
+		t.Fatalf("expected full access mode to track pending auto-approval request")
+	}
 	if app.deferredEventCmd == nil {
 		t.Fatalf("expected full access mode to schedule auto-approval command")
 	}
 
-	msg := app.deferredEventCmd()
-	done, ok := msg.(permissionResolutionFinishedMsg)
-	if !ok {
-		t.Fatalf("expected permissionResolutionFinishedMsg, got %T", msg)
-	}
+	done := expectPermissionResolutionFinishedMsg(t, app.deferredEventCmd)
 	if done.RequestID != "perm-auto" || done.Decision != string(agentruntime.DecisionAllowSession) {
 		t.Fatalf("unexpected auto-approval payload: %+v", done)
 	}
 	if runtime.lastResolved.RequestID != "perm-auto" || runtime.lastResolved.Decision != agentruntime.DecisionAllowSession {
 		t.Fatalf("unexpected runtime resolve input: %+v", runtime.lastResolved)
+	}
+}
+
+func TestUpdatePermissionResolutionFinishedMessageRestoresPromptAfterFullAccessAutoApproveFailure(t *testing.T) {
+	app := newPermissionTestApp(&permissionTestRuntime{})
+	app.pendingAutoPermission = &autoPermissionApprovalState{
+		Request: agentruntime.PermissionRequestPayload{
+			RequestID: "perm-auto-fail",
+			ToolName:  "bash",
+			Target:    "rm -rf /tmp/x",
+		},
+	}
+	app.fullAccessModeEnabled = true
+
+	model, _ := app.Update(permissionResolutionFinishedMsg{
+		RequestID: "perm-auto-fail",
+		Decision:  string(agentruntime.DecisionAllowSession),
+		Err:       errors.New("submit failed"),
+	})
+	next := model.(App)
+	if next.pendingAutoPermission != nil {
+		t.Fatalf("expected pending auto-approval state to be cleared after callback")
+	}
+	if next.pendingPermission == nil || next.pendingPermission.Request.RequestID != "perm-auto-fail" {
+		t.Fatalf("expected failed auto-approval to restore manual permission prompt")
+	}
+	if next.pendingPermission.Submitting {
+		t.Fatalf("expected restored permission prompt to be interactive")
+	}
+	if next.state.StatusText != statusPermissionRequired {
+		t.Fatalf("expected permission required status after fallback, got %q", next.state.StatusText)
+	}
+	if next.state.ExecutionError == "" {
+		t.Fatalf("expected execution error to be preserved for failed auto-approval")
 	}
 }

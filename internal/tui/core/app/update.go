@@ -152,6 +152,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.state.CurrentTool = ""
 		a.state.ActiveRunID = ""
 		a.pendingPermission = nil
+		a.pendingAutoPermission = nil
 		a.clearRunProgress()
 		a.state.IsCompacting = false
 		if strings.TrimSpace(a.state.StatusText) == "" {
@@ -163,6 +164,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.state.IsAgentRunning = false
 			a.state.ActiveRunID = ""
 			a.pendingPermission = nil
+			a.pendingAutoPermission = nil
 			a.clearRunProgress()
 			a.state.StreamingReply = false
 			a.state.CurrentTool = ""
@@ -181,20 +183,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.syncTodosFromRun()
 		return a, batchUpdateCmds()
 	case permissionResolutionFinishedMsg:
-		if a.pendingPermission != nil && a.pendingPermission.Request.RequestID == typed.RequestID {
-			if typed.Err != nil {
-				a.pendingPermission.Submitting = false
-				a.state.ExecutionError = typed.Err.Error()
-				a.state.StatusText = typed.Err.Error()
-				a.appendActivity("permission", "Permission decision submit failed", typed.Err.Error(), true)
-			} else {
-				a.pendingPermission = nil
-				a.state.ExecutionError = ""
-				a.state.StatusText = statusPermissionSubmitted
-				a.appendActivity("permission", "Permission decision submitted", string(typed.Decision), false)
-				a.refreshPermissionPromptLayout()
-			}
+		if a.handleAutoPermissionResolutionFinished(typed) {
+			return a, batchUpdateCmds()
 		}
+		a.handlePermissionResolutionFinished(typed)
 		return a, batchUpdateCmds()
 	case modelCatalogRefreshMsg:
 		if strings.EqualFold(a.modelRefreshID, typed.ProviderID) {
@@ -692,22 +684,11 @@ func (a *App) submitPermissionDecision(decision tuiservices.PermissionResolution
 // toggleFullAccessMode 处理 Full Access 模式的启停切换；启用前必须经过风险确认。
 func (a *App) toggleFullAccessMode() tea.Cmd {
 	if a.fullAccessModeEnabled {
-		a.fullAccessModeEnabled = false
-		a.pendingFullAccessPrompt = nil
-		a.state.StatusText = statusFullAccessDisabled
-		a.state.ExecutionError = ""
-		a.appendActivity("permission", "Full access mode disabled", "", false)
-		a.refreshPermissionPromptLayout()
+		a.disableFullAccessMode()
 		return nil
 	}
 
-	a.pendingFullAccessPrompt = &fullAccessPromptState{Selected: 0}
-	a.focus = panelInput
-	a.applyFocus()
-	a.state.StatusText = statusFullAccessPrompt
-	a.state.ExecutionError = ""
-	a.appendActivity("permission", "Full access risk prompt opened", "Press Y to enable, N to cancel", false)
-	a.refreshPermissionPromptLayout()
+	a.openFullAccessPrompt()
 	return nil
 }
 
@@ -762,6 +743,76 @@ func (a *App) applyFullAccessPromptSelection(enable bool) tea.Cmd {
 		return a.submitPermissionDecision(tuiservices.DecisionAllowSession)
 	}
 	return nil
+}
+
+// openFullAccessPrompt 打开 Full Access 风险确认弹窗，并将输入焦点收敛回输入区。
+func (a *App) openFullAccessPrompt() {
+	a.pendingFullAccessPrompt = &fullAccessPromptState{Selected: 0}
+	a.focus = panelInput
+	a.applyFocus()
+	a.state.StatusText = statusFullAccessPrompt
+	a.state.ExecutionError = ""
+	a.appendActivity("permission", "Full access risk prompt opened", "Press Y to enable, N to cancel", false)
+	a.refreshPermissionPromptLayout()
+}
+
+// disableFullAccessMode 关闭 Full Access 模式并刷新提示区布局。
+func (a *App) disableFullAccessMode() {
+	a.fullAccessModeEnabled = false
+	a.pendingFullAccessPrompt = nil
+	a.state.StatusText = statusFullAccessDisabled
+	a.state.ExecutionError = ""
+	a.appendActivity("permission", "Full access mode disabled", "", false)
+	a.refreshPermissionPromptLayout()
+}
+
+// handleAutoPermissionResolutionFinished 处理 Full Access 自动审批回执，并在失败时回退到手动审批。
+func (a *App) handleAutoPermissionResolutionFinished(msg permissionResolutionFinishedMsg) bool {
+	if a.pendingAutoPermission == nil || a.pendingAutoPermission.Request.RequestID != msg.RequestID {
+		return false
+	}
+
+	request := a.pendingAutoPermission.Request
+	a.pendingAutoPermission = nil
+	if msg.Err != nil {
+		a.pendingPermission = &permissionPromptState{
+			Request:  request,
+			Selected: normalizePermissionPromptSelection(1),
+		}
+		a.focus = panelInput
+		a.applyFocus()
+		a.state.ExecutionError = msg.Err.Error()
+		a.state.StatusText = statusPermissionRequired
+		a.appendActivity("permission", "Full access auto-approval failed", msg.Err.Error(), true)
+		a.refreshPermissionPromptLayout()
+		return true
+	}
+
+	a.state.ExecutionError = ""
+	a.state.StatusText = statusPermissionSubmitted
+	a.appendActivity("permission", "Full access auto-approval submitted", string(msg.Decision), false)
+	return true
+}
+
+// handlePermissionResolutionFinished 更新手动审批提交流程的成功或失败状态。
+func (a *App) handlePermissionResolutionFinished(msg permissionResolutionFinishedMsg) {
+	if a.pendingPermission == nil || a.pendingPermission.Request.RequestID != msg.RequestID {
+		return
+	}
+
+	if msg.Err != nil {
+		a.pendingPermission.Submitting = false
+		a.state.ExecutionError = msg.Err.Error()
+		a.state.StatusText = msg.Err.Error()
+		a.appendActivity("permission", "Permission decision submit failed", msg.Err.Error(), true)
+		return
+	}
+
+	a.pendingPermission = nil
+	a.state.ExecutionError = ""
+	a.state.StatusText = statusPermissionSubmitted
+	a.appendActivity("permission", "Permission decision submitted", string(msg.Decision), false)
+	a.refreshPermissionPromptLayout()
 }
 
 func (a App) now() time.Time {
@@ -1379,6 +1430,7 @@ func (a *App) resetSessionRuntimeState() {
 	a.state.RunContext = tuistate.ContextWindowState{}
 	a.state.TokenUsage = tuistate.TokenUsageState{}
 	a.pendingPermission = nil
+	a.pendingAutoPermission = nil
 	a.clearRunProgress()
 }
 
@@ -1711,6 +1763,7 @@ func runtimeEventStopReasonDecidedHandler(a *App, event tuiservices.RuntimeEvent
 	a.state.CurrentTool = ""
 	a.state.ActiveRunID = ""
 	a.pendingPermission = nil
+	a.pendingAutoPermission = nil
 	a.clearRunProgress()
 
 	reason := strings.ToLower(strings.TrimSpace(string(payload.Reason)))
@@ -2180,6 +2233,7 @@ func runtimeEventAgentDoneHandler(a *App, event tuiservices.RuntimeEvent) bool {
 	a.state.CurrentTool = ""
 	a.state.ActiveRunID = ""
 	a.pendingPermission = nil
+	a.pendingAutoPermission = nil
 	a.clearRunProgress()
 	if strings.TrimSpace(a.state.ExecutionError) == "" {
 		a.state.StatusText = statusReady
@@ -2200,6 +2254,7 @@ func runtimeEventRunCanceledHandler(a *App, event tuiservices.RuntimeEvent) bool
 	a.state.CurrentTool = ""
 	a.state.ActiveRunID = ""
 	a.pendingPermission = nil
+	a.pendingAutoPermission = nil
 	a.state.ExecutionError = ""
 	a.state.StatusText = statusCanceled
 	a.clearRunProgress()
@@ -2215,6 +2270,7 @@ func runtimeEventErrorHandler(a *App, event tuiservices.RuntimeEvent) bool {
 	a.state.CurrentTool = ""
 	a.state.ActiveRunID = ""
 	a.pendingPermission = nil
+	a.pendingAutoPermission = nil
 	a.clearRunProgress()
 	if payload, ok := event.Payload.(string); ok {
 		a.state.ExecutionError = payload
@@ -2238,22 +2294,8 @@ func runtimeEventPermissionRequestHandler(a *App, event tuiservices.RuntimeEvent
 	if !ok {
 		return false
 	}
-	if a.fullAccessModeEnabled {
-		requestID := strings.TrimSpace(payload.RequestID)
-		if requestID != "" {
-			a.pendingPermission = nil
-			a.state.StatusText = statusPermissionSubmitting
-			a.state.ExecutionError = ""
-			a.deferredEventCmd = runResolvePermission(a.runtime, requestID, tuiservices.DecisionAllowSession)
-			a.appendActivity(
-				"permission",
-				"Full access auto-approved permission",
-				fmt.Sprintf("%s -> %s", fallbackText(payload.ToolName, "tool"), fallbackText(payload.Target, "(empty target)")),
-				false,
-			)
-			a.refreshPermissionPromptLayout()
-			return false
-		}
+	if a.beginAutoPermissionApproval(payload) {
+		return false
 	}
 
 	if a.pendingPermission != nil {
@@ -2282,11 +2324,37 @@ func runtimeEventPermissionRequestHandler(a *App, event tuiservices.RuntimeEvent
 	a.appendActivity(
 		"permission",
 		"Permission request",
-		fmt.Sprintf("%s -> %s", fallbackText(payload.ToolName, "tool"), fallbackText(payload.Target, "(empty target)")),
+		permissionRequestActivityDetail(payload),
 		false,
 	)
 	a.refreshPermissionPromptLayout()
 	return false
+}
+
+// beginAutoPermissionApproval 在 Full Access 模式下直接提交 session 级审批，并记录回执所需状态。
+func (a *App) beginAutoPermissionApproval(payload tuiservices.PermissionRequestPayload) bool {
+	if !a.fullAccessModeEnabled {
+		return false
+	}
+
+	requestID := strings.TrimSpace(payload.RequestID)
+	if requestID == "" {
+		return false
+	}
+
+	a.pendingPermission = nil
+	a.pendingAutoPermission = &autoPermissionApprovalState{Request: payload}
+	a.state.StatusText = statusPermissionSubmitting
+	a.state.ExecutionError = ""
+	a.deferredEventCmd = runResolvePermission(a.runtime, requestID, tuiservices.DecisionAllowSession)
+	a.appendActivity("permission", "Full access auto-approved permission", permissionRequestActivityDetail(payload), false)
+	a.refreshPermissionPromptLayout()
+	return true
+}
+
+// permissionRequestActivityDetail 统一格式化权限请求相关活动明细，避免各分支重复拼接。
+func permissionRequestActivityDetail(payload tuiservices.PermissionRequestPayload) string {
+	return fmt.Sprintf("%s -> %s", fallbackText(payload.ToolName, "tool"), fallbackText(payload.Target, "(empty target)"))
 }
 
 func runtimeEventPermissionResolvedHandler(a *App, event tuiservices.RuntimeEvent) bool {
@@ -2297,6 +2365,9 @@ func runtimeEventPermissionResolvedHandler(a *App, event tuiservices.RuntimeEven
 
 	if a.pendingPermission != nil && a.pendingPermission.Request.RequestID == payload.RequestID {
 		a.pendingPermission = nil
+	}
+	if a.pendingAutoPermission != nil && a.pendingAutoPermission.Request.RequestID == payload.RequestID {
+		a.pendingAutoPermission = nil
 	}
 	a.state.StatusText = fmt.Sprintf("Permission %s", fallbackText(payload.ResolvedAs, "resolved"))
 	a.appendActivity(
@@ -3356,6 +3427,7 @@ func (a *App) startDraftSession() {
 	a.state.RunContext = tuistate.ContextWindowState{}
 	a.state.TokenUsage = tuistate.TokenUsageState{}
 	a.pendingPermission = nil
+	a.pendingAutoPermission = nil
 	a.clearRunProgress()
 	a.input.Reset()
 	a.state.InputText = ""
