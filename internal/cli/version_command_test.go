@@ -26,10 +26,11 @@ func TestVersionCommandPassesPrereleaseFlag(t *testing.T) {
 	runVersionCommand = func(_ context.Context, options versionCommandOptions) (versionCommandResult, error) {
 		received = options
 		return versionCommandResult{
-			CurrentVersion: "v1.0.0",
-			LatestVersion:  "v1.0.0",
-			Comparable:     true,
-			HasUpdate:      false,
+			CurrentVersion:   "v1.0.0",
+			LatestVersion:    "v1.0.0",
+			Comparable:       true,
+			HasUpdate:        false,
+			ComparableLatest: true,
 		}, nil
 	}
 
@@ -60,10 +61,11 @@ func TestVersionCommandShowsUpdateAvailable(t *testing.T) {
 	runSilentUpdateCheck = func(context.Context) {}
 	runVersionCommand = func(context.Context, versionCommandOptions) (versionCommandResult, error) {
 		return versionCommandResult{
-			CurrentVersion: "v1.0.0",
-			LatestVersion:  "v1.2.0",
-			Comparable:     true,
-			HasUpdate:      true,
+			CurrentVersion:   "v1.0.0",
+			LatestVersion:    "v1.2.0",
+			Comparable:       true,
+			HasUpdate:        true,
+			ComparableLatest: true,
 		}, nil
 	}
 
@@ -98,10 +100,11 @@ func TestVersionCommandShowsUpToDate(t *testing.T) {
 	runSilentUpdateCheck = func(context.Context) {}
 	runVersionCommand = func(context.Context, versionCommandOptions) (versionCommandResult, error) {
 		return versionCommandResult{
-			CurrentVersion: "v1.2.0",
-			LatestVersion:  "v1.2.0",
-			Comparable:     true,
-			HasUpdate:      false,
+			CurrentVersion:   "v1.2.0",
+			LatestVersion:    "v1.2.0",
+			Comparable:       true,
+			HasUpdate:        false,
+			ComparableLatest: true,
 		}, nil
 	}
 
@@ -217,9 +220,10 @@ func TestDefaultVersionCommandRunnerUsesProbeOptions(t *testing.T) {
 		capturedIncludePrerelease = includePrerelease
 		capturedTimeout = timeout
 		return updater.CheckResult{
-			CurrentVersion: "v1.0.0",
-			LatestVersion:  "v1.1.0",
-			HasUpdate:      true,
+			CurrentVersion:   "v1.0.0",
+			LatestVersion:    "v1.1.0",
+			HasUpdate:        true,
+			ComparableLatest: true,
 		}, nil
 	}
 
@@ -270,8 +274,9 @@ func TestDefaultVersionCommandRunnerTrimsLatestVersionAndSkipsNonSemverCompare(t
 	readCurrentVersion = func() string { return "dev" }
 	runReleaseProbe = func(context.Context, string, bool, time.Duration) (updater.CheckResult, error) {
 		return updater.CheckResult{
-			LatestVersion: "  v1.2.0  ",
-			HasUpdate:     true,
+			LatestVersion:    "  v1.2.0  ",
+			HasUpdate:        true,
+			ComparableLatest: true,
 		}, nil
 	}
 
@@ -314,6 +319,19 @@ func TestPrintVersionCommandResultBranches(t *testing.T) {
 		})
 		if !strings.Contains(out.String(), "Latest version (including prerelease): check failed (network)") {
 			t.Fatalf("output = %q, want prerelease check failure", out.String())
+		}
+	})
+
+	t.Run("latest exists but no installable asset", func(t *testing.T) {
+		var out bytes.Buffer
+		printVersionCommandResult(&out, versionCommandResult{
+			CurrentVersion:   "v1.0.0",
+			LatestVersion:    "v2.0.0",
+			Comparable:       true,
+			ComparableLatest: false,
+		})
+		if !strings.Contains(out.String(), "Update status: unknown (latest release has no installable asset for current platform).") {
+			t.Fatalf("output = %q, want no-installable-asset message", out.String())
 		}
 	})
 }

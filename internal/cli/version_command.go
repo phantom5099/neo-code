@@ -21,6 +21,7 @@ type versionCommandResult struct {
 	LatestVersion     string
 	HasUpdate         bool
 	Comparable        bool
+	ComparableLatest  bool
 	IncludePrerelease bool
 	CheckErr          error
 }
@@ -68,6 +69,7 @@ func defaultVersionCommandRunner(ctx context.Context, options versionCommandOpti
 	}
 
 	result.LatestVersion = strings.TrimSpace(probe.LatestVersion)
+	result.ComparableLatest = probe.ComparableLatest
 	if result.Comparable {
 		result.HasUpdate = probe.HasUpdate
 	}
@@ -98,6 +100,10 @@ func printVersionCommandResult(out io.Writer, result versionCommandResult) {
 	}
 	if latest == "unknown" {
 		_, _ = fmt.Fprintln(out, "Update status: unknown (latest version unavailable).")
+		return
+	}
+	if !result.ComparableLatest {
+		_, _ = fmt.Fprintln(out, "Update status: unknown (latest release has no installable asset for current platform).")
 		return
 	}
 	if result.HasUpdate {

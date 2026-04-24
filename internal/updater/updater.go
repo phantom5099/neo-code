@@ -54,7 +54,8 @@ var (
 	resolveExecutablePath = selfupdate.ExecutablePath
 )
 
-var semverTagPattern = regexp.MustCompile(`\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?`)
+var semverTagPattern = regexp.MustCompile(`^(?:v|V)?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`)
+var diagnosticANSIPattern = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 
 type assetTarget struct {
 	OSToken   string
@@ -114,9 +115,10 @@ type CheckOptions struct {
 
 // CheckResult 表示静默探测流程返回的版本信息。
 type CheckResult struct {
-	CurrentVersion string
-	LatestVersion  string
-	HasUpdate      bool
+	CurrentVersion   string
+	LatestVersion    string
+	HasUpdate        bool
+	ComparableLatest bool
 }
 
 // UpdateOptions 描述手动更新命令的输入参数。
@@ -158,7 +160,8 @@ func CheckLatest(ctx context.Context, opts CheckOptions) (CheckResult, error) {
 	if result.LatestVersion == "" {
 		return result, nil
 	}
-	if probe.Status != probeStatusMatched || probe.Release == nil {
+	result.ComparableLatest = probe.Status == probeStatusMatched && probe.Release != nil
+	if !result.ComparableLatest {
 		return result, nil
 	}
 
@@ -299,15 +302,6 @@ func (c selfupdateClient) ProbeLatest(
 	result.Release = release
 	result.LatestVersion = strings.TrimSpace(release.Version())
 	return result, nil
-}
-
-// DetectLatest 调用底层 go-selfupdate 客户端获取最新版本信息。
-func (c selfupdateClient) DetectLatest(ctx context.Context, repository selfupdate.Repository) (releaseView, bool, error) {
-	release, found, err := c.updater.DetectLatest(ctx, repository)
-	if err != nil || !found || release == nil {
-		return nil, found, err
-	}
-	return selfupdateRelease{release: release}, true, nil
 }
 
 // UpdateTo 委托 go-selfupdate 完成原地替换流程，不追加平台分支逻辑。
@@ -457,17 +451,16 @@ func buildReleaseSnapshot(
 	}, true
 }
 
-// parseReleaseVersion 从 tag 中提取可比较语义化版本，兼容前缀字符。
+// parseReleaseVersion 解析严格语义化版本标签，仅接受完整的 vX.Y.Z（含可选先行/构建元数据）格式。
 func parseReleaseVersion(tag string) (*semver.Version, bool) {
 	trimmed := strings.TrimSpace(tag)
 	if trimmed == "" {
 		return nil, false
 	}
-	raw := semverTagPattern.FindString(trimmed)
-	if raw == "" {
+	if !semverTagPattern.MatchString(trimmed) {
 		return nil, false
 	}
-	parsed, err := semver.NewVersion(raw)
+	parsed, err := semver.NewVersion(trimmed)
 	if err != nil {
 		return nil, false
 	}
@@ -524,14 +517,15 @@ func extAliasPattern(ext string) string {
 
 // newAssetDiagnosticError 生成包含平台与候选信息的可执行诊断错误。
 func newAssetDiagnosticError(message string, target assetTarget, probe probeResult) error {
+	candidateAssets := sanitizeDiagnosticAssets(probe.CandidateAssets)
 	return fmt.Errorf(
 		`%s (os=%s arch=%s expected-pattern="%s" available-assets-count=%d candidate-assets=%v)`,
 		message,
-		target.OSToken,
-		target.ArchToken,
-		probe.ExpectedPattern,
+		sanitizeDiagnosticText(target.OSToken),
+		sanitizeDiagnosticText(target.ArchToken),
+		sanitizeDiagnosticText(probe.ExpectedPattern),
 		probe.AvailableAssetsCount,
-		probe.CandidateAssets,
+		candidateAssets,
 	)
 }
 
@@ -563,15 +557,44 @@ func sampleAssetsForDiagnostic(names []string) []string {
 
 // trimDiagnosticAssetName 对候选资产名按长度截断，控制日志噪声。
 func trimDiagnosticAssetName(value string) string {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return trimmed
+	sanitized := sanitizeDiagnosticText(value)
+	if sanitized == "" {
+		return sanitized
 	}
-	runes := []rune(trimmed)
+	runes := []rune(sanitized)
 	if len(runes) <= maxDiagnosticAssetNameLength {
-		return trimmed
+		return sanitized
 	}
 	return string(runes[:maxDiagnosticAssetNameLength]) + "..."
+}
+
+// sanitizeDiagnosticAssets 清洗候选资产名列表，避免终端输出被控制字符污染。
+func sanitizeDiagnosticAssets(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	sanitized := make([]string, 0, len(values))
+	for _, value := range values {
+		cleaned := trimDiagnosticAssetName(value)
+		if cleaned == "" {
+			continue
+		}
+		sanitized = append(sanitized, cleaned)
+	}
+	return sanitized
+}
+
+// sanitizeDiagnosticText 去除 ANSI 序列和不可打印字符，仅保留可见字符用于诊断输出。
+func sanitizeDiagnosticText(value string) string {
+	cleaned := diagnosticANSIPattern.ReplaceAllString(value, "")
+	var builder strings.Builder
+	builder.Grow(len(cleaned))
+	for _, ch := range cleaned {
+		if ch >= 0x20 && ch <= 0x7e {
+			builder.WriteRune(ch)
+		}
+	}
+	return strings.TrimSpace(builder.String())
 }
 
 // firstNonEmptyAssetName 返回第一个可用资产名，用于二次精确探测。

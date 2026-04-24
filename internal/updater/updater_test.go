@@ -290,6 +290,9 @@ func TestCheckLatest(t *testing.T) {
 	if !result.HasUpdate {
 		t.Fatal("expected HasUpdate to be true")
 	}
+	if !result.ComparableLatest {
+		t.Fatal("expected ComparableLatest to be true")
+	}
 	if result.LatestVersion != "v1.2.0" {
 		t.Fatalf("LatestVersion = %q, want %q", result.LatestVersion, "v1.2.0")
 	}
@@ -361,6 +364,9 @@ func TestCheckLatestErrorBranches(t *testing.T) {
 		if result.HasUpdate {
 			t.Fatalf("HasUpdate = true, want false")
 		}
+		if result.ComparableLatest {
+			t.Fatalf("ComparableLatest = true, want false")
+		}
 	})
 
 	t.Run("empty latest version", func(t *testing.T) {
@@ -379,6 +385,9 @@ func TestCheckLatestErrorBranches(t *testing.T) {
 		}
 		if result.LatestVersion != "" || result.HasUpdate {
 			t.Fatalf("unexpected result: %+v", result)
+		}
+		if result.ComparableLatest {
+			t.Fatalf("ComparableLatest = true, want false")
 		}
 	})
 
@@ -403,6 +412,34 @@ func TestCheckLatestErrorBranches(t *testing.T) {
 		}
 		if result.HasUpdate {
 			t.Fatalf("HasUpdate = true, want false for non-semver current version")
+		}
+		if !result.ComparableLatest {
+			t.Fatalf("ComparableLatest = false, want true when release is installable")
+		}
+	})
+
+	t.Run("latest version exists but current platform not installable", func(t *testing.T) {
+		runtimeGOOS = "linux"
+		runtimeGOARCH = "amd64"
+		newClient = func(selfupdate.Config) (updateClient, error) {
+			return &fakeClient{
+				probeStatus:        probeStatusNoCandidate,
+				probeLatestVersion: "v2.0.0",
+			}, nil
+		}
+
+		result, err := CheckLatest(context.Background(), CheckOptions{CurrentVersion: "v1.0.0"})
+		if err != nil {
+			t.Fatalf("CheckLatest() error = %v", err)
+		}
+		if result.LatestVersion != "v2.0.0" {
+			t.Fatalf("LatestVersion = %q, want %q", result.LatestVersion, "v2.0.0")
+		}
+		if result.HasUpdate {
+			t.Fatalf("HasUpdate = true, want false when latest is not installable")
+		}
+		if result.ComparableLatest {
+			t.Fatalf("ComparableLatest = true, want false when latest is not installable")
 		}
 	})
 }
@@ -887,7 +924,7 @@ func TestSelfupdateClientProbeLatestForNamingVariantsAndAmbiguity(t *testing.T) 
 	})
 }
 
-func TestSelfupdateClientDetectLatestAndUnsupportedUpdateType(t *testing.T) {
+func TestSelfupdateClientUpdateToUnsupportedType(t *testing.T) {
 	target := assetTarget{
 		OSToken:   "linux",
 		ArchToken: "amd64",
@@ -916,35 +953,18 @@ func TestSelfupdateClientDetectLatestAndUnsupportedUpdateType(t *testing.T) {
 	}
 
 	client := selfupdateClient{updater: updater}
-	rel, found, err := client.DetectLatest(context.Background(), selfupdate.NewRepositorySlug(repositoryOwner, repositoryName))
-	if err != nil {
-		t.Fatalf("DetectLatest() error = %v", err)
-	}
-	if !found || rel == nil {
-		t.Fatalf("expected release found, got found=%v rel=%v", found, rel)
-	}
-	if rel.Version() == "" {
-		t.Fatalf("expected non-empty release version")
-	}
-	if !rel.GreaterThan("1.0.0") {
-		t.Fatalf("expected release to be greater than 1.0.0")
-	}
-
-	noReleaseUpdater, err := selfupdate.NewUpdater(selfupdate.Config{
-		Source: stubSource{releases: nil},
-		OS:     target.OSToken,
-		Arch:   target.ArchToken,
-	})
-	if err != nil {
-		t.Fatalf("NewUpdater(no release) error = %v", err)
-	}
-	noReleaseClient := selfupdateClient{updater: noReleaseUpdater}
-	if gotRel, gotFound, gotErr := noReleaseClient.DetectLatest(
+	release, found, err := updater.DetectVersion(
 		context.Background(),
 		selfupdate.NewRepositorySlug(repositoryOwner, repositoryName),
-	); gotErr != nil || gotFound || gotRel != nil {
-		t.Fatalf("DetectLatest(no release) = (%v, %v, %v), want (nil, false, nil)", gotRel, gotFound, gotErr)
+		"v1.5.0",
+	)
+	if err != nil {
+		t.Fatalf("DetectVersion() error = %v", err)
 	}
+	if !found || release == nil {
+		t.Fatalf("expected release found, got found=%v release=%v", found, release)
+	}
+	rel := selfupdateRelease{release: release}
 
 	err = client.UpdateTo(context.Background(), fakeRelease{version: "v1.0.0"}, "/tmp/neocode")
 	if err == nil || err.Error() != "updater: unsupported release type" {
@@ -988,7 +1008,9 @@ func TestParseReleaseVersionBranches(t *testing.T) {
 	}{
 		{name: "empty", tag: " ", ok: false},
 		{name: "no semver", tag: "release-latest", ok: false},
-		{name: "with prefix", tag: "release/v1.2.3", ok: true},
+		{name: "with v prefix", tag: "v1.2.3", ok: true},
+		{name: "with uppercase v prefix", tag: "V1.2.3", ok: false},
+		{name: "embedded semver text should be rejected", tag: "release/v1.2.3", ok: false},
 		{name: "prerelease build", tag: "v1.2.3-rc.1+build.7", ok: true},
 	}
 
@@ -1200,6 +1222,15 @@ func TestAssetDiagnosticHelperBranches(t *testing.T) {
 
 	if got := trimDiagnosticAssetName(" "); got != "" {
 		t.Fatalf("trimDiagnosticAssetName(blank) = %q, want empty", got)
+	}
+	if got := trimDiagnosticAssetName("bad-\x1b[31masset\x1b[0m-\nname"); got != "bad-asset-name" {
+		t.Fatalf("trimDiagnosticAssetName(ansi) = %q, want %q", got, "bad-asset-name")
+	}
+	if got := sanitizeDiagnosticText("\x1b[31masset\x1b[0m\t\nok"); got != "assetok" {
+		t.Fatalf("sanitizeDiagnosticText() = %q, want %q", got, "assetok")
+	}
+	if got := sanitizeDiagnosticAssets([]string{"\x1b[31mone\x1b[0m", "  ", "two"}); len(got) != 2 || got[0] != "one" || got[1] != "two" {
+		t.Fatalf("sanitizeDiagnosticAssets() = %v, want [one two]", got)
 	}
 
 	if got := firstNonEmptyAssetName([]selfupdate.SourceAsset{blankSourceAsset{}}); got != "" {
