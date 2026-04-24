@@ -3,7 +3,6 @@ on:
   push:
     branches:
       - main
-  pull_request: # 组员提 PR 也会触发预览！
 
 jobs:
   deploy:
