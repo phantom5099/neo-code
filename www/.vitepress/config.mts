@@ -2,22 +2,31 @@ import { defineConfig } from "vitepress";
 
 // --- 环境变量检测逻辑 ---
 const isVercel = process.env.VERCEL === "1";
+const isCFPages = process.env.CF_PAGES === "1"; 
+
+const isRootDeploy = isVercel || isCFPages;
 
 const repoUrl = "https://github.com/1024XEngineer/neo-code";
 const docsBase = `${repoUrl}/blob/main/docs`;
 
 // 核心修改 1：动态基础路径
-// Vercel 部署到根目录用 '/'，GitHub Pages 用 '/neo-code/'
-const base = isVercel ? "/" : "/neo-code/";
+const base = isRootDeploy ? "/" : "/neo-code/";
+
+// 👇👇👇 新增这段调试日志 👇👇👇
+console.log("====== VitePress Build Info ======");
+console.log("VERCEL Env:", process.env.VERCEL);
+console.log("CF_PAGES Env:", process.env.CF_PAGES);
+console.log("Final Base Path:", base);
+console.log("==================================");
 
 // 核心修改 2：动态站点 URL
-// Vercel 预览时会自动提供 VERCEL_URL，如果没有则使用你的自定义域名
-const siteUrl = isVercel 
-  ? `https://${process.env.VERCEL_URL || 'neocode-docs.vercel.app'}/` 
-  : "https://1024xengineer.github.io/neo-code/";
+let siteUrl = "https://1024xengineer.github.io/neo-code/";
+if (isVercel) {
+  siteUrl = `https://${process.env.VERCEL_URL || 'neocode-docs.vercel.app'}/`;
+} else if (isCFPages) {
+  siteUrl = "https://neocode-docs.pages.dev/"; 
+}
 
-// 核心修改 3：确保图片路径在不同 base 下都能访问
-// 使用相对 base 的方式定义，方便 head 引用
 const brandImageUrl = `${siteUrl}brand/neocode-mark.png`;
 
 export default defineConfig({
@@ -49,7 +58,7 @@ export default defineConfig({
       },
     ],
     ["meta", { name: "twitter:card", content: "summary" }],
-    // 核心修改 4：Favicon 路径也要随 base 变化
+    // Favicon 路径随 base 变化
     ["link", { rel: "icon", href: `${base}brand/neocode-mark.png` }],
   ],
   markdown: {
@@ -58,7 +67,6 @@ export default defineConfig({
     },
   },
   themeConfig: {
-    // 核心修改 5：Logo 建议使用相对根路径，VitePress 会自动处理 base
     logo: "/brand/neocode-mark.png", 
     siteTitle: "NeoCode",
     search: {
