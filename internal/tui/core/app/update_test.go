@@ -2204,6 +2204,26 @@ func TestHandleMemoCommandsRouteToSystemTools(t *testing.T) {
 	}
 }
 
+func TestHandleMemoCommandMapsUnsupportedActionErrorToUserFriendlyMessage(t *testing.T) {
+	app, runtime := newTestApp(t)
+	runtime.systemToolErr = agentruntime.ErrUnsupportedActionInGatewayMode
+
+	cmd := app.handleMemoCommand()
+	if cmd == nil {
+		t.Fatalf("expected /memo command")
+	}
+	model, _ := app.Update(cmd())
+	app = model.(App)
+
+	status := strings.ToLower(strings.TrimSpace(app.state.StatusText))
+	if strings.Contains(status, "unsupported_action_in_gateway_mode") {
+		t.Fatalf("expected sentinel to be hidden from UI, got %q", app.state.StatusText)
+	}
+	if !strings.Contains(status, "gateway") {
+		t.Fatalf("expected gateway upgrade hint, got %q", app.state.StatusText)
+	}
+}
+
 func TestHandleRememberAndForgetValidation(t *testing.T) {
 	app, _ := newTestApp(t)
 

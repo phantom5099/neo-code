@@ -204,7 +204,7 @@ func TestRemoteRuntimeAdapterExecuteSystemTool(t *testing.T) {
 		}
 	})
 
-	t.Run("legacy gateway unsupported action", func(t *testing.T) {
+	t.Run("gateway unsupported action passthrough", func(t *testing.T) {
 		rpcClient := &stubRemoteRPCClient{
 			callErrs: map[string]error{
 				protocol.MethodGatewayExecuteSystemTool: &GatewayRPCError{
@@ -223,12 +223,16 @@ func TestRemoteRuntimeAdapterExecuteSystemTool(t *testing.T) {
 		_, err := adapter.ExecuteSystemTool(context.Background(), SystemToolInput{
 			ToolName: "memo_list",
 		})
-		if err == nil || !errors.Is(err, ErrUnsupportedActionInGatewayMode) {
-			t.Fatalf("expected unsupported_action_in_gateway_mode, got %v", err)
+		var rpcErr *GatewayRPCError
+		if !errors.As(err, &rpcErr) {
+			t.Fatalf("expected GatewayRPCError passthrough, got %v", err)
+		}
+		if rpcErr.Code != protocol.JSONRPCCodeMethodNotFound || rpcErr.GatewayCode != protocol.GatewayCodeUnsupportedAction {
+			t.Fatalf("unexpected rpc error payload: %#v", rpcErr)
 		}
 	})
 
-	t.Run("legacy gateway method not found without gateway code", func(t *testing.T) {
+	t.Run("gateway method not found passthrough", func(t *testing.T) {
 		rpcClient := &stubRemoteRPCClient{
 			callErrs: map[string]error{
 				protocol.MethodGatewayExecuteSystemTool: &GatewayRPCError{
@@ -246,8 +250,12 @@ func TestRemoteRuntimeAdapterExecuteSystemTool(t *testing.T) {
 		_, err := adapter.ExecuteSystemTool(context.Background(), SystemToolInput{
 			ToolName: "memo_list",
 		})
-		if err == nil || !errors.Is(err, ErrUnsupportedActionInGatewayMode) {
-			t.Fatalf("expected unsupported_action_in_gateway_mode, got %v", err)
+		var rpcErr *GatewayRPCError
+		if !errors.As(err, &rpcErr) {
+			t.Fatalf("expected GatewayRPCError passthrough, got %v", err)
+		}
+		if rpcErr.Code != protocol.JSONRPCCodeMethodNotFound || rpcErr.GatewayCode != "" {
+			t.Fatalf("unexpected rpc error payload: %#v", rpcErr)
 		}
 	})
 }

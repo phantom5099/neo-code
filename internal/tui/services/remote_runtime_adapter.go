@@ -241,7 +241,7 @@ func (r *RemoteRuntimeAdapter) Compact(ctx context.Context, input CompactInput) 
 	}, nil
 }
 
-// ExecuteSystemTool 转发 gateway.executeSystemTool 请求，并兼容旧网关的未实现错误。
+// ExecuteSystemTool 转发 gateway.executeSystemTool 请求。
 func (r *RemoteRuntimeAdapter) ExecuteSystemTool(ctx context.Context, input SystemToolInput) (tools.ToolResult, error) {
 	if err := r.authenticate(ctx); err != nil {
 		return tools.ToolResult{}, err
@@ -258,9 +258,6 @@ func (r *RemoteRuntimeAdapter) ExecuteSystemTool(ctx context.Context, input Syst
 		Retries: r.retryCount,
 	})
 	if err != nil {
-		if isGatewayUnsupportedActionError(err) {
-			return tools.ToolResult{}, unsupportedGatewayActionError()
-		}
 		return tools.ToolResult{}, err
 	}
 
@@ -380,7 +377,7 @@ func (r *RemoteRuntimeAdapter) LoadSession(ctx context.Context, id string) (agen
 	return mapGatewaySessionToRuntimeSession(loaded), nil
 }
 
-// ActivateSessionSkill 转发 gateway.activateSessionSkill 请求，并兼容旧网关的未实现错误。
+// ActivateSessionSkill 转发 gateway.activateSessionSkill 请求。
 func (r *RemoteRuntimeAdapter) ActivateSessionSkill(ctx context.Context, sessionID string, skillID string) error {
 	if err := r.authenticate(ctx); err != nil {
 		return err
@@ -393,15 +390,12 @@ func (r *RemoteRuntimeAdapter) ActivateSessionSkill(ctx context.Context, session
 		Retries: r.retryCount,
 	})
 	if err != nil {
-		if isGatewayUnsupportedActionError(err) {
-			return unsupportedGatewayActionError()
-		}
 		return err
 	}
 	return nil
 }
 
-// DeactivateSessionSkill 转发 gateway.deactivateSessionSkill 请求，并兼容旧网关的未实现错误。
+// DeactivateSessionSkill 转发 gateway.deactivateSessionSkill 请求。
 func (r *RemoteRuntimeAdapter) DeactivateSessionSkill(ctx context.Context, sessionID string, skillID string) error {
 	if err := r.authenticate(ctx); err != nil {
 		return err
@@ -414,9 +408,6 @@ func (r *RemoteRuntimeAdapter) DeactivateSessionSkill(ctx context.Context, sessi
 		Retries: r.retryCount,
 	})
 	if err != nil {
-		if isGatewayUnsupportedActionError(err) {
-			return unsupportedGatewayActionError()
-		}
 		return err
 	}
 	return nil
@@ -434,9 +425,6 @@ func (r *RemoteRuntimeAdapter) ListSessionSkills(ctx context.Context, sessionID 
 		Retries: r.retryCount,
 	})
 	if err != nil {
-		if isGatewayUnsupportedActionError(err) {
-			return nil, unsupportedGatewayActionError()
-		}
 		return nil, err
 	}
 
@@ -464,9 +452,6 @@ func (r *RemoteRuntimeAdapter) ListAvailableSkills(
 		Retries: r.retryCount,
 	})
 	if err != nil {
-		if isGatewayUnsupportedActionError(err) {
-			return nil, unsupportedGatewayActionError()
-		}
 		return nil, err
 	}
 
@@ -628,24 +613,6 @@ func normalizeSystemToolArguments(arguments []byte) json.RawMessage {
 	cloned := make([]byte, len(trimmed))
 	copy(cloned, trimmed)
 	return json.RawMessage(cloned)
-}
-
-// isGatewayUnsupportedActionError 判断错误是否为网关未实现动作，供适配层执行兼容降级。
-func isGatewayUnsupportedActionError(err error) bool {
-	var rpcErr *GatewayRPCError
-	if !errors.As(err, &rpcErr) || rpcErr == nil {
-		return false
-	}
-	gatewayCode := strings.ToLower(strings.TrimSpace(rpcErr.GatewayCode))
-	if gatewayCode == strings.ToLower(protocol.GatewayCodeUnsupportedAction) {
-		return true
-	}
-	return rpcErr.Code == protocol.JSONRPCCodeMethodNotFound
-}
-
-// unsupportedGatewayActionError 返回 gateway 模式下不支持本地动作时的统一错误。
-func unsupportedGatewayActionError() error {
-	return ErrUnsupportedActionInGatewayMode
 }
 
 func buildGatewayRunParams(sessionID string, runID string, input PrepareInput) protocol.RunParams {

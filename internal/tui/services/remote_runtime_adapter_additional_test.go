@@ -311,7 +311,7 @@ func TestRemoteRuntimeAdapterSkillMethods(t *testing.T) {
 	}
 }
 
-func TestRemoteRuntimeAdapterSkillMethodsLegacyUnsupportedFallback(t *testing.T) {
+func TestRemoteRuntimeAdapterSkillMethodsGatewayErrorsPassthrough(t *testing.T) {
 	t.Parallel()
 
 	rpcClient := &stubRemoteRPCClient{
@@ -346,18 +346,33 @@ func TestRemoteRuntimeAdapterSkillMethodsLegacyUnsupportedFallback(t *testing.T)
 	adapter := newRemoteRuntimeAdapterWithClients(rpcClient, &stubRemoteStreamClient{events: make(chan RuntimeEvent)}, time.Second, 1)
 	t.Cleanup(func() { _ = adapter.Close() })
 
-	if err := adapter.ActivateSessionSkill(context.Background(), "s", "skill"); !errors.Is(err, ErrUnsupportedActionInGatewayMode) {
-		t.Fatalf("ActivateSessionSkill() err = %v, want unsupported action sentinel", err)
+	assertRPCMethodNotFound := func(t *testing.T, method string, err error) {
+		t.Helper()
+		var rpcErr *GatewayRPCError
+		if !errors.As(err, &rpcErr) {
+			t.Fatalf("%s err = %v, want GatewayRPCError passthrough", method, err)
+		}
+		if rpcErr.Method != method {
+			t.Fatalf("%s method = %q, want %q", method, rpcErr.Method, method)
+		}
+		if rpcErr.Code != protocol.JSONRPCCodeMethodNotFound {
+			t.Fatalf("%s code = %d, want %d", method, rpcErr.Code, protocol.JSONRPCCodeMethodNotFound)
+		}
+		if rpcErr.GatewayCode != protocol.GatewayCodeUnsupportedAction {
+			t.Fatalf("%s gateway_code = %q, want %q", method, rpcErr.GatewayCode, protocol.GatewayCodeUnsupportedAction)
+		}
 	}
-	if err := adapter.DeactivateSessionSkill(context.Background(), "s", "skill"); !errors.Is(err, ErrUnsupportedActionInGatewayMode) {
-		t.Fatalf("DeactivateSessionSkill() err = %v, want unsupported action sentinel", err)
-	}
-	if _, err := adapter.ListSessionSkills(context.Background(), "s"); !errors.Is(err, ErrUnsupportedActionInGatewayMode) {
-		t.Fatalf("ListSessionSkills() err = %v, want unsupported action sentinel", err)
-	}
-	if _, err := adapter.ListAvailableSkills(context.Background(), "s"); !errors.Is(err, ErrUnsupportedActionInGatewayMode) {
-		t.Fatalf("ListAvailableSkills() err = %v, want unsupported action sentinel", err)
-	}
+
+	assertRPCMethodNotFound(t, protocol.MethodGatewayActivateSessionSkill, adapter.ActivateSessionSkill(context.Background(), "s", "skill"))
+	assertRPCMethodNotFound(
+		t,
+		protocol.MethodGatewayDeactivateSessionSkill,
+		adapter.DeactivateSessionSkill(context.Background(), "s", "skill"),
+	)
+	_, listSessionErr := adapter.ListSessionSkills(context.Background(), "s")
+	assertRPCMethodNotFound(t, protocol.MethodGatewayListSessionSkills, listSessionErr)
+	_, listAvailableErr := adapter.ListAvailableSkills(context.Background(), "s")
+	assertRPCMethodNotFound(t, protocol.MethodGatewayListAvailableSkills, listAvailableErr)
 }
 
 func TestRemoteRuntimeAdapterCallFrameAndDecodeHelpers(t *testing.T) {
