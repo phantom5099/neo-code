@@ -22,7 +22,7 @@ switch ($Flavor) {
 	}
 }
 
-$Architecture = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString().ToUpperInvariant()
+$Architecture = $env:PROCESSOR_ARCHITECTURE.ToUpperInvariant()
 switch ($Architecture) {
 	"X64" { $ArchName = "x86_64" }
 	"AMD64" { $ArchName = "x86_64" }
