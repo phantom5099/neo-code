@@ -3591,8 +3591,7 @@ func normalizeMemoCommandErrorMessage(err error) string {
 	if err == nil {
 		return "memo command failed"
 	}
-	if errors.Is(err, tuiservices.ErrUnsupportedActionInGatewayMode) ||
-		strings.Contains(strings.ToLower(strings.TrimSpace(err.Error())), "unsupported_action_in_gateway_mode") {
+	if isGatewayUnsupportedActionError(err) {
 		return "gateway does not support memo commands; please upgrade gateway and client to the latest version"
 	}
 	message := strings.TrimSpace(err.Error())
