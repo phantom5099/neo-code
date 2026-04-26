@@ -91,7 +91,7 @@ This page follows: symptom -> likely causes -> 3-step checks.
 
 1. Start `neocode gateway` separately and confirm the process is running.
 2. Verify minimal local path first on `127.0.0.1:8080`.
-3. Review auth and origin limits in [Gateway usage](./gateway).
+3. Review auth and origin limits in [Gateway usage](/guide/gateway).
 
 ## 6) Long sessions drift or degrade
 
@@ -114,4 +114,4 @@ This page follows: symptom -> likely causes -> 3-step checks.
 
 - Return to [Getting Started](./) for a minimal path
 - Daily operations: [Daily use](./daily-use)
-- Gateway issues: [Gateway usage](./gateway)
+- Gateway issues: [Gateway usage](/guide/gateway)
