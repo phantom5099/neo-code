@@ -10,14 +10,24 @@ description: 介绍 neocode gateway、url-dispatch、网络访问面、鉴权和
 最简单的方式：
 
 ```bash
-go run ./cmd/neocode gateway
+neocode gateway
 ```
 
 指定网络访问面监听地址：
 
 ```bash
-go run ./cmd/neocode gateway --http-listen 127.0.0.1:8080
+neocode gateway --http-listen 127.0.0.1:8080
 ```
+
+## 什么时候需要单独启动 Gateway
+
+| 场景 | 是否需要单独启动 Gateway |
+|---|---|
+| 普通 TUI 会话（`neocode`） | **不需要** —— TUI 会自动探测并拉起本地 Gateway |
+| 外部脚本 / curl 调用 JSON-RPC | **需要** —— 先 `neocode gateway`，再发请求 |
+| URL Scheme 派发（`url-dispatch`） | **需要** —— Gateway 必须已在运行 |
+| 想看 Gateway 专属日志 | **可以** —— 单独启动方便隔离日志输出 |
+| 想修改 `--http-listen` 绑定地址 | **需要** —— 默认只监听 localhost |
 
 ## 当前网络访问面
 
@@ -45,7 +55,7 @@ go run ./cmd/neocode gateway --http-listen 127.0.0.1:8080
 当前支持通过 URL Scheme 把请求派发到本地 Gateway：
 
 ```bash
-go run ./cmd/neocode url-dispatch --url "neocode://review?path=README.md"
+neocode url-dispatch --url "neocode://review?path=README.md"
 ```
 
 目前的 MVP 限制：
@@ -100,4 +110,4 @@ Authorization: Bearer <token>
 ## 继续阅读
 
 - 想看完整网关设计：见 [Gateway 详细设计](https://github.com/1024XEngineer/neo-code/blob/main/docs/gateway-detailed-design.md)
-- 想看普通 CLI 使用路径：回到 [首次上手](./quick-start)
+- 想看普通 CLI 使用路径：回到 [安装与首次运行](./install)
