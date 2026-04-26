@@ -14,16 +14,15 @@ const ManualModelOptionalIntUnset = -1
 // NormalizeCustomProviderInput 统一归一化 custom provider 的输入字段，并执行协议/模型来源的组合校验。
 func NormalizeCustomProviderInput(input SaveCustomProviderInput) (SaveCustomProviderInput, error) {
 	normalized := SaveCustomProviderInput{
-		Name:                    strings.TrimSpace(input.Name),
-		Driver:                  normalizeProviderDriver(strings.TrimSpace(input.Driver)),
-		BaseURL:                 strings.TrimSpace(input.BaseURL),
-		ChatAPIMode:             strings.TrimSpace(input.ChatAPIMode),
-		ChatEndpointPath:        strings.TrimSpace(input.ChatEndpointPath),
-		APIKeyEnv:               strings.TrimSpace(input.APIKeyEnv),
-		GenerateMaxRetries:      normalizeOptionalGenerateInt(input.GenerateMaxRetries),
-		GenerateStartTimeoutSec: normalizeOptionalGenerateInt(input.GenerateStartTimeoutSec),
-		GenerateIdleTimeoutSec:  normalizeOptionalGenerateInt(input.GenerateIdleTimeoutSec),
-		DiscoveryEndpointPath:   strings.TrimSpace(input.DiscoveryEndpointPath),
+		Name:                   strings.TrimSpace(input.Name),
+		Driver:                 normalizeProviderDriver(strings.TrimSpace(input.Driver)),
+		BaseURL:                strings.TrimSpace(input.BaseURL),
+		ChatAPIMode:            strings.TrimSpace(input.ChatAPIMode),
+		ChatEndpointPath:       strings.TrimSpace(input.ChatEndpointPath),
+		APIKeyEnv:              strings.TrimSpace(input.APIKeyEnv),
+		GenerateMaxRetries:     normalizeOptionalGenerateInt(input.GenerateMaxRetries),
+		GenerateIdleTimeoutSec: normalizeOptionalGenerateInt(input.GenerateIdleTimeoutSec),
+		DiscoveryEndpointPath:  strings.TrimSpace(input.DiscoveryEndpointPath),
 	}
 
 	if err := validateCustomProviderName(normalized.Name); err != nil {
@@ -114,19 +113,18 @@ func normalizeOptionalGenerateInt(value int) int {
 // validateNormalizedCustomProviderInput 复用统一的 provider 配置校验，避免 custom provider 保存路径和加载路径出现两套规则。
 func validateNormalizedCustomProviderInput(input SaveCustomProviderInput) error {
 	cfg := ProviderConfig{
-		Name:                    input.Name,
-		Driver:                  input.Driver,
-		BaseURL:                 input.BaseURL,
-		APIKeyEnv:               input.APIKeyEnv,
-		GenerateMaxRetries:      input.GenerateMaxRetries,
-		GenerateStartTimeoutSec: input.GenerateStartTimeoutSec,
-		GenerateIdleTimeoutSec:  input.GenerateIdleTimeoutSec,
-		ModelSource:             input.ModelSource,
-		ChatAPIMode:             input.ChatAPIMode,
-		ChatEndpointPath:        input.ChatEndpointPath,
-		DiscoveryEndpointPath:   input.DiscoveryEndpointPath,
-		Models:                  input.Models,
-		Source:                  ProviderSourceCustom,
+		Name:                   input.Name,
+		Driver:                 input.Driver,
+		BaseURL:                input.BaseURL,
+		APIKeyEnv:              input.APIKeyEnv,
+		GenerateMaxRetries:     input.GenerateMaxRetries,
+		GenerateIdleTimeoutSec: input.GenerateIdleTimeoutSec,
+		ModelSource:            input.ModelSource,
+		ChatAPIMode:            input.ChatAPIMode,
+		ChatEndpointPath:       input.ChatEndpointPath,
+		DiscoveryEndpointPath:  input.DiscoveryEndpointPath,
+		Models:                 input.Models,
+		Source:                 ProviderSourceCustom,
 	}
 	return cfg.Validate()
 }

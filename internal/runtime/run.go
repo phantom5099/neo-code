@@ -168,14 +168,18 @@ func (s *Service) Run(ctx context.Context, input UserInput) (err error) {
 			}
 			switch decision.Action {
 			case controlplane.TurnBudgetActionCompact:
-				if _, err := s.applyCompactForState(
+				applied, err := s.applyCompactForState(
 					ctx,
 					&state,
 					snapshot.Config,
 					contextcompact.ModeProactive,
 					compactErrorBestEffort,
-				); err != nil {
+				)
+				if err != nil {
 					return s.handleRunError(err)
+				}
+				if !applied {
+					state.compactCount++
 				}
 				continue
 			case controlplane.TurnBudgetActionStop:

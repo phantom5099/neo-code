@@ -22,26 +22,26 @@ const (
 )
 
 type ProviderConfig struct {
-	Name                    string                          `yaml:"name"`
-	Driver                  string                          `yaml:"driver"`
-	BaseURL                 string                          `yaml:"base_url"`
-	Model                   string                          `yaml:"model"`
-	APIKeyEnv               string                          `yaml:"api_key_env"`
-	GenerateMaxRetries      int                             `yaml:"generate_max_retries,omitempty"`
-	GenerateStartTimeoutSec int                             `yaml:"generate_start_timeout_sec,omitempty"`
-	GenerateIdleTimeoutSec  int                             `yaml:"generate_idle_timeout_sec,omitempty"`
-	ModelSource             string                          `yaml:"-"`
-	ChatAPIMode             string                          `yaml:"-"`
-	ChatEndpointPath        string                          `yaml:"-"`
-	DiscoveryEndpointPath   string                          `yaml:"-"`
-	Models                  []providertypes.ModelDescriptor `yaml:"-"`
-	Source                  ProviderSource                  `yaml:"-"`
+	Name                   string                          `yaml:"name"`
+	Driver                 string                          `yaml:"driver"`
+	BaseURL                string                          `yaml:"base_url"`
+	Model                  string                          `yaml:"model"`
+	APIKeyEnv              string                          `yaml:"api_key_env"`
+	GenerateMaxRetries     int                             `yaml:"generate_max_retries,omitempty"`
+	GenerateIdleTimeoutSec int                             `yaml:"generate_idle_timeout_sec,omitempty"`
+	ModelSource            string                          `yaml:"-"`
+	ChatAPIMode            string                          `yaml:"-"`
+	ChatEndpointPath       string                          `yaml:"-"`
+	DiscoveryEndpointPath  string                          `yaml:"-"`
+	Models                 []providertypes.ModelDescriptor `yaml:"-"`
+	Source                 ProviderSource                  `yaml:"-"`
 }
 
 type ResolvedProviderConfig struct {
 	ProviderConfig
-	SessionAssetPolicy session.AssetPolicy         `yaml:"-"`
-	RequestAssetBudget provider.RequestAssetBudget `yaml:"-"`
+	GenerateStartTimeoutSec int                         `yaml:"-"`
+	SessionAssetPolicy      session.AssetPolicy         `yaml:"-"`
+	RequestAssetBudget      provider.RequestAssetBudget `yaml:"-"`
 }
 
 // ResolveSelectedProvider 解析当前配置中选中的 provider，并补全运行时所需的运行时策略。
@@ -55,7 +55,10 @@ func ResolveSelectedProvider(cfg Config) (ResolvedProviderConfig, error) {
 	if err != nil {
 		return ResolvedProviderConfig{}, err
 	}
-	resolved := ResolvedProviderConfig{ProviderConfig: providerCfg}
+	resolved := ResolvedProviderConfig{
+		ProviderConfig:          providerCfg,
+		GenerateStartTimeoutSec: cfg.GenerateStartTimeoutSec,
+	}
 	resolved.SessionAssetPolicy = cfg.Runtime.ResolveSessionAssetPolicy()
 	resolved.RequestAssetBudget = cfg.Runtime.ResolveRequestAssetBudget()
 	return resolved, nil
@@ -85,9 +88,6 @@ func (p ProviderConfig) Validate() error {
 		return fmt.Errorf("provider %q api_key_env is empty", p.Name)
 	}
 	if err := validateOptionalGenerateMaxRetries(p.GenerateMaxRetries); err != nil {
-		return fmt.Errorf("provider %q: %w", p.Name, err)
-	}
-	if err := validateOptionalGenerateDurationSeconds("generate_start_timeout_sec", p.GenerateStartTimeoutSec); err != nil {
 		return fmt.Errorf("provider %q: %w", p.Name, err)
 	}
 	if err := validateOptionalGenerateDurationSeconds("generate_idle_timeout_sec", p.GenerateIdleTimeoutSec); err != nil {

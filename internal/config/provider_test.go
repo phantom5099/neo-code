@@ -108,6 +108,29 @@ func TestResolveSelectedProviderIncludesRuntimeAssetPolicyAndBudget(t *testing.T
 	}
 }
 
+func TestResolveSelectedProviderPrefersRootGenerateStartTimeout(t *testing.T) {
+	t.Parallel()
+
+	cfg := testDefaultConfig().Clone()
+	cfg.GenerateStartTimeoutSec = 90
+
+	resolved, err := ResolveSelectedProvider(cfg)
+	if err != nil {
+		t.Fatalf("ResolveSelectedProvider() error = %v", err)
+	}
+	if resolved.GenerateStartTimeoutSec != 90 {
+		t.Fatalf("expected resolved GenerateStartTimeoutSec=90, got %d", resolved.GenerateStartTimeoutSec)
+	}
+
+	runtimeCfg, err := resolved.ToRuntimeConfig()
+	if err != nil {
+		t.Fatalf("ToRuntimeConfig() error = %v", err)
+	}
+	if runtimeCfg.GenerateStartTimeout != 90*time.Second {
+		t.Fatalf("expected runtime GenerateStartTimeout=90s, got %s", runtimeCfg.GenerateStartTimeout)
+	}
+}
+
 func TestProviderConfigIdentity(t *testing.T) {
 	t.Parallel()
 
@@ -386,13 +409,6 @@ func TestProviderConfigValidateRejectsNegativeGenerateControls(t *testing.T) {
 				cfg.GenerateMaxRetries = providerpkg.MaxGenerateMaxRetries + 1
 			},
 			errContain: "generate_max_retries",
-		},
-		{
-			name: "negative start timeout",
-			mutate: func(cfg *ProviderConfig) {
-				cfg.GenerateStartTimeoutSec = -1
-			},
-			errContain: "generate_start_timeout_sec",
 		},
 		{
 			name: "negative idle timeout",
@@ -813,15 +829,15 @@ func TestResolvedProviderConfigToRuntimeConfigMapsGenerateControls(t *testing.T)
 
 	resolved := ResolvedProviderConfig{
 		ProviderConfig: ProviderConfig{
-			Name:                    "company-gateway",
-			Driver:                  "openaicompat",
-			BaseURL:                 "https://llm.example.com/v1",
-			Model:                   "server-default",
-			APIKeyEnv:               "COMPANY_GATEWAY_KEY",
-			GenerateMaxRetries:      7,
-			GenerateStartTimeoutSec: 75,
-			GenerateIdleTimeoutSec:  420,
+			Name:                   "company-gateway",
+			Driver:                 "openaicompat",
+			BaseURL:                "https://llm.example.com/v1",
+			Model:                  "server-default",
+			APIKeyEnv:              "COMPANY_GATEWAY_KEY",
+			GenerateMaxRetries:     7,
+			GenerateIdleTimeoutSec: 420,
 		},
+		GenerateStartTimeoutSec: 75,
 	}
 
 	got, err := resolved.ToRuntimeConfig()
