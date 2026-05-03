@@ -231,10 +231,13 @@ func BuildGatewayServerDeps(ctx context.Context, opts BootstrapOptions) (Runtime
 		))
 	}
 
-	// Checkpoint 基础设施：影子仓库 + SQLite checkpoint 存储
-	// 复用 sessionStore 的 *sql.DB 连接，避免 Windows 上多连接文件锁定。
+	// Checkpoint 基础设施：影子仓库 + SQLite checkpoint 存储。
+	// 优先复用 sessionStore 已打开的 *sql.DB；冷启动尚未建连时回退到同一路径的独立 store，
+	// 避免 sessionStore.DB() 为 nil 时整条 checkpoint 链路被静默跳过。
 	sessionDB := sessionStore.DB()
-	var checkpointStore *checkpoint.SQLiteCheckpointStore
+	checkpointStore := checkpoint.NewSQLiteCheckpointStore(
+		agentsession.DatabasePath(sharedDeps.ConfigManager.BaseDir(), cfg.Workdir),
+	)
 	if sessionDB != nil {
 		checkpointStore = checkpoint.NewSQLiteCheckpointStoreWithDB(sessionDB)
 	}

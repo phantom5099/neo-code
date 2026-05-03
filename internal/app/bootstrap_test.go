@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"neo-code/internal/checkpoint"
 	"neo-code/internal/config"
 	configstate "neo-code/internal/config/state"
 	"neo-code/internal/gateway/protocol"
@@ -915,6 +916,45 @@ func TestBuildRuntimeUsesWorkdirOverride(t *testing.T) {
 		t.Cleanup(func() {
 			_ = bundle.Close()
 		})
+	}
+}
+
+func TestBuildGatewayServerDepsInitializesCheckpointStoreOnFreshStartup(t *testing.T) {
+	disableBuiltinProviderAPIKeys(t)
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	bundle, err := BuildGatewayServerDeps(context.Background(), BootstrapOptions{})
+	if err != nil {
+		t.Fatalf("BuildGatewayServerDeps() error = %v", err)
+	}
+	if bundle.Close != nil {
+		t.Cleanup(func() {
+			if err := bundle.Close(); err != nil {
+				t.Fatalf("bundle.Close() error = %v", err)
+			}
+		})
+	}
+
+	runtimeWithCheckpoints, ok := bundle.Runtime.(interface {
+		ListCheckpoints(ctx context.Context, sessionID string, opts checkpoint.ListCheckpointOpts) ([]agentsession.CheckpointRecord, error)
+	})
+	if !ok {
+		t.Fatalf("expected runtime to expose ListCheckpoints")
+	}
+
+	records, err := runtimeWithCheckpoints.ListCheckpoints(
+		context.Background(),
+		"fresh-startup-session",
+		checkpoint.ListCheckpointOpts{},
+	)
+	if err != nil {
+		t.Fatalf("expected checkpoint store to be available on fresh startup, got %v", err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("expected no checkpoints for fresh session, got %+v", records)
 	}
 }
 
