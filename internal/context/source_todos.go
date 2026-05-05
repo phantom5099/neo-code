@@ -81,8 +81,8 @@ func (todosSource) Sections(ctx context.Context, input BuildInput) ([]promptSect
 	}
 
 	lines = append(lines, "",
-		"stale_todo_reminder: If any todo above is no longer relevant to the current task,",
-		"cancel it via todo_write set_status=canceled before signaling completion.",
+		"stale_todo_reminder: If the user clearly switches to a different task, do not carry old unfinished todos forward.",
+		"Mark each old todo completed only if the work is actually done; otherwise cancel it via todo_write before starting the new task.",
 	)
 
 	return []promptSection{

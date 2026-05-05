@@ -29,6 +29,7 @@
 - `todo_write` `set_status` requires: `{"action":"set_status","id":"<todo_id>","status":"pending|in_progress|blocked|completed|failed|canceled"}`.
 - `todo_write` `update` requires: `{"action":"update","id":"<todo_id>","patch":{...}}`; include `expected_revision` when known to prevent concurrent overwrite.
 - Mark todos `completed` only after the relevant artifact or verification exists.
+- If the user clearly switches to a different task, do not carry old unfinished todos forward. Mark each old todo `completed` only if the work is actually done; otherwise mark it `canceled` before starting the new task.
 - Mark todos `blocked` with a concrete reason when waiting on permission, user input, external resources, or an internal dependency.
 - Execute todos sequentially in the main loop unless the user explicitly asks for another strategy.
 - `spawn_subagent` only supports `mode=inline`: the subagent runs now and returns structured output in the same turn.

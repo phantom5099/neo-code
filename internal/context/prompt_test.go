@@ -125,6 +125,12 @@ func TestDefaultToolUsagePromptIncludesPermissionAndAntiLoopGuidance(t *testing.
 	if !strings.Contains(toolUsage, "`todo_write`") {
 		t.Fatalf("expected Tool Usage to mention todo_write for task state, got %q", toolUsage)
 	}
+	if !strings.Contains(toolUsage, "If the user clearly switches to a different task") {
+		t.Fatalf("expected Tool Usage to cover task switches, got %q", toolUsage)
+	}
+	if !strings.Contains(toolUsage, "otherwise mark it `canceled` before starting the new task") {
+		t.Fatalf("expected Tool Usage to explain canceled vs completed on task switches, got %q", toolUsage)
+	}
 	if !strings.Contains(toolUsage, "Execute todos sequentially in the main loop") {
 		t.Fatalf("expected Tool Usage to enforce sequential todo execution, got %q", toolUsage)
 	}
